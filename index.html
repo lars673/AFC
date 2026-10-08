@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="de-CH" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AFC – Advance Flight Check</title>
+<meta name="description" content="Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland">
+<meta name="theme-color" content="#0f1a14" id="metaTheme">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt</a>
+
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <img src="/icon-192.png" alt="" width="32" height="32">
+      <div>
+        <h1>AFC</h1>
+        <p id="stamp" class="stamp">Lade Daten …</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="src-dot" id="srcDot" data-act="sources" aria-label="Datenquellen anzeigen" title="Datenquellen"><span class="dot" id="srcDotI"></span><span class="src-t" id="srcDotT">Daten</span></button>
+      <button class="icon-btn" data-act="reload" aria-label="Aktualisieren" title="Aktualisieren">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div id="banner" class="banner" role="status" hidden></div>
+
+<nav class="tabs" role="tablist" aria-label="Bereiche">
+  <button role="tab" data-tab="decide" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-9 4 6 3-4 4 7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Entscheid</span></button>
+  <button role="tab" data-tab="map" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Karte</span></button>
+  <button role="tab" data-tab="lage" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18M8 3v4M15 10v4M10 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Lage</span></button>
+  <button role="tab" data-tab="day" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4 10-10M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Flugtag</span></button>
+  <button role="tab" data-tab="profile" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Profil</span></button>
+</nav>
+
+<main id="main" class="wrap">
+  <section id="daybar" class="daybar" aria-label="Tag wählen"></section>
+  <section id="v-decide" class="view" role="tabpanel"></section>
+  <section id="v-map" class="view" role="tabpanel" hidden>
+    <div class="mapbox">
+      <div id="map" aria-label="Karte der Startplätze"></div>
+      <div class="map-tools">
+        <button class="map-btn" data-act="layers" aria-expanded="false" aria-controls="layerPanel">Ebenen</button>
+        <button class="map-btn" data-act="locate">Standort</button>
+      </div>
+      <div id="layerPanel" class="layer-panel" hidden>
+        <fieldset><legend>Grundkarte</legend>
+          <label><input type="radio" name="base" value="color"> Landeskarte</label>
+          <label><input type="radio" name="base" value="grey"> Landeskarte grau</label>
+          <label><input type="radio" name="base" value="photo"> Luftbild</label>
+          <label><input type="radio" name="base" value="osm"> OpenStreetMap</label>
+        </fieldset>
+        <fieldset><legend>Auflagen</legend>
+          <label><input type="checkbox" name="ov" value="slope"> Hangneigung über 30°</label>
+          <label><input type="checkbox" name="ov" value="obst"> Hindernisse und Kabel</label>
+          <label><input type="checkbox" name="ov" value="stations" checked> Messstationen</label>
+          <label><input type="checkbox" name="ov" value="landings" checked> Landeplätze</label>
+        </fieldset>
+      </div>
+      <div id="mapMsg" class="map-msg" hidden></div>
+      <div id="mapSheet" class="sheet" hidden></div>
+    </div>
+    <p class="fine">Karte: © swisstopo. Hangneigung und Hindernisse sind Orientierungshilfen und ersetzen keine Luftraum- und Hindernisprüfung.</p>
+  </section>
+  <section id="v-lage" class="view" role="tabpanel" hidden></section>
+  <section id="v-day" class="view" role="tabpanel" hidden></section>
+  <section id="v-profile" class="view" role="tabpanel" hidden></section>
+</main>
+
+<dialog id="siteDlg" class="dlg dlg-big" aria-labelledby="siteDlgT"></dialog>
+<dialog id="msgDlg" class="dlg" aria-labelledby="msgDlgT"></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js" defer></script>
+<script src="/app.js" defer></script>
+<noscript><p style="padding:16px">AFC benötigt JavaScript.</p></noscript>
+</body>
+</html>

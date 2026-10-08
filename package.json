@@ -1,0 +1,13 @@
+{
+  "name": "afc",
+  "version": "8.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/scoring.test.js test/server.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
