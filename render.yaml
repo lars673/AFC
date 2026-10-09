@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: afc
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    maxShutdownDelaySeconds: 40
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AFC_DATA_DIR
+        value: /app/data
+      # Render schaltet einen Proxy vor den Container: ein Hop in X-Forwarded-For wird vertraut.
+      - key: AFC_TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: AFC_FETCH_TIMEOUT_MS
+        value: "20000"
+      - key: PUBLIC_APP_URL
+        sync: false
+    disk:
+      name: afc-data
+      mountPath: /app/data
+      sizeGB: 1

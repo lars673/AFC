@@ -1,0 +1,1066 @@
+{
+ "meta": {
+  "source": "DHV Gelände-Datenbank",
+  "checked": "2026-09-10"
+ },
+ "sites": [
+  {
+   "id": "amis-chalet",
+   "name": "Amisbühl Start 1 (Chalet)",
+   "type": "start",
+   "area": "amisbuhl",
+   "group": "Amisbühl",
+   "lat": 46.7009528,
+   "lon": 7.8196333,
+   "alt": 1316,
+   "aspects": [
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "amis-bergbo",
+   "name": "Amisbühl Start 2 (Bergbo)",
+   "type": "start",
+   "area": "amisbuhl",
+   "group": "Amisbühl",
+   "lat": 46.7003806,
+   "lon": 7.8205806,
+   "alt": 1280,
+   "aspects": [
+    135,
+    157.5
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "amis-3",
+   "name": "Amisbühl Start 3",
+   "type": "start",
+   "area": "amisbuhl",
+   "group": "Amisbühl",
+   "lat": 46.7023972,
+   "lon": 7.8223417,
+   "alt": 1327,
+   "aspects": [
+    135
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "amis-4",
+   "name": "Amisbühl Start 4",
+   "type": "start",
+   "area": "amisbuhl",
+   "group": "Amisbühl",
+   "lat": 46.7026361,
+   "lon": 7.8234667,
+   "alt": 1297,
+   "aspects": [
+    135
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "amis-hohwald",
+   "name": "Amisbühl Start 5 (Hohwald)",
+   "type": "start",
+   "area": "amisbuhl",
+   "group": "Amisbühl",
+   "lat": 46.7138083,
+   "lon": 7.8240611,
+   "alt": 1572,
+   "aspects": [
+    157.5,
+    180
+   ],
+   "pg": true,
+   "status": "Im Winter wegen Skibetrieb kein offizieller Startplatz",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niederhorn-1",
+   "name": "Niederhorn Start 1",
+   "type": "start",
+   "area": "niederhorn",
+   "group": "Niederhorn",
+   "lat": 46.7101028,
+   "lon": 7.7733389,
+   "alt": 1930,
+   "aspects": [
+    270
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niederhorn-2",
+   "name": "Niederhorn Start 2",
+   "type": "start",
+   "area": "niederhorn",
+   "group": "Niederhorn",
+   "lat": 46.7114722,
+   "lon": 7.7779083,
+   "alt": 1956,
+   "aspects": [
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niederhorn-3",
+   "name": "Niederhorn Start 3",
+   "type": "start",
+   "area": "niederhorn",
+   "group": "Niederhorn",
+   "lat": 46.7112,
+   "lon": 7.7780056,
+   "alt": 1926,
+   "aspects": [
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niederhorn-land-1",
+   "name": "Niederhorn Landeplatz 1",
+   "type": "landing",
+   "area": "niederhorn",
+   "group": "Niederhorn",
+   "lat": 46.6809556,
+   "lon": 7.8238611,
+   "alt": 565,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niederhorn-land-2",
+   "name": "Niederhorn Landeplatz 2",
+   "type": "landing",
+   "area": "niederhorn",
+   "group": "Niederhorn",
+   "lat": 46.6861167,
+   "lon": 7.8587194,
+   "alt": 569,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "luegibrueggli-1",
+   "name": "Luegibrüggli Start 1",
+   "type": "start",
+   "area": "luegibruggli",
+   "group": "Luegibrüggli",
+   "lat": 46.691,
+   "lon": 7.8102778,
+   "alt": 1062,
+   "aspects": [
+    180
+   ],
+   "pg": true,
+   "status": "gesperrt laut DHV-Eintrag",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "luegibrueggli-2",
+   "name": "Luegibrüggli Start 2",
+   "type": "start",
+   "area": "luegibruggli",
+   "group": "Luegibrüggli",
+   "lat": 46.6911833,
+   "lon": 7.816,
+   "alt": 1064,
+   "aspects": [
+    180
+   ],
+   "pg": true,
+   "status": "gesperrt laut DHV-Eintrag",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "schynige-1",
+   "name": "Schynige Platte Start 1",
+   "type": "start",
+   "area": "schynige-platte",
+   "group": "Schynige Platte",
+   "lat": 46.658225,
+   "lon": 7.9029278,
+   "alt": 1750,
+   "aspects": [
+    315
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "schynige-2",
+   "name": "Schynige Platte Start 2",
+   "type": "start",
+   "area": "schynige-platte",
+   "group": "Schynige Platte",
+   "lat": 46.6626111,
+   "lon": 7.9008833,
+   "alt": 1574,
+   "aspects": [
+    292.5,
+    315
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "first",
+   "name": "First Startplatz",
+   "type": "start",
+   "area": "grindelwald-first",
+   "group": "Grindelwald First",
+   "lat": 46.65745,
+   "lon": 8.0551333,
+   "alt": 2123,
+   "aspects": [
+    135,
+    157.5,
+    180,
+    202.5,
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "first-grund",
+   "name": "First Landeplatz Grund",
+   "type": "landing",
+   "area": "grindelwald-first",
+   "group": "Grindelwald First",
+   "lat": 46.6202917,
+   "lon": 8.0290556,
+   "alt": 950,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "first-bodmi",
+   "name": "First Landeplatz Bodmi",
+   "type": "landing",
+   "area": "grindelwald-first",
+   "group": "Grindelwald First",
+   "lat": 46.6287583,
+   "lon": 8.0433194,
+   "alt": 1129,
+   "aspects": [],
+   "pg": true,
+   "status": "anspruchsvoll – nur für Geübte",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "waldspitz",
+   "name": "Waldspitz Startplatz",
+   "type": "start",
+   "area": "grindelwald",
+   "group": "Grindelwald",
+   "lat": 46.6524806,
+   "lon": 8.0418611,
+   "alt": 1990,
+   "aspects": [
+    135,
+    157.5,
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "pfingstegg",
+   "name": "Pfingstegg Startplatz",
+   "type": "start",
+   "area": "grindelwald",
+   "group": "Grindelwald",
+   "lat": 46.6161333,
+   "lon": 8.056075,
+   "alt": 1398,
+   "aspects": [
+    315,
+    337.5
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "maennlichen",
+   "name": "Männlichen Startplatz",
+   "type": "start",
+   "area": "mannlichen",
+   "group": "Männlichen",
+   "lat": 46.6163889,
+   "lon": 7.9388417,
+   "alt": 2283,
+   "aspects": [
+    90,
+    247.5,
+    270
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "schilthorn",
+   "name": "Schilthorn Startplatz",
+   "type": "start",
+   "area": "schilthorn",
+   "group": "Schilthorn",
+   "lat": 46.5581417,
+   "lon": 7.832975,
+   "alt": 2939,
+   "aspects": [
+    45,
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "schilthorn-land",
+   "name": "Schilthorn Landeplatz",
+   "type": "landing",
+   "area": "schilthorn",
+   "group": "Schilthorn",
+   "lat": 46.5561222,
+   "lon": 7.9023278,
+   "alt": 858,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "schiltgrat",
+   "name": "Schiltgrat Startplatz",
+   "type": "start",
+   "area": "schilthorn",
+   "group": "Schilthorn",
+   "lat": 46.5570306,
+   "lon": 7.8723889,
+   "alt": 2105,
+   "aspects": [
+    90,
+    112.5
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "wurmegg",
+   "name": "Wurmegg Startplatz",
+   "type": "start",
+   "area": "schilthorn",
+   "group": "Schilthorn",
+   "lat": 46.5562222,
+   "lon": 7.8876556,
+   "alt": 1707,
+   "aspects": [
+    90
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niesen",
+   "name": "Niesen Startplatz",
+   "type": "start",
+   "area": "niesen",
+   "group": "Niesen",
+   "lat": 46.64435,
+   "lon": 7.6492222,
+   "alt": 2279,
+   "aspects": [
+    180,
+    225,
+    270
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niesen-land-1",
+   "name": "Niesen Landeplatz 1",
+   "type": "landing",
+   "area": "niesen",
+   "group": "Niesen",
+   "lat": 46.653225,
+   "lon": 7.6842444,
+   "alt": 697,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "niesen-land-2",
+   "name": "Niesen Landeplatz 2",
+   "type": "landing",
+   "area": "niesen",
+   "group": "Niesen",
+   "lat": 46.6844,
+   "lon": 7.6716361,
+   "alt": 640,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "stockhorn-1",
+   "name": "Stockhorn Start 1",
+   "type": "start",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.6927306,
+   "lon": 7.5376306,
+   "alt": 2082,
+   "aspects": [
+    135,
+    157.5,
+    180,
+    202.5,
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "stockhorn-2",
+   "name": "Stockhorn Start 2",
+   "type": "start",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.6933028,
+   "lon": 7.5376472,
+   "alt": 2105,
+   "aspects": [
+    135,
+    157.5,
+    180,
+    202.5,
+    225
+   ],
+   "pg": false,
+   "status": "Für Gleitschirme laut DHV nicht geeignet (Rampe)",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "stockhorn-land-1",
+   "name": "Stockhorn Landeplatz 1",
+   "type": "landing",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.6581639,
+   "lon": 7.528525,
+   "alt": 696,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "stockhorn-land-2",
+   "name": "Stockhorn Landeplatz 2",
+   "type": "landing",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.7457667,
+   "lon": 7.5278806,
+   "alt": 678,
+   "aspects": [],
+   "pg": true,
+   "status": "Gleitschirm laut DHV: Nein",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "huus",
+   "name": "Huus / Hus Startplatz",
+   "type": "start",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.6770667,
+   "lon": 7.5361944,
+   "alt": 1546,
+   "aspects": [
+    135,
+    157.5,
+    180,
+    202.5,
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "mentschelen",
+   "name": "Mentschelenalp Startplatz",
+   "type": "start",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.7154972,
+   "lon": 7.5100417,
+   "alt": 1394,
+   "aspects": [
+    315,
+    337.5,
+    0,
+    22.5,
+    45
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "mentschelen-land",
+   "name": "Mentschelenalp Landeplatz",
+   "type": "landing",
+   "area": "stockhorn",
+   "group": "Stockhorn",
+   "lat": 46.7286639,
+   "lon": 7.5187306,
+   "alt": 730,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "ramslauen",
+   "name": "Ramslauen Startplatz",
+   "type": "start",
+   "area": "kiental",
+   "group": "Kiental",
+   "lat": 46.5794556,
+   "lon": 7.7065194,
+   "alt": 1476,
+   "aspects": [
+    90
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "ramslauen-land",
+   "name": "Ramslauen Landeplatz",
+   "type": "landing",
+   "area": "kiental",
+   "group": "Kiental",
+   "lat": 46.5843333,
+   "lon": 7.7271528,
+   "alt": 925,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "oeschinen-1",
+   "name": "Oeschinen Start 1",
+   "type": "start",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.5034028,
+   "lon": 7.6964778,
+   "alt": 1739,
+   "aspects": [
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "oeschinen-2",
+   "name": "Oeschinen Start 2",
+   "type": "start",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.501875,
+   "lon": 7.6974694,
+   "alt": 1683,
+   "aspects": [
+    225
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "oeschinen-land",
+   "name": "Oeschinen Landeplatz",
+   "type": "landing",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.4997083,
+   "lon": 7.6817028,
+   "alt": 1179,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "allmenalp",
+   "name": "Allmenalp Startplatz",
+   "type": "start",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.4950222,
+   "lon": 7.6500917,
+   "alt": 1812,
+   "aspects": [
+    90
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "allmenalp-land",
+   "name": "Allmenalp Landeplatz",
+   "type": "landing",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.4901861,
+   "lon": 7.6632528,
+   "alt": 1179,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "bluemlisalp",
+   "name": "Blümlisalp Startplatz",
+   "type": "start",
+   "area": "kandersteg",
+   "group": "Kandersteg",
+   "lat": 46.4701444,
+   "lon": 7.6893222,
+   "alt": 2713,
+   "aspects": [
+    270
+   ],
+   "pg": true,
+   "status": "Hochalpiner Startplatz – nur bei passenden Bedingungen",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "tschenten-1",
+   "name": "Tschentenalp Start 1",
+   "type": "start",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.4971167,
+   "lon": 7.5416167,
+   "alt": 2024,
+   "aspects": [
+    0,
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "tschenten-2",
+   "name": "Tschentenalp Start 2",
+   "type": "start",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.498,
+   "lon": 7.5474583,
+   "alt": 1920,
+   "aspects": [
+    0,
+    157.5,
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "tschenten-land-1",
+   "name": "Tschentenalp Landeplatz 1",
+   "type": "landing",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.4790722,
+   "lon": 7.5591444,
+   "alt": 1287,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": "Sommer",
+   "source": "DHV"
+  },
+  {
+   "id": "tschenten-land-2",
+   "name": "Tschentenalp Landeplatz 2",
+   "type": "landing",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.480125,
+   "lon": 7.5603639,
+   "alt": 1284,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": "Winter",
+   "source": "DHV"
+  },
+  {
+   "id": "tschenten-land-3",
+   "name": "Tschentenalp Landeplatz 3",
+   "type": "landing",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.488,
+   "lon": 7.5624278,
+   "alt": 1252,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "kuonisbergli",
+   "name": "Kuonisbergli Startplatz",
+   "type": "start",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.4731194,
+   "lon": 7.5472472,
+   "alt": 1719,
+   "aspects": [
+    90,
+    112.5
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "maeggisseren",
+   "name": "Mäggisseren Startplatz",
+   "type": "start",
+   "area": "frutigen",
+   "group": "Frutigen",
+   "lat": 46.5880667,
+   "lon": 7.6092917,
+   "alt": 1738,
+   "aspects": [
+    135,
+    157.5,
+    180
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "maeggisseren-land",
+   "name": "Mäggisseren Landeplatz",
+   "type": "landing",
+   "area": "frutigen",
+   "group": "Frutigen",
+   "lat": 46.5864444,
+   "lon": 7.6531972,
+   "alt": 777,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "grimer",
+   "name": "Grimer Startplatz",
+   "type": "start",
+   "area": "frutigen",
+   "group": "Frutigen",
+   "lat": 46.553675,
+   "lon": 7.6823917,
+   "alt": null,
+   "aspects": [
+    225,
+    247.5,
+    270
+   ],
+   "pg": true,
+   "status": "Höhe im aktuellen DHV-Treffer nicht ausgewiesen",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "engstligen-1",
+   "name": "Engstligenalp Start 1",
+   "type": "start",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.4487722,
+   "lon": 7.5643583,
+   "alt": 1962,
+   "aspects": [
+    315
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "engstligen-2",
+   "name": "Engstligenalp Start 2",
+   "type": "start",
+   "area": "adelboden",
+   "group": "Adelboden",
+   "lat": 46.4476083,
+   "lon": 7.5755778,
+   "alt": 2194,
+   "aspects": [
+    270
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "planplatten-1",
+   "name": "Planplatten Start 1",
+   "type": "start",
+   "area": "haslital",
+   "group": "Haslital",
+   "lat": 46.7359917,
+   "lon": 8.2547611,
+   "alt": 2234,
+   "aspects": [
+    90,
+    112.5,
+    135
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "planplatten-2",
+   "name": "Planplatten Start 2",
+   "type": "start",
+   "area": "haslital",
+   "group": "Haslital",
+   "lat": 46.7367389,
+   "lon": 8.254825,
+   "alt": 2239,
+   "aspects": [
+    225,
+    247.5,
+    270,
+    292.5,
+    315
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "planplatten-land-1",
+   "name": "Planplatten Landeplatz 1",
+   "type": "landing",
+   "area": "haslital",
+   "group": "Haslital",
+   "lat": 46.74915,
+   "lon": 8.2352333,
+   "alt": 1694,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "planplatten-land-2",
+   "name": "Planplatten Landeplatz 2",
+   "type": "landing",
+   "area": "haslital",
+   "group": "Haslital",
+   "lat": 46.7451944,
+   "lon": 8.2182528,
+   "alt": 1424,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "planplatten-land-3",
+   "name": "Planplatten Landeplatz 3",
+   "type": "landing",
+   "area": "haslital",
+   "group": "Haslital",
+   "lat": 46.7326694,
+   "lon": 8.1729278,
+   "alt": 629,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "wispile-1",
+   "name": "Wispile Start 1",
+   "type": "start",
+   "area": "gstaad",
+   "group": "Gstaad",
+   "lat": 46.4367944,
+   "lon": 7.2934056,
+   "alt": 1924,
+   "aspects": [
+    90
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "wispile-2",
+   "name": "Wispile Start 2",
+   "type": "start",
+   "area": "gstaad",
+   "group": "Gstaad",
+   "lat": 46.4400444,
+   "lon": 7.2921056,
+   "alt": 1894,
+   "aspects": [
+    270
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "wispile-3",
+   "name": "Wispile Start 3",
+   "type": "start",
+   "area": "gstaad",
+   "group": "Gstaad",
+   "lat": 46.4400722,
+   "lon": 7.2928806,
+   "alt": null,
+   "aspects": [
+    0
+   ],
+   "pg": true,
+   "status": "Höhe noch zu verifizieren",
+   "season": null,
+   "source": "DHV"
+  },
+  {
+   "id": "wispile-land-1",
+   "name": "Wispile Landeplatz",
+   "type": "landing",
+   "area": "gstaad",
+   "group": "Gstaad",
+   "lat": 46.4615861,
+   "lon": 7.2834083,
+   "alt": null,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "DHV"
+  }
+ ]
+}

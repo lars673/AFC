@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AFC Datenschutz</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 17px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; max-width: 760px; margin: 32px auto; padding: 0 20px 48px; }
+  h1 { margin-bottom: .2em; } h2 { margin-top: 1.6em; font-size: 1.2em; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>AFC Datenschutz</h1>
+<p><a href="/">Zurück zur App</a></p>
+<p>AFC ist eine Entscheidungshilfe für Gleitschirmflieger im Berner Oberland. Sie braucht kein Benutzerkonto, keinen Namen und keine E-Mail-Adresse.</p>
+
+<h2>Was auf dem Gerät bleibt</h2>
+<p>Favoriten, Erfahrungsstufe, Darstellung, die Checkliste und dein Flugbuch liegen im Speicher deines Browsers (localStorage). Sie werden nicht an den Server gesendet. Dasselbe gilt für den zuletzt geladenen Wetterplan, damit die App offline einen (als alt gekennzeichneten) Stand zeigen kann.</p>
+
+<h2>Flugmeldungen (freiwillig)</h2>
+<p>Wenn du einen Flug meldest, speichert der Server Startplatz, Zeitpunkt, ob du gestartet bist, eine Bewertung von 1 bis 5, den AFC-Score zu diesem Zeitpunkt und einen optionalen Kurztext. Dein Gerät wird nur über eine zufällige Kennung als Hash gespeichert. Es gibt keine Verknüpfung mit deiner Person. Bitte schreibe keine persönlichen Angaben in das Textfeld.</p>
+<p>Die Meldungen dienen dazu, Auffälligkeiten der Bewertung zu erkennen. Sie verändern die Bewertung nicht automatisch.</p>
+
+<h2>Export und Löschung</h2>
+<p>Unter «Profil» kannst du deine gemeldeten Flüge exportieren und löschen. Die Löschung gilt für alle Meldungen, die von diesem Gerät stammen.</p>
+
+<h2>Technische Daten</h2>
+<p>Der Server speichert Messwerte der MeteoSchweiz und Prognosevergleiche (Wetterdaten, keine Personendaten) für höchstens 30 Tage. Zur Abwehr von Missbrauch zählt der Server Anfragen pro IP-Adresse kurzzeitig im Arbeitsspeicher; die Adressen werden nicht gespeichert.</p>
+
+<h2>Drittanbieter</h2>
+<ul>
+  <li>Wetterdaten: MeteoSchweiz (SwissMetNet, Föhnindex), MeteoSwiss ICON, DWD ICON und ECMWF über <a href="https://open-meteo.com/">Open-Meteo</a>. Die Abrufe erfolgen durch den Server, nicht durch dein Gerät.</li>
+  <li>Karten: Dein Gerät lädt Kartenkacheln direkt von swisstopo (wmts.geo.admin.ch) oder, als Ausweichkarte, von OpenStreetMap. Dabei sieht der Anbieter deine IP-Adresse.</li>
+  <li>Schrift und Kartenbibliothek: Google Fonts (fonts.googleapis.com) und Leaflet über cdnjs (cdnjs.cloudflare.com). Auch hier sieht der Anbieter deine IP-Adresse.</li>
+  <li>Standort: Nur wenn du auf der Karte «Standort» antippst, fragt der Browser nach deiner Position. Sie wird nicht an den Server gesendet.</li>
+</ul>
+
+<p><small>Hinweis für den Betreiber: Diese Erklärung ist eine Vorlage. Betreiber, Hosting-Standort, Aufbewahrungsfristen und die eingesetzten Drittanbieter müssen vor einem öffentlichen Betrieb ergänzt und geprüft werden. Open-Meteo erlaubt die kostenlose Nutzung nur für nicht-kommerzielle Zwecke.</small></p>
+</body>
+</html>

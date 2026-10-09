@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+.git
+.github
+.DS_Store
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+test
