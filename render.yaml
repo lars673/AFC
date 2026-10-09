@@ -5,7 +5,6 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     autoDeploy: true
-    maxShutdownDelaySeconds: 40
     envVars:
       - key: NODE_ENV
         value: production
