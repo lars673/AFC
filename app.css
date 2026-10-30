@@ -190,6 +190,8 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .thermal-legend span:nth-child(2) { justify-self: start; } .thermal-legend span:nth-child(3) { justify-self: end; }
 .thermal-legend .fine { grid-column: 1 / -1; margin: 0; }
 .thermal-img { image-rendering: auto; }
+.thermal-legend .sgrad { background: linear-gradient(90deg, rgba(80,200,220,.45), #1e96e6, #1446c8); }
+.thermal-legend .sstrong { display: inline-block; width: 12px; height: 6px; border-radius: 3px; background: rgb(200,40,200); margin: 0 2px 0 6px; }
 .why-list { margin: 6px 0 8px; padding-left: 18px; font-size: 14px; }
 .map-msg { position: absolute; left: 10px; right: 10px; top: 10px; z-index: 600; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--wait); padding: 10px 12px; border-radius: 8px; font-size: 14px; max-width: 520px; }
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 700; background: var(--panel); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; padding: 12px 14px 14px; box-shadow: 0 -4px 14px rgba(0,0,0,.25); display: grid; gap: 8px; }

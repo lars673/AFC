@@ -74,6 +74,7 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.equal(th.sun.length, th.grid.nx * th.grid.ny);
     assert.ok(th.sunPos.elev > 20, 'Sonnenhöhe ' + th.sunPos.elev);
     assert.ok(th.top.every(x => x === null || x > 1000) && th.top.some(x => x > 1500), 'Thermikhöhe ' + th.top.slice(0, 3));
+    assert.equal(th.wind['800'].u.length, th.grid.nx * th.grid.ny);
     const gr = await fetch(s.base + '/terrain-grid.bin');
     assert.equal(gr.status, 200);
     const buf = Buffer.from(await gr.arrayBuffer()), hl = buf.readUInt32LE(0), meta = JSON.parse(buf.subarray(4, 4 + hl));

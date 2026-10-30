@@ -26,7 +26,7 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 `node tools/build-terrain.js` berechnet aus einem Höhenmodell (AWS Terrain Tiles, ca. 26 m) für jeden Startplatz Hangneigung, Exposition, Relief und den Horizont in 24 Richtungen (Bergschatten) und schreibt sie in `lib/sites.json`. Nur nötig, wenn Startplätze dazukommen oder sich ändern. Fehlt die Platzhöhe, wird sie aus dem Höhenmodell übernommen (`altSource`).
 
-**Thermik-Wärmekarte:** `node tools/build-thermal-grid.js` schreibt das Geländeraster `lib/terrain-grid.bin` (ca. 250 m: Höhe, Neigung, Exposition, Geländeform). Die App schätzt daraus je Stunde, wo Thermik ablöst: Sonne auf dem Hang (Einfallswinkel, diese und die vorherige Stunde), Thermikobergrenze aus dem Temperaturprofil, Kreten und Kuppen, tiefe Wolken und Regen. Antippen der Karte zeigt die Begründung.
+**Thermik-Wärmekarte:** `node tools/build-thermal-grid.js` schreibt das Geländeraster `lib/terrain-grid.bin` (ca. 250 m: Höhe, Neigung, Exposition, Geländeform). Die App schätzt daraus je Stunde, wo Thermik ablöst (Ansicht «Thermik») oder wo der Wind frontal auf steile Hänge trifft (Ansicht «Soaring», Wind auf Geländehöhe aus Boden, 2000 m und 3000 m): Sonne auf dem Hang (Einfallswinkel, diese und die vorherige Stunde), Thermikobergrenze aus dem Temperaturprofil, Kreten und Kuppen, tiefe Wolken und Regen. Antippen der Karte zeigt die Begründung.
 
 ## Rückblick-Test
 
