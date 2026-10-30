@@ -291,3 +291,9 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .rt-issue { width: 22px; height: 22px; border-radius: 50%; background: var(--c); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; border: 2px solid #fff; }
 .rt-issues { margin: 6px 0 8px; padding-left: 22px; font-size: 14px; }
 .rt-issues li::marker { color: var(--c); font-weight: 800; }
+.bar-fold { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 0 2px; background: transparent; border: 0; font-weight: 700; color: var(--ink); }
+.bar-chev { transition: transform .15s; }
+.wind-bar.folded .bar-chev { transform: rotate(-90deg); }
+.wind-bar.folded .bar-body { display: none; }
+.bar-body { display: grid; gap: 6px; }
+.linkbtn { background: none; border: 0; padding: 0 4px; min-height: 44px; color: var(--accent); font-weight: 600; text-decoration: underline; }

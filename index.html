@@ -74,6 +74,8 @@
         </fieldset>
       </div>
       <div id="windBar" class="wind-bar">
+        <button type="button" class="bar-fold" data-act="barfold" aria-expanded="true" aria-controls="barBody"><span id="barSum">Wind und Aufwind</span><span class="bar-chev" aria-hidden="true">▾</span></button>
+        <div id="barBody" class="bar-body">
         <div class="wind-row" role="group" aria-label="Windkarte">
           <span class="wind-t">Wind</span>
           <button type="button" class="wseg" data-act="wind" data-lvl="off" aria-pressed="true">Aus</button>
@@ -87,13 +89,16 @@
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="thermal" aria-pressed="false">Thermik</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="soar" aria-pressed="false">Soaring</button>
         </div>
+        </div>
         <div class="wind-row wind-time" hidden>
           <label for="windHour" class="wind-h"><b id="windHourT">12 Uhr</b></label>
           <input id="windHour" type="range" min="6" max="20" step="1" value="12" aria-label="Uhrzeit der Wind- und Thermikkarte">
         </div>
+        <div class="bar-body bar-legends">
         <div class="wind-legend" hidden aria-label="Farben: Windstärke in km/h"><i style="--c:#2a7fd4"></i>&lt;10<i style="--c:#2fa84f"></i>10–20<i style="--c:#d9b300"></i>20–30<i style="--c:#ef8a1f"></i>30–40<i style="--c:#d93a32"></i>40+ km/h</div>
         <div class="thermal-legend" hidden><span class="tgrad" aria-hidden="true"></span><span>schwach</span><span>stark</span><span class="fine">Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Antippen zeigt warum.</span></div>
         <div class="thermal-legend soar-legend" hidden><span class="tgrad sgrad" aria-hidden="true"></span><span>schwach</span><span>gut <i class="sstrong"></i> zu stark</span><span class="fine">Wo der Wind frontal auf einen steilen Hang trifft, auch ohne Thermik. Antippen zeigt warum.</span></div>
+        </div>
       </div>
       <div id="mapMsg" class="map-msg" hidden></div>
       <div id="mapSheet" class="sheet" hidden></div>

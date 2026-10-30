@@ -240,17 +240,22 @@ function areaCard(a) {
   </article>`;
 }
 
+/** Erfahrungsstufe kurz anzeigen; ändern im Profil (dort wird sie aus Flügen, Stunden und Pause berechnet). */
+function levelLine() {
+  const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
+  const src = !pl ? 'Profil noch nicht ausgefüllt' : pl.level === S.level ? 'aus deinem Profil' : 'von Hand gewählt';
+  return `<div class="level"><span class="lbl">Erfahrung</span><b>${LEVEL_INFO[S.level][0]}</b><span class="lbl">${src}</span><button type="button" class="linkbtn" data-act="tab" data-tab="profile">${pl ? 'ändern' : 'Profil ausfüllen'}</button></div>`;
+}
 function renderDecide() {
   const el = $('#v-decide');
   if (!S.plan) { el.innerHTML = stateBox(); return; }
   const p = S.plan, h = headlineFor(S.day);
-  const lvl = ['careful', 'normal', 'expert'].map(k => `<button type="button" data-act="level" data-v="${k}" aria-pressed="${S.level === k}">${LEVEL_INFO[k][0]}</button>`).join('');
   const favSites = [...S.fav].map(siteById).filter(Boolean);
   const areas = [...p.areas].sort((a, b) => (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
   el.innerHTML = `
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
-    <div class="level"><span class="lbl">Erfahrung</span><div class="seg" role="group" aria-label="Erfahrungsstufe">${lvl}</div></div>
+    ${levelLine()}
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
@@ -748,6 +753,12 @@ function syncWindBar() {
   $('#windBar .thermal-legend').hidden = T.mode !== 'thermal'; $('#windBar .soar-legend').hidden = T.mode !== 'soar';
   $('#windHour').value = W.hour;
   $('#windHourT').textContent = `${W.hour} Uhr`;
+  // Zusammengeklappt: nur Zusammenfassung und Uhrzeit, damit die Karte auf dem Handy frei bleibt
+  const folded = store.get('barFold', innerWidth < 600);
+  $('#windBar').classList.toggle('folded', folded);
+  $('#windBar .bar-fold').setAttribute('aria-expanded', String(!folded));
+  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T.mode === 'thermal' ? 'Thermik' : T.mode === 'soar' ? 'Soaring' : null].filter(Boolean);
+  $('#barSum').textContent = parts.length ? parts.join(' · ') : 'Wind und Aufwind: aus';
 }
 async function updateWind() {
   syncWindBar();
@@ -1138,6 +1149,8 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'tab': setTab(b.dataset.tab); break;
+    case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
     case 'routeoff': RT.active = false; RT.a = RT.b = RT.res = null; RT.req++; clearRoute(); mapMsg(''); $('#mapSheet').hidden = true; break;
     case 'rtmode': RT.mode = b.dataset.v; computeRoute(); break;
