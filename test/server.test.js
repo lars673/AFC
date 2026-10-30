@@ -192,3 +192,27 @@ test('Lufträume: Server liefert SHV-Lufträume und Wildschutz, Klasse E ausserh
     assert.match(s.log(), /Lufträume: 4/);
   } finally { await s.stop(); }
 });
+
+test('Flugbuch-API: speichern, lesen, löschen, nur mit Gerätekennung', async () => {
+  const s = await boot('good', 18791);
+  try {
+    const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
+    assert.equal((await fetch(s.base + '/api/logbook')).status, 400);
+    const put = (kind, id, b) => fetch(`${s.base}/api/logbook/${kind}/${id}`, { method: 'PUT', headers: H, body: JSON.stringify(b) });
+    assert.equal((await put('flight', 'f1', { note: 'ohne Datum' })).status, 400);
+    assert.equal((await put('gear', 'g1', { type: 'glider', brand: 'Advance', model: 'Iota' })).status, 200);
+    assert.equal((await put('flight', 'f1', { date: '2026-07-01', durMin: 75, gliderId: 'g1', siteName: 'Niesen' })).status, 200);
+    assert.equal((await put('flight', 'f2', { date: '2026-08-01', durMin: 20 })).status, 200);
+    assert.equal((await put('settings', 'main', { flightsBefore: 40 })).status, 200);
+    let j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
+    assert.deepEqual(j.flights.map(f => f.id), ['f2', 'f1']);
+    assert.equal((await put('flight', 'f3', { date: '2026-08-02', kind: 'thermik' })).status, 200);
+    assert.equal((await (await fetch(s.base + '/api/logbook', { headers: H })).json()).flights[0].kind, 'thermik');
+    await fetch(s.base + '/api/logbook/flight/f3', { method: 'DELETE', headers: H });
+    assert.equal(j.gear[0].model, 'Iota');
+    assert.equal(j.settings.flightsBefore, 40);
+    assert.equal((await fetch(s.base + '/api/logbook/flight/f2', { method: 'DELETE', headers: H })).status, 200);
+    j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
+    assert.equal(j.flights.length, 1);
+  } finally { await s.stop(); }
+});

@@ -40,6 +40,10 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 Der Server lädt einmal täglich die offiziellen Luftraumdateien des SHV/FSVL (https://airspace.shv-fsvl.ch, OpenAir in Metern: CTR, TMA, Sperr- und Gefahrengebiete sowie Wildschutzgebiete), schneidet sie aufs Berner Oberland zu und liefert sie unter `/api/airspace`. Kopie in `data/airspace-*.txt`, falls der Abruf einmal nicht klappt. Auf der Karte mit dem Knopf «Luftraum» ein- und ausblenden (standardmässig aus; einzeln unter Ebenen). Nur Lufträume, die unter 3000 m beginnen, werden gezeichnet, solche ab Boden flächig. Rot = für Gleitschirme gesperrt (Klasse A–D, CTR, R, P, TMZ), orange = Gefahrengebiet, grün = Wildschutz. Antippen zeigt Name, Klasse und Höhen. Der Routenplaner bleibt unter gesperrten Lufträumen (50 m Abstand) oder darüber und fliegt um solche bis zum Boden herum (`lib/airspace.js`, `lib/route.js`). Aktivzeiten (Militär) und NOTAM sind nicht drin: vor dem Flug im DABS prüfen.
 
+## Flugbuch
+
+Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, Art, Strecke, Höhe, Schirm, Gurtzeug, Retter, Bewertung und Notiz. Dazu die Ausrüstung mit Fristen: AFC zählt die Stunden je Schirm und meldet fällige Schirm-Checks (nach Monaten oder Stunden) und Retter-Packtermine 30 Tage bzw. 10 Stunden im Voraus, auch oben im Reiter «Entscheid». Flüge vor dem Flugbuch lassen sich als Total nachtragen. Das Flugbuch füllt das Pilotenprofil (Flüge, Stunden der letzten 12 Monate, Schirmklasse des Standardschirms). Es liegt nur auf diesem Rechner in `data/afc.sqlite` (`lib/logbook.js`).
+
 ## Rückblick-Test
 
 `node tools/backtest.js --days 90` (oder Doppelklick auf `tools/AFC Rückblick-Test.command`) rechnet AFC mit archivierten Prognosen von Open-Meteo für vergangene Tage durch und vergleicht das Urteil je Gebiet mit den Messungen der MeteoSchweiz (Föhn, Starkwind, Regen). Ergebnis in `data/backtest-<datum>.txt` und `.csv`. Getestet wird die Bewertungslogik mit kurzfristigen Prognosen; die Messung stammt von Talstationen.
@@ -80,6 +84,7 @@ Für Tests überschreibbar: `AFC_AIRSPACE_URL`, `AFC_OPENMETEO_URL`, `AFC_SMN_UR
 | `POST /api/flight-report` | Flugmeldung (Header `X-AFC-Client`), validiert: bekannter Startplatz, Zeit der letzten 14 Tage, Bewertung 1–5, höchstens 20 pro Tag |
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |
+| `GET /api/logbook`, `PUT`/`DELETE /api/logbook/(flight\|gear\|settings)/:id` | Persönliches Flugbuch (Header `X-AFC-Client`) |
 | `GET /api/airspace` | Lufträume und Wildschutzgebiete (SHV/FSVL) im Gebiet |
 | `GET /api/status` | Open-Meteo-Verbrauch heute und Update-Stand |
 | `POST /api/update/check`, `POST /api/update` | Nach Update suchen / Update einspielen und neu starten (nur localhost, Update nur mit Autostart) |

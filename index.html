@@ -44,6 +44,7 @@
   <button role="tab" data-tab="map" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Karte</span></button>
   <button role="tab" data-tab="lage" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18M8 3v4M15 10v4M10 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Lage</span></button>
   <button role="tab" data-tab="day" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4 10-10M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Flugtag</span></button>
+  <button role="tab" data-tab="book" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 013 3v13H8a3 3 0 01-3-3zM5 17a3 3 0 013-3h11M9 8h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Flugbuch</span></button>
   <button role="tab" data-tab="profile" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Profil</span></button>
 </nav>
 
@@ -111,6 +112,7 @@
   </section>
   <section id="v-lage" class="view" role="tabpanel" hidden></section>
   <section id="v-day" class="view" role="tabpanel" hidden></section>
+  <section id="v-book" class="view" role="tabpanel" hidden></section>
   <section id="v-profile" class="view" role="tabpanel" hidden></section>
 </main>
 
@@ -122,6 +124,7 @@
 <script type="module" src="/pilot.js"></script>
 <script type="module" src="/route.js"></script>
 <script type="module" src="/airspace.js"></script>
+<script type="module" src="/logbook.js"></script>
 <script src="/app.js" defer></script>
 <noscript><p style="padding:16px">AFC benötigt JavaScript.</p></noscript>
 </body>

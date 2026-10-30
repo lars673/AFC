@@ -18,6 +18,7 @@ import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from './lib/pla
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
+import { cleanFlight, cleanGear, cleanSettings } from './lib/logbook.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -71,6 +72,7 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=N
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
 CREATE TABLE IF NOT EXISTS flight_reports (id INTEGER PRIMARY KEY, client_hash TEXT, reported_at TEXT, site_id TEXT, site_name TEXT, group_name TEXT, launch_time TEXT, launched INTEGER, quality INTEGER, afc_score REAL, afc_decision TEXT, afc_best_time TEXT, learning_features TEXT, note TEXT, site_revision TEXT);
 CREATE TABLE IF NOT EXISTS clients (client_hash TEXT PRIMARY KEY, created_at TEXT, last_seen TEXT);
+CREATE TABLE IF NOT EXISTS logbook (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS fc_pred (id INTEGER PRIMARY KEY, code TEXT NOT NULL, target TEXT NOT NULL, issued TEXT NOT NULL, lead REAL, wind REAL, gust REAL, dir REAL, temp REAL, UNIQUE(code,target));
 CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
 CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(time);
@@ -409,6 +411,7 @@ const STATIC = new Map([
   ['/pilot.js', ['lib/pilot.js', 'text/javascript; charset=utf-8']],
   ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
   ['/airspace.js', ['lib/airspace.js', 'text/javascript; charset=utf-8']],
+  ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
 ]);
@@ -448,7 +451,7 @@ const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://localhost');
     const p = u.pathname;
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { ...corsHeaders(req), 'Access-Control-Allow-Headers': 'content-type,x-afc-client', 'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS', 'Access-Control-Max-Age': '86400' });
+      res.writeHead(204, { ...corsHeaders(req), 'Access-Control-Allow-Headers': 'content-type,x-afc-client', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Max-Age': '86400' });
       return res.end();
     }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
@@ -546,6 +549,28 @@ const server = http.createServer(async (req, res) => {
         dbRun('INSERT INTO flight_reports(client_hash,reported_at,site_id,site_name,group_name,launch_time,launched,quality,afc_score,afc_decision,afc_best_time,learning_features,note,site_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           [h, at, site.id, site.name, site.area, launch, b.launched ? 1 : 0, quality, score >= 0 && score <= 100 ? Math.round(score) : null, cleanText(b.afcDecision, 40), null, null, cleanText(b.note, 280), SITES_FILE.meta?.checked || null]);
         return sendJson(req, res, 200, { ok: true });
+      }
+      // Flugbuch (persönlich, bleibt auf diesem Rechner): Flüge, Ausrüstung, Einstellungen
+      if (p === '/api/logbook' || p.startsWith('/api/logbook/')) {
+        if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
+        if (req.method === 'GET' && p === '/api/logbook') {
+          // Flüge haben selbst ein Feld «kind» (Thermik, Soaring …), darum nach der Tabellenspalte trennen
+          const pick = k => dbAll('SELECT data FROM logbook WHERE kind=?', [k]).map(r => JSON.parse(r.data));
+          return sendJson(req, res, 200, { ok: true, flights: pick('flight').sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), gear: pick('gear'), settings: cleanSettings(pick('settings')[0] || {}) });
+        }
+        const lm = p.match(/^\/api\/logbook\/(flight|gear|settings)\/([\w-]{1,40})$/);
+        if (!lm) return sendJson(req, res, 404, { error: 'unbekannt' });
+        if (limited(req, 'post', 120)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+        const [, kind, lid] = lm;
+        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); return sendJson(req, res, 200, { ok: true }); }
+        if (req.method === 'PUT') {
+          const body = await readBody(req);
+          const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
+          if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
+          dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
+          return sendJson(req, res, 200, { ok: true, item });
+        }
+        return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
       }
       if (req.method === 'GET' && p === '/api/privacy/export') {
         const cid = clientId(req);

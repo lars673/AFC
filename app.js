@@ -139,12 +139,13 @@ function render() {
   renderBanner();
   $('#daybar').hidden = !S.plan || !['decide', 'map', 'lage'].includes(S.tab);
   if (S.plan) renderDaybar();
-  for (const t of ['decide', 'map', 'lage', 'day', 'profile']) $('#v-' + t).hidden = S.tab !== t;
+  for (const t of ['decide', 'map', 'lage', 'day', 'book', 'profile']) $('#v-' + t).hidden = S.tab !== t;
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
   if (S.tab === 'decide') renderDecide();
   else if (S.tab === 'lage') renderLage();
   else if (S.tab === 'day') renderDay();
   else if (S.tab === 'profile') renderProfile();
+  else if (S.tab === 'book') renderBook();
   else if (S.tab === 'map') renderMap();
 }
 
@@ -254,6 +255,7 @@ function renderDecide() {
   const areas = [...p.areas].sort((a, b) => (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
   el.innerHTML = `
+    ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
     ${levelLine()}
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
@@ -424,7 +426,7 @@ function renderProfile() {
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
     <div class="panel"><h3>Favoriten</h3>
       ${favs.length ? favs.map(s => `<div class="srow" style="padding-left:0;padding-right:0"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))}</span></button>${starBtn(s.id)}</div>`).join('') : '<p class="fine" style="margin:0">Noch keine Favoriten. Tippe in der Startplatz-Ansicht auf den Stern.</p>'}</div>
-    <div class="panel"><h3>Mein Flugbuch</h3>
+    <div class="panel"><h3>Gemeldete Flüge und AFC-Score</h3>
       ${flightCheck(log)}
       ${log.length ? `<div class="tw"><table class="plain"><thead><tr><th>Datum</th><th>Startplatz</th><th>Flug</th><th>Score</th><th></th></tr></thead><tbody>${log.slice().reverse().map((r, i) => `<tr><td>${new Date(r.launchTime).toLocaleDateString('de-CH')}</td><td>${esc(r.name)}</td><td>${r.launched ? '★'.repeat(r.quality) : 'nicht geflogen'}</td><td>${num(r.afcScore) ? r.afcScore : '–'}${flightMatch(r) && flightMatch(r) !== 'passt' ? ` <span class="fine" title="${flightMatch(r)}">(${flightMatch(r)})</span>` : ''}</td><td><button type="button" class="star" data-act="logdel" data-i="${log.length - 1 - i}" aria-label="Eintrag entfernen">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="fine" style="margin:0">Noch keine Einträge. Nach einem Flug über die Startplatz-Ansicht melden.</p>'}
       <p class="fine">Gemeldete Flüge werden anonym gespeichert (ohne Namen, mit zufälliger Gerätekennung).</p></div>
@@ -436,6 +438,212 @@ function renderProfile() {
     <p class="fine">AFC ${esc(S.plan?.version || '8.0')} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
 }
 
+/* ---- Flugbuch (lib/logbook.js, /api/logbook): Flüge, Ausrüstung, fällige Checks. Bleibt auf diesem Rechner. */
+const LB = { data: null, req: null, year: 'all' };
+const LG = () => window.AFCLog;
+const lbFetch = (url, opt = {}) => fetch(url, { ...opt, headers: { 'X-AFC-Client': clientId, ...(opt.body ? { 'Content-Type': 'application/json' } : {}), ...(opt.headers || {}) } });
+async function lbLoad(force = false) {
+  if (LB.data && !force) return LB.data;
+  LB.req ??= (async () => {
+    const r = await lbFetch('/api/logbook');
+    if (!r.ok) throw new Error('Flugbuch nicht erreichbar (' + r.status + ')');
+    LB.data = await r.json();
+    await lbMigrate();
+    return LB.data;
+  })().finally(() => { LB.req = null; });
+  return LB.req;
+}
+// Einmalig: alte «Flug melden»-Einträge aus dem Browser ins Flugbuch übernehmen
+async function lbMigrate() {
+  if (store.get('logMigrated') || !LG()) return;
+  for (const r of store.get('log', []).filter(x => x.launched)) {
+    const f = LG().cleanFlight({ date: String(r.launchTime || '').slice(0, 10), siteId: r.siteId, siteName: r.name, rating: r.quality, note: r.note, afcScore: r.afcScore, start: new Date(r.launchTime).toTimeString().slice(0, 5) });
+    if (f) await lbSave('flight', f, true).catch(() => {});
+  }
+  store.set('logMigrated', true);
+}
+async function lbSave(kind, item, quiet = false) {
+  const r = await lbFetch(`/api/logbook/${kind}/${kind === 'settings' ? 'main' : item.id}`, { method: 'PUT', body: JSON.stringify(item) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+  const d = LB.data;
+  if (kind === 'settings') d.settings = j.item;
+  else { const list = kind === 'flight' ? d.flights : d.gear, i = list.findIndex(x => x.id === j.item.id); if (i >= 0) list[i] = j.item; else list.push(j.item); }
+  d.flights.sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start));
+  if (!quiet) lbSyncProfile();
+  return j.item;
+}
+async function lbDelete(kind, id) {
+  const r = await lbFetch(`/api/logbook/${kind}/${id}`, { method: 'DELETE' });
+  if (!r.ok) throw new Error('Fehler ' + r.status);
+  if (kind === 'flight') LB.data.flights = LB.data.flights.filter(x => x.id !== id);
+  else LB.data.gear = LB.data.gear.filter(x => x.id !== id);
+  lbSyncProfile();
+}
+/** Pilotenprofil aus dem Flugbuch nachführen (Flüge, Stunden, letzter Flug, Schirmklasse). */
+function lbSyncProfile() {
+  const d = LB.data, p = d && LG()?.profileFromLog(d.flights, d.settings);
+  if (!p) return;
+  const pr = { ...store.get('pilot', {}), ...p };
+  const g = d.gear.find(x => x.id === d.settings.defaults?.glider);
+  const cls = g?.cert?.toUpperCase().match(/\b(?:EN[- ]?)?([A-D])\b|CCC/);
+  if (cls) pr.glider = cls[1] || 'D';
+  store.set('pilot', pr);
+  const pl = P()?.pilotLevel(pr);
+  if (pl && !store.get('levelManual') && pl.level !== S.level) { S.level = pl.level; store.set('level', S.level); S.detail.clear(); loadPlan(); }
+}
+const ddmm = d => d.slice(8, 10) + '.' + d.slice(5, 7) + '.';
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+const stars = n => (num(n) ? '★'.repeat(n) + '<span class="lb-off">' + '★'.repeat(5 - n) + '</span>' : '');
+/** Fällige Checks und Packtermine (für Flugbuch und Entscheid). */
+function gearAlerts() {
+  const d = LB.data;
+  if (!d || !LG()) return [];
+  return d.gear.filter(g => !g.retired).flatMap(g => LG().gearStatus(g, d.flights).items.filter(x => x.level !== 'ok').map(x => ({ ...x, gear: LG().gearName(g) })));
+}
+function gearAlertHtml(list = gearAlerts()) {
+  if (!list.length) return '';
+  const due = list.some(x => x.level === 'due');
+  return `<div class="lb-alert ${due ? 'due' : 'warn'}" role="status">${list.map(x => `<div><b>${esc(x.gear)}:</b> ${esc(x.text)}</div>`).join('')}</div>`;
+}
+
+function renderBook() {
+  const el = $('#v-book');
+  if (!LB.data) {
+    el.innerHTML = '<div class="warm"><div class="spinner"></div>Flugbuch wird geladen …</div>';
+    lbLoad().then(() => { if (S.tab === 'book') renderBook(); }).catch(err => { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+    return;
+  }
+  const L = LG(), d = LB.data, st = L.logStats(d.flights, d.settings);
+  const years = [...new Set(d.flights.map(f => f.date.slice(0, 4)))].sort().reverse();
+  const shown = LB.year === 'all' ? d.flights : d.flights.filter(f => f.date.startsWith(LB.year));
+  const gearById = Object.fromEntries(d.gear.map(g => [g.id, g]));
+  let lastMonth = '';
+  const rows = shown.map(f => {
+    const m = f.date.slice(0, 7), head = m !== lastMonth ? `<div class="lb-month">${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}</div>` : '';
+    lastMonth = m;
+    const route = [f.siteName || 'Start ?', f.landingName].filter(Boolean).join(' → ');
+    const sub = [f.kind && L.FLIGHT_KINDS[f.kind], gearById[f.gliderId] && L.gearName(gearById[f.gliderId]), num(f.km) ? f.km + ' km' : '', f.track ? 'IGC' : ''].filter(Boolean).join(' · ');
+    return `${head}<button type="button" class="lb-row" data-act="lbflight" data-id="${esc(f.id)}"><span class="lb-date">${ddmm(f.date)}${f.start ? `<small>${f.start}</small>` : ''}</span><span class="lb-main"><b>${esc(route)}</b><small>${esc(sub)}${f.rating ? ' ' + stars(f.rating) : ''}</small></span><span class="lb-dur">${f.durMin ? L.fmtDur(f.durMin) : '–'}</span></button>`;
+  }).join('');
+  const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
+  el.innerHTML = `
+    ${gearAlertHtml()}
+    <div class="panel">
+      <div class="lb-head"><h3>Flugbuch</h3><button class="btn" type="button" data-act="lbflight">+ Flug</button></div>
+      <div class="kv lb-kv">
+        <div><b>${st.total}</b><span>Flüge total</span></div>
+        <div><b>${L.fmtDur(st.totalMin)} h</b><span>Flugzeit total</span></div>
+        <div><b>${st.yearFlights} · ${L.fmtDur(st.yearMin)}</b><span>${st.year}: Flüge · Std.</span></div>
+        <div><b>${st.last ? Math.max(0, Math.round((Date.now() - Date.parse(st.last.date)) / 86400000)) + ' Tg.' : '–'}</b><span>seit dem letzten Flug</span></div>
+      </div>
+      ${years.length > 1 ? `<div class="seg" role="group" aria-label="Jahr">${['all', ...years].map(y => `<button type="button" data-act="lbyear" data-v="${y}" aria-pressed="${LB.year === y}">${y === 'all' ? 'Alle' : y}</button>`).join('')}</div>` : ''}
+      <div class="lb-list">${rows || '<p class="fine" style="margin:8px 0 0">Noch keine Flüge. Tippe auf «+ Flug».</p>'}</div>
+      ${st.longest?.durMin ? `<p class="fine">Längster Flug: ${L.fmtDur(st.longest.durMin)} h am ${ddmm(st.longest.date)}${st.longest.date.slice(0, 4)} (${esc(st.longest.siteName || '–')})${st.farthest ? ` · weitester: ${st.farthest.km} km` : ''}</p>` : ''}
+    </div>
+    <div class="panel">
+      <div class="lb-head"><h3>Ausrüstung</h3><button class="btn sec" type="button" data-act="lbgear">+ Ausrüstung</button></div>
+      ${gear.length ? `<div class="lb-gear">${gear.map(g => {
+        const s = L.gearStatus(g, d.flights), def = Object.values(d.settings.defaults || {}).includes(g.id);
+        return `<button type="button" class="lb-card ${g.retired ? 'off' : s.level}" data-act="lbgear" data-id="${esc(g.id)}"><span class="lb-type">${L.GEAR_TYPES[g.type]}${def ? ' · Standard' : ''}${g.retired ? ' · ausgemustert' : ''}</span><b>${esc(L.gearName(g))}</b>${g.cert ? `<small>${esc(g.cert)}</small>` : ''}<small>${g.type === 'reserve' ? '' : `${s.hours} h · ${s.flights} Flüge`}</small>${s.items.map(x => `<small class="lb-${x.level}">${esc(x.text)}</small>`).join('')}</button>`;
+      }).join('')}</div>` : '<p class="fine" style="margin:0">Erfasse Schirm, Gurtzeug und Retter. AFC zählt dann die Stunden und erinnert an Schirm-Check und Retter-Packen.</p>'}
+    </div>
+    <div class="panel"><h3>Flüge vor dem Flugbuch</h3>
+      <p class="fine" style="margin:0 0 8px">Damit Total und Pilotenprofil stimmen: was du vorher geflogen bist.</p>
+      <form id="lbSettings" class="pilot-form">
+        <label class="fld"><span>Flüge</span><input type="number" inputmode="numeric" min="0" name="flightsBefore" value="${d.settings.flightsBefore || ''}"></label>
+        <label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" value="${d.settings.hoursBefore || ''}"></label>
+        <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="submit">Speichern</button></div>
+      </form>
+      <p class="fine">Das Flugbuch liegt nur auf diesem Rechner (data/afc.sqlite, täglich gesichert). Es füllt dein Pilotenprofil automatisch.</p>
+    </div>`;
+}
+
+function flightForm(id) {
+  const L = LG(), d = LB.data, f = d.flights.find(x => x.id === id) || null;
+  const def = d.settings.defaults || {};
+  const v = f || { date: todayKey(), start: '', durMin: 0, gliderId: def.glider, harnessId: def.harness, reserveId: def.reserve, rating: null };
+  const opts = (type, sel) => `<option value="">–</option>` + d.gear.filter(g => g.type === type && (!g.retired || g.id === sel)).map(g => `<option value="${esc(g.id)}" ${g.id === sel ? 'selected' : ''}>${esc(L.gearName(g))}</option>`).join('');
+  const sites = [...new Set((S.plan?.sites || []).map(s => s.name))].sort((a, b) => a.localeCompare(b, 'de'));
+  const lands = [...new Set((S.plan?.landings || []).map(s => s.name))].sort((a, b) => a.localeCompare(b, 'de'));
+  dlg('#msgDlg', `<form class="dlg-in lb-form" id="lbFlightForm"><div class="dlg-h"><h2 id="msgDlgT">${f ? 'Flug bearbeiten' : 'Flug erfassen'}</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <div class="lb-grid">
+      <label class="fld"><span>Datum</span><input type="date" name="date" required value="${esc(v.date)}" max="${todayKey()}"></label>
+      <label class="fld"><span>Startzeit</span><input type="time" name="start" value="${esc(v.start)}"></label>
+      <label class="fld"><span>Dauer (Std. : Min.)</span><span class="lb-dur-in"><input type="number" inputmode="numeric" min="0" max="23" name="durH" value="${v.durMin ? Math.floor(v.durMin / 60) : ''}" aria-label="Stunden"> : <input type="number" inputmode="numeric" min="0" max="59" name="durM" value="${v.durMin ? v.durMin % 60 : ''}" aria-label="Minuten"></span></label>
+      <label class="fld"><span>Art</span><select name="kind"><option value="">–</option>${Object.entries(L.FLIGHT_KINDS).map(([k, t]) => `<option value="${k}" ${v.kind === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="fld lb-wide"><span>Startplatz</span><input name="siteName" list="lbSites" autocomplete="off" value="${esc(v.siteName || '')}"></label>
+      <label class="fld lb-wide"><span>Landeplatz</span><input name="landingName" list="lbLands" autocomplete="off" value="${esc(v.landingName || '')}"></label>
+      <label class="fld"><span>Strecke km</span><input type="number" inputmode="decimal" min="0" step="0.1" name="km" value="${num(v.km) ? v.km : ''}"></label>
+      <label class="fld"><span>Max. Höhe m</span><input type="number" inputmode="numeric" min="0" name="maxAlt" value="${num(v.maxAlt) ? v.maxAlt : ''}"></label>
+      <label class="fld"><span>Schirm</span><select name="gliderId">${opts('glider', v.gliderId)}</select></label>
+      <label class="fld"><span>Gurtzeug</span><select name="harnessId">${opts('harness', v.harnessId)}</select></label>
+      <label class="fld"><span>Retter</span><select name="reserveId">${opts('reserve', v.reserveId)}</select></label>
+      <div class="fld lb-wide"><span id="lbRateL">Bewertung</span><div class="stars" role="radiogroup" aria-labelledby="lbRateL">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" ${v.rating === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
+      <label class="fld lb-wide"><span>Notiz (Bedingungen, Lernpunkte)</span><textarea name="note" maxlength="500" rows="3">${esc(v.note || '')}</textarea></label>
+    </div>
+    <datalist id="lbSites">${sites.map(n => `<option value="${esc(n)}">`).join('')}</datalist><datalist id="lbLands">${lands.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div id="lbErr" class="fine" role="alert"></div>
+    <div class="btn-row">${f ? '<button class="btn danger sec" type="button" data-act="lbdelflight">Löschen</button>' : ''}<button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form>`);
+  const form = $('#lbFlightForm');
+  form.dataset.id = f?.id || '';
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const x = Object.fromEntries(new FormData(form));
+    const site = (S.plan?.sites || []).find(s => s.name === x.siteName), land = (S.plan?.landings || []).find(s => s.name === x.landingName);
+    const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, note: x.note };
+    // AFC-Score des Startplatzes festhalten, wenn der Flug heute war (zum späteren Abgleich)
+    if (!f && site && x.date === todayKey()) item.afcScore = site.days?.[0]?.best?.score ?? null;
+    try { await lbSave('flight', item); closeDlg($('#msgDlg')); toast('Flug gespeichert'); renderBook(); }
+    catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
+  });
+}
+
+function gearForm(id) {
+  const L = LG(), d = LB.data, g = d.gear.find(x => x.id === id) || null;
+  const v = g || { type: 'glider', checkMonths: 24, checkHours: 100, packMonths: 6 };
+  const isDef = g && Object.values(d.settings.defaults || {}).includes(g.id);
+  const t = (n, l, val, type = 'text', extra = '') => `<label class="fld" data-for="${extra}"><span>${l}</span><input type="${type}" name="${n}" value="${esc(val ?? '')}" ${type === 'number' ? 'inputmode="decimal" min="0"' : ''}></label>`;
+  dlg('#msgDlg', `<form class="dlg-in lb-form" id="lbGearForm"><div class="dlg-h"><h2 id="msgDlgT">${g ? 'Ausrüstung bearbeiten' : 'Ausrüstung erfassen'}</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <div class="lb-grid">
+      <label class="fld lb-wide"><span>Art</span><select name="type">${Object.entries(L.GEAR_TYPES).map(([k, n]) => `<option value="${k}" ${v.type === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      ${t('brand', 'Marke', v.brand)}${t('model', 'Modell', v.model)}${t('size', 'Grösse', v.size)}
+      ${t('cert', 'Klasse / Zulassung', v.cert, 'text', 'glider harness reserve')}
+      ${t('serial', 'Seriennummer', v.serial)}${t('bought', 'Gekauft', v.bought, 'date')}
+      ${t('hoursBefore', 'Stunden vor dem Flugbuch', v.hoursBefore || '', 'number', 'glider harness')}
+      ${t('checkLast', 'Letzter Check', v.checkLast, 'date', 'glider harness')}
+      ${t('checkMonths', 'Check alle … Monate', v.checkMonths ?? '', 'number', 'glider harness')}
+      ${t('checkHours', 'oder alle … Stunden', v.checkHours ?? '', 'number', 'glider')}
+      ${t('packedLast', 'Zuletzt gepackt', v.packedLast, 'date', 'reserve')}
+      ${t('packMonths', 'Packen alle … Monate', v.packMonths ?? '', 'number', 'reserve')}
+      <label class="chk lb-wide"><input type="checkbox" name="isDefault" ${isDef || (!g && !d.gear.some(x => x.type === v.type && !x.retired)) ? 'checked' : ''}><span>Standard für neue Flüge</span></label>
+      <label class="chk lb-wide"><input type="checkbox" name="retired" ${v.retired ? 'checked' : ''}><span>Ausgemustert (verkauft, ersetzt)</span></label>
+      <label class="fld lb-wide"><span>Notiz</span><textarea name="note" maxlength="300" rows="2">${esc(v.note || '')}</textarea></label>
+    </div>
+    <p class="fine">Fristen laut Hersteller eintragen. Üblich sind beim Schirm ein Check alle 1 bis 3 Jahre oder nach 100 bis 150 Stunden, beim Retter Packen alle 6 bis 12 Monate.</p>
+    <div id="lbErr" class="fine" role="alert"></div>
+    <div class="btn-row">${g ? '<button class="btn danger sec" type="button" data-act="lbdelgear">Löschen</button>' : ''}<button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form>`);
+  const form = $('#lbGearForm');
+  form.dataset.id = g?.id || '';
+  // Nur die Felder zeigen, die zur Art passen
+  const show = () => { const ty = form.type.value; form.querySelectorAll('[data-for]').forEach(l => { l.hidden = !!l.dataset.for && !l.dataset.for.split(' ').includes(ty); }); };
+  form.type.addEventListener('change', show); show();
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const x = Object.fromEntries(new FormData(form));
+    const item = { ...(g || {}), ...x, id: g?.id || L.newId(), retired: x.retired === 'on' };
+    try {
+      const saved = await lbSave('gear', item);
+      const defs = { ...(d.settings.defaults || {}) }, slot = saved.type;
+      if (slot !== 'other') {
+        if (x.isDefault === 'on' && !saved.retired) defs[slot] = saved.id; else if (defs[slot] === saved.id) defs[slot] = null;
+        await lbSave('settings', { ...d.settings, defaults: defs });
+      }
+      closeDlg($('#msgDlg')); toast('Gespeichert'); renderBook();
+    } catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
+  });
+}
+
 /* ---- Pilotenprofil: Erfahrung und Übung bestimmen die Grenzen (lib/pilot.js) */
 const P = () => window.AFCPilot;
 function pilotPanel() {
@@ -443,6 +651,7 @@ function pilotPanel() {
   const n = (name, label, v, extra = '') => `<label class="fld"><span>${label}</span><input type="number" inputmode="numeric" min="0" max="20000" name="${name}" value="${num(v) ? v : ''}" ${extra}></label>`;
   return `<div class="panel"><h3>Ich als Pilot</h3>
     <form id="pilotForm" class="pilot-form">
+      ${LB.data?.flights.length ? '<p class="fine lb-wide" style="margin:0;grid-column:1/-1">Flüge, Stunden und letzter Flug kommen aus deinem <a href="#" data-act="tab" data-tab="book">Flugbuch</a>.</p>' : ''}
       ${n('flights', 'Flüge total', pr.flights)}
       ${n('hours12', 'Flugstunden letzte 12 Monate', pr.hours12)}
       <label class="fld"><span>Schirm</span><select name="glider">${Object.entries(P()?.GLIDERS || {}).map(([k, t]) => `<option value="${k}" ${(pr.glider || 'B') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
@@ -1305,6 +1514,15 @@ document.addEventListener('click', async e => {
     case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
     case 'intro': showIntro(); break;
+    case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(err.message)); break;
+    case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(err.message)); break;
+    case 'lbyear': LB.year = b.dataset.v; renderBook(); break;
+    case 'lbdelflight': case 'lbdelgear': {
+      const fid = b.closest('form')?.dataset.id, kind = a === 'lbdelflight' ? 'flight' : 'gear';
+      if (!fid || !(await ask({ title: kind === 'flight' ? 'Flug löschen?' : 'Ausrüstung löschen?', text: kind === 'flight' ? 'Der Flug wird aus dem Flugbuch entfernt.' : 'Flüge mit diesem Teil bleiben erhalten. Tipp: «Ausgemustert» behält die Stunden.', ok: 'Löschen', danger: true }))) break;
+      try { await lbDelete(kind, fid); toast('Gelöscht'); renderBook(); } catch (err) { toast('Nicht gelöscht: ' + err.message); }
+      break;
+    }
     case 'airtoggle': { const on = !(airOn('air') || airOn('wild')); store.set('ov', { ...store.get('ov', {}), air: on, wild: on }); syncLayerPanel(); updateAir(); if (on) { mapMsg('Lufträume: rot gesperrt, orange Gefahrengebiet, grün Wildschutz. Antippen für Details.'); setTimeout(() => mapMsg(''), 5000); } else $('#mapSheet').hidden = true; break; }
     case 'update': applyUpdate(); break;
     case 'updskip': store.set('updSkip', ST.data?.update?.latest?.date); renderUpdBanner(); break;
@@ -1341,6 +1559,11 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('submit', e => {
   if (e.target.id === 'pilotForm') { e.preventDefault(); savePilot(e.target); }
+  if (e.target.id === 'lbSettings') {
+    e.preventDefault();
+    const x = Object.fromEntries(new FormData(e.target));
+    lbSave('settings', { ...LB.data.settings, flightsBefore: x.flightsBefore, hoursBefore: x.hoursBefore }).then(() => { toast('Gespeichert'); renderBook(); }).catch(err => toast(err.message));
+  }
 });
 document.addEventListener('change', e => {
   const t = e.target;
@@ -1360,7 +1583,7 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
 /* ---------------------------------------------------------------- Start */
 (function init() {
   const t = store.get('tab');
-  if (['decide', 'map', 'lage', 'day', 'profile'].includes(t)) S.tab = t;
+  if (['decide', 'map', 'lage', 'day', 'book', 'profile'].includes(t)) S.tab = t;
   applyTheme();
   W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
@@ -1369,6 +1592,7 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   T.mode = ['thermal', 'soar'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
   render();
   loadPlan();
+  lbLoad().then(() => { lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);
