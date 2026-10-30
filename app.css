@@ -185,6 +185,12 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .wind-legend { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .wind-legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; background: var(--c); margin-left: 4px; }
 .leaflet-wind-pane canvas { pointer-events: none; }
+.thermal-legend { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--muted); max-width: 300px; }
+.thermal-legend .tgrad { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: linear-gradient(90deg, rgba(255,210,60,.5), #ff8c1e, #eb3c1e, #b4003c); }
+.thermal-legend span:nth-child(2) { justify-self: start; } .thermal-legend span:nth-child(3) { justify-self: end; }
+.thermal-legend .fine { grid-column: 1 / -1; margin: 0; }
+.thermal-img { image-rendering: auto; }
+.why-list { margin: 6px 0 8px; padding-left: 18px; font-size: 14px; }
 .map-msg { position: absolute; left: 10px; right: 10px; top: 10px; z-index: 600; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--wait); padding: 10px 12px; border-radius: 8px; font-size: 14px; max-width: 520px; }
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 700; background: var(--panel); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; padding: 12px 14px 14px; box-shadow: 0 -4px 14px rgba(0,0,0,.25); display: grid; gap: 8px; }
 .sheet-top { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; }

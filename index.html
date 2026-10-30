@@ -78,11 +78,17 @@
           <button type="button" class="wseg" data-act="wind" data-lvl="800" aria-pressed="false">2000 m</button>
           <button type="button" class="wseg" data-act="wind" data-lvl="700" aria-pressed="false">3000 m</button>
         </div>
+        <div class="wind-row" role="group" aria-label="Thermikkarte">
+          <span class="wind-t">Thermik</span>
+          <button type="button" class="wseg tseg" data-act="thermal" data-on="0" aria-pressed="true">Aus</button>
+          <button type="button" class="wseg tseg" data-act="thermal" data-on="1" aria-pressed="false">Wärmebild</button>
+        </div>
         <div class="wind-row wind-time" hidden>
           <label for="windHour" class="wind-h"><b id="windHourT">12 Uhr</b></label>
-          <input id="windHour" type="range" min="6" max="20" step="1" value="12" aria-label="Uhrzeit der Windkarte">
+          <input id="windHour" type="range" min="6" max="20" step="1" value="12" aria-label="Uhrzeit der Wind- und Thermikkarte">
         </div>
         <div class="wind-legend" hidden aria-label="Farben: Windstärke in km/h"><i style="--c:#2a7fd4"></i>&lt;10<i style="--c:#2fa84f"></i>10–20<i style="--c:#d9b300"></i>20–30<i style="--c:#ef8a1f"></i>30–40<i style="--c:#d93a32"></i>40+ km/h</div>
+        <div class="thermal-legend" hidden><span class="tgrad" aria-hidden="true"></span><span>schwach</span><span>stark</span><span class="fine">Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Antippen zeigt warum.</span></div>
       </div>
       <div id="mapMsg" class="map-msg" hidden></div>
       <div id="mapSheet" class="sheet" hidden></div>

@@ -26,6 +26,8 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 `node tools/build-terrain.js` berechnet aus einem Höhenmodell (AWS Terrain Tiles, ca. 26 m) für jeden Startplatz Hangneigung, Exposition, Relief und den Horizont in 24 Richtungen (Bergschatten) und schreibt sie in `lib/sites.json`. Nur nötig, wenn Startplätze dazukommen oder sich ändern. Fehlt die Platzhöhe, wird sie aus dem Höhenmodell übernommen (`altSource`).
 
+**Thermik-Wärmekarte:** `node tools/build-thermal-grid.js` schreibt das Geländeraster `lib/terrain-grid.bin` (ca. 250 m: Höhe, Neigung, Exposition, Geländeform). Die App schätzt daraus je Stunde, wo Thermik ablöst: Sonne auf dem Hang (Einfallswinkel, diese und die vorherige Stunde), Thermikobergrenze aus dem Temperaturprofil, Kreten und Kuppen, tiefe Wolken und Regen. Antippen der Karte zeigt die Begründung.
+
 ## Rückblick-Test
 
 `node tools/backtest.js --days 90` (oder Doppelklick auf `tools/AFC Rückblick-Test.command`) rechnet AFC mit archivierten Prognosen von Open-Meteo für vergangene Tage durch und vergleicht das Urteil je Gebiet mit den Messungen der MeteoSchweiz (Föhn, Starkwind, Regen). Ergebnis in `data/backtest-<datum>.txt` und `.csv`. Getestet wird die Bewertungslogik mit kurzfristigen Prognosen; die Messung stammt von Talstationen.
@@ -59,6 +61,8 @@ Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_MET
 | `GET /api/plan?level=careful\|normal\|expert` | Plan für 5 Tage: Gebiete, Startplätze, Lage, Stationen, Quellenstatus. ETag, gzip. `202`, solange die ersten Daten laden |
 | `GET /api/site/:id?level=…` | Stundendetails, Windprofil, Messvergleich, «Kurz erklärt» |
 | `GET /api/wind?level=10m\|800\|700&t=ISO` | Windfeld für die Karte (Raster ca. 9 km, u/v in km/h), alle 3 h aktualisiert |
+| `GET /api/thermal?t=ISO` | Thermikwerte je Rasterpunkt (Sonne, tiefe Wolken, Regen, Thermikobergrenze, w*) und Sonnenstand; gleiche Abrufe wie das Windfeld |
+| `GET /terrain-grid.bin` | Geländeraster der Wärmekarte |
 | `POST /api/flight-report` | Flugmeldung (Header `X-AFC-Client`), validiert: bekannter Startplatz, Zeit der letzten 14 Tage, Bewertung 1–5, höchstens 20 pro Tag |
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |

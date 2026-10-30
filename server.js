@@ -15,7 +15,7 @@ import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/open
 import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
-import { fetchWindGrid, windSlice, WIND_LEVELS } from './lib/windgrid.js';
+import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -162,7 +162,7 @@ async function collectWindGrid() {
   try {
     const wg = await fetchWindGrid();
     state.windgrid = wg;
-    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:')) state.payloads.delete(k);
+    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:') || k.startsWith('thermal:')) state.payloads.delete(k);
     ingest.windgrid = { ok: true, at: nowIso(), error: null };
     fs.writeFile(path.join(dataDir, 'windgrid.json.tmp'), JSON.stringify(wg)).then(() => fs.rename(path.join(dataDir, 'windgrid.json.tmp'), path.join(dataDir, 'windgrid.json'))).catch(() => {});
   } catch (e) {
@@ -175,6 +175,17 @@ function windResponse(ms, level) {
   let p = state.payloads.get(key);
   if (p) return p;
   const sl = windSlice(state.windgrid, hourMs, level);
+  if (!sl) return null;
+  p = packJson(sl);
+  state.payloads.set(key, p);
+  return p;
+}
+function thermalResponse(ms) {
+  const hourMs = Math.round(ms / 3600000) * 3600000;
+  const key = `thermal:${hourMs}`;
+  let p = state.payloads.get(key);
+  if (p) return p;
+  const sl = thermalSlice(state.windgrid, hourMs);
   if (!sl) return null;
   p = packJson(sl);
   state.payloads.set(key, p);
@@ -349,6 +360,7 @@ const STATIC = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8', true]], ['/sw_7.2.js', ['sw.js', 'text/javascript; charset=utf-8', true]],
   ['/manifest.json', ['manifest.json', 'application/manifest+json; charset=utf-8']],
   ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
+  ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
 ]);
 const fileCache = new Map();
@@ -359,7 +371,7 @@ async function serveStatic(req, res, route) {
     let c = fileCache.get(file);
     if (!c || c.mtime !== st.mtimeMs) {
       const buf = await fs.readFile(path.join(ROOT, file));
-      const text = /^(text|application\/(manifest|json))/.test(type);
+      const text = /^(text|application\/(manifest|json|octet-stream))/.test(type);   // Geländeraster komprimiert sich gut
       c = { mtime: st.mtimeMs, buf, gz: text ? zlib.gzipSync(buf) : null, etag: '"' + crypto.createHash('sha1').update(buf).digest('base64url').slice(0, 20) + '"' };
       fileCache.set(file, c);
     }
@@ -417,6 +429,13 @@ const server = http.createServer(async (req, res) => {
         if (!state.windgrid) return sendJson(req, res, 202, { warming: true });
         const pk = windResponse(t, level);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Winddaten für diese Zeit' });
+        return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/thermal') {
+        const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
+        if (!state.windgrid?.thermal) return sendJson(req, res, 202, { warming: true });
+        const pk = thermalResponse(t);
+        if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
       }
       if (req.method === 'GET' && p === '/api/health') {

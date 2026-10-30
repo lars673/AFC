@@ -66,6 +66,18 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     // Wind aus Süden (ca. 205°) strömt nach Norden: v > 0
     assert.ok(wg.v[0] > 0, 'v ' + wg.v[0]);
     assert.equal((await fetch(s.base + '/api/wind?level=500')).status, 400);
+    // Thermikkarte: Wetterwerte je Rasterpunkt und Geländeraster
+    const noon = new Date(); noon.setUTCHours(11, 0, 0, 0);
+    const tr = await fetch(s.base + '/api/thermal?t=' + noon.toISOString());
+    assert.equal(tr.status, 200);
+    const th = await tr.json();
+    assert.equal(th.sun.length, th.grid.nx * th.grid.ny);
+    assert.ok(th.sunPos.elev > 20, 'Sonnenhöhe ' + th.sunPos.elev);
+    assert.ok(th.top.every(x => x === null || x > 1000) && th.top.some(x => x > 1500), 'Thermikhöhe ' + th.top.slice(0, 3));
+    const gr = await fetch(s.base + '/terrain-grid.bin');
+    assert.equal(gr.status, 200);
+    const buf = Buffer.from(await gr.arrayBuffer()), hl = buf.readUInt32LE(0), meta = JSON.parse(buf.subarray(4, 4 + hl));
+    assert.equal(buf.length, 4 + hl + ((4 + hl) % 2) + meta.nx * meta.ny * 5);
   } finally { await s.stop(); }
 });
 

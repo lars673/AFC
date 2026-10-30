@@ -568,7 +568,7 @@ function initMap() {
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   syncLayerPanel();
-  M.map.on('click', () => { $('#mapSheet').hidden = true; });
+  M.map.on('click', e => { if (T.on && T.data) mapSheet('thermal', e.latlng); else $('#mapSheet').hidden = true; });
   return true;
 }
 function arrowIcon(dir, label) {
@@ -578,6 +578,7 @@ function renderMap() {
   syncWindBar();
   if (!initMap()) return;
   updateWind();
+  updateThermal();
   setTimeout(() => M.map.invalidateSize(), 50);
   if (!S.plan) { mapMsg('Wetterdaten werden geladen …'); return; }
   if ($('#mapMsg').textContent.startsWith('Wetterdaten werden')) mapMsg('');
@@ -709,8 +710,9 @@ function windTimeIso() {
 }
 function syncWindBar() {
   $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
+  $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.on === '1') === T.on)));
   const on = W.level !== 'off';
-  $('#windBar .wind-time').hidden = !on; $('#windBar .wind-legend').hidden = !on;
+  $('#windBar .wind-time').hidden = !on && !T.on; $('#windBar .wind-legend').hidden = !on; $('#windBar .thermal-legend').hidden = !T.on;
   $('#windHour').value = W.hour;
   $('#windHourT').textContent = `${W.hour} Uhr`;
 }
@@ -735,6 +737,134 @@ async function updateWind() {
   W.layer.setData(d);
 }
 
+/* ---- Thermik-Wärmekarte: Schätzung aus Sonne auf dem Hang, Thermikhöhe, Geländeform und Wolken.
+   Das Geländeraster (ca. 250 m) kommt einmal vom Server, die Wetterwerte je Stunde aus /api/thermal. */
+const T = { on: false, grid: null, gridReq: null, cache: new Map(), layer: null, data: null, req: 0 };
+const D2R = Math.PI / 180;
+
+async function thermalGrid() {
+  if (T.grid) return T.grid;
+  T.gridReq ??= (async () => {
+    const r = await fetch('/terrain-grid.bin');
+    if (!r.ok) throw new Error('Geländeraster fehlt (' + r.status + ')');
+    const buf = await r.arrayBuffer(), dv = new DataView(buf), hl = dv.getUint32(0, true);
+    const g = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+    const o = 4 + hl + ((4 + hl) % 2), N = g.ny * g.nx;
+    const copy = (Ctor, off, n) => new Ctor(buf.slice(off, off + n * Ctor.BYTES_PER_ELEMENT));
+    T.grid = { ...g, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
+    return T.grid;
+  })().catch(e => { T.gridReq = null; throw e; });
+  return T.gridReq;
+}
+
+/** Wetterwert am Ort (bilinear, fehlende Rasterpunkte werden übersprungen). */
+function fieldAt(d, arr, lat, lon) {
+  const g = d.grid, fx = Math.min(Math.max((lon - g.lo0) / g.dlo, 0), g.nx - 1), fy = Math.min(Math.max((lat - g.la0) / g.dla, 0), g.ny - 1);
+  const x0 = Math.min(Math.floor(fx), g.nx - 2), y0 = Math.min(Math.floor(fy), g.ny - 2), tx = fx - x0, ty = fy - y0;
+  let s = 0, w = 0;
+  for (const [i, k] of [[y0 * g.nx + x0, (1 - tx) * (1 - ty)], [y0 * g.nx + x0 + 1, tx * (1 - ty)], [(y0 + 1) * g.nx + x0, (1 - tx) * ty], [(y0 + 1) * g.nx + x0 + 1, tx * ty]]) {
+    if (arr[i] != null) { s += arr[i] * k; w += k; }
+  }
+  return w > 0 ? s / w : null;
+}
+
+/** Sonnenenergie auf dem Hang im Verhältnis zur Ebene (direkter Anteil nach Einfallswinkel, diffuser Anteil gleichmässig). */
+function slopeSun(sw, pos, slopeDeg, aspectDeg) {
+  if (!(sw > 0) || !(pos.elev > 0)) return 0;
+  const s = slopeDeg * D2R, e = pos.elev * D2R;
+  const cosi = Math.cos(s) * Math.sin(e) + Math.sin(s) * Math.cos(e) * Math.cos((pos.az - aspectDeg) * D2R);
+  return sw * (0.25 + 0.75 * Math.min(3, Math.max(0, cosi) / Math.max(Math.sin(e), 0.15)));
+}
+
+/** Thermikwert 0–1 einer Rasterzelle mit Begründung. */
+function thermalCell(d, g, k, lat, lon) {
+  const elev = g.elev[k], slope = g.slope[k], aspect = g.aspect[k] * 360 / 256, form = g.form[k] * 2;
+  const top = fieldAt(d, d.top, lat, lon), wstar = fieldAt(d, d.wstar, lat, lon) ?? 0;
+  const low = fieldAt(d, d.low, lat, lon) ?? 0, rain = fieldAt(d, d.rain, lat, lon) ?? 0;
+  // Der Boden braucht Zeit zum Aufheizen: diese und die vorherige Stunde zählen
+  const heatNow = slopeSun(fieldAt(d, d.sun, lat, lon), d.sunPos, slope, aspect);
+  const heatBefore = slopeSun(fieldAt(d, d.sunBefore, lat, lon), d.sunPrev, slope, aspect);
+  const heat = Math.min(1.2, (0.6 * heatNow + 0.4 * heatBefore) / 750);
+  const reach = top == null ? 0 : top - elev;
+  const fReach = Math.min(1, Math.max(0, (reach - 100) / 900));
+  const fForm = Math.min(1.3, Math.max(0.25, 0.55 + form / 100));      // Kreten und Kuppen lösen Thermik aus, Mulden kaum
+  const fSlope = slope < 2 ? 0.15 : 0.45 + 0.55 * Math.min(1, slope / 25);   // Seen und Talböden heizen kaum auf
+  const fStrength = Math.min(1.2, Math.max(0.2, wstar / 2));
+  const fCloud = (1 - 0.7 * Math.min(100, low) / 100) * (rain >= 0.3 ? 0 : rain >= 0.1 ? 0.5 : 1);
+  const v = Math.min(1, (heat * fReach * fForm * fSlope * fStrength * fCloud) ** 1.4);   // nur die besten Stellen leuchten
+  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
+}
+
+const THERMAL_RAMP = [[0.2, [255, 230, 90, 0]], [0.3, [255, 210, 60, 110]], [0.5, [255, 140, 30, 170]], [0.7, [235, 60, 30, 200]], [1, [180, 0, 60, 220]]];
+function thermalRgba(v) {
+  if (v <= THERMAL_RAMP[0][0]) return null;
+  for (let i = 1; i < THERMAL_RAMP.length; i++) {
+    const [b, cb] = THERMAL_RAMP[i], [a, ca] = THERMAL_RAMP[i - 1];
+    if (v <= b) { const t = (v - a) / (b - a); return ca.map((c, j) => Math.round(c + (cb[j] - c) * t)); }
+  }
+  return THERMAL_RAMP[THERMAL_RAMP.length - 1][1];
+}
+
+function thermalImage(d, g) {
+  const c = document.createElement('canvas'); c.width = g.nx; c.height = g.ny;
+  const ctx = c.getContext('2d'), img = ctx.createImageData(g.nx, g.ny);
+  for (let y = 0; y < g.ny; y++) {
+    const lat = g.la0 + y * g.dla, row = (g.ny - 1 - y) * g.nx;      // Bild beginnt im Norden
+    for (let x = 0; x < g.nx; x++) {
+      const col = thermalRgba(thermalCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo).v);
+      if (col) img.data.set(col, (row + x) * 4);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c.toDataURL();
+}
+
+/** Kurze Begründung beim Antippen der Karte. */
+function thermalWhy(lat, lon) {
+  const g = T.grid, d = T.data;
+  if (!g || !d) return null;
+  const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
+  if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return null;
+  const c = thermalCell(d, g, y * g.nx + x, lat, lon);
+  const level = c.v >= 0.6 ? 'stark' : c.v >= 0.35 ? 'mittel' : c.v > 0.2 ? 'schwach' : 'kaum';
+  const why = [];
+  why.push(c.slope >= 8 ? `${dirLabel(c.aspect)}-Hang, ${c.slope}° steil, ${c.heat} W/m² Sonne auf dem Hang` : `flaches Gelände, ${c.heat} W/m² Sonne`);
+  if (c.top == null) why.push('keine Daten zur Thermikhöhe');
+  else if (c.reach <= 100) why.push(`Thermik endet bei ca. ${Math.round(c.top / 100) * 100} m, also unter diesem Gelände`);
+  else why.push(`Thermik bis ca. ${Math.round(c.top / 100) * 100} m (${Math.round(c.reach / 100) * 100} m über Gelände), Steigen um ${c.wstar.toFixed(1)} m/s`);
+  if (c.form >= 25) why.push('Krete oder Kuppe: hier lösen Thermikblasen ab');
+  else if (c.form <= -25) why.push('Mulde oder Tal: Thermik löst eher weiter oben ab');
+  if (c.rain >= 0.1) why.push('Regen dämpft die Thermik');
+  else if (c.low >= 40) why.push(`tiefe Wolken (${Math.round(c.low)} %) beschatten den Hang`);
+  return { level, elev: c.elev, why };
+}
+
+async function updateThermal() {
+  syncWindBar();
+  if (!M.map) return;
+  if (!T.on) { if (T.layer) { M.map.removeLayer(T.layer); T.layer = null; } T.data = null; return; }
+  const iso = windTimeIso(), req = ++T.req;
+  try {
+    const g = await thermalGrid();
+    let d = T.cache.get(iso);
+    if (!d) {
+      const r = await fetch(`/api/thermal?t=${encodeURIComponent(iso)}`);
+      if (r.status === 202) { mapMsg('Thermikkarte wird noch geladen, bitte in ein paar Minuten nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
+      if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
+      d = await r.json();
+      d.url = thermalImage(d, g);
+      T.cache.set(iso, d);
+      if (T.cache.size > 30) T.cache.delete(T.cache.keys().next().value);
+    }
+    if (req !== T.req || !T.on) return;
+    T.data = d;
+    if (!M.map.getPane('thermal')) M.map.createPane('thermal').style.zIndex = 420;
+    const b = [[g.la0 - g.dla / 2, g.lo0 - g.dlo / 2], [g.la0 + (g.ny - 0.5) * g.dla, g.lo0 + (g.nx - 0.5) * g.dlo]];
+    if (T.layer) T.layer.setUrl(d.url);
+    else T.layer = L.imageOverlay(d.url, b, { pane: 'thermal', opacity: 0.75, className: 'thermal-img', interactive: false }).addTo(M.map);
+  } catch (err) { if (req === T.req) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } }
+}
+
 function mapSheet(kind, id) {
   const el = $('#mapSheet');
   let h = '';
@@ -744,6 +874,10 @@ function mapSheet(kind, id) {
   } else if (kind === 'landing') {
     const l = S.plan.landings.find(x => x.id === id);
     h = `<div class="sheet-top"><div><h3>Landeplatz ${esc(l.name)}</h3><p class="fine" style="margin:0">${l.alt ?? '–'} m${l.status ? ' · ' + esc(l.status) : ''}</p></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+  } else if (kind === 'thermal') {
+    const t = thermalWhy(id.lat, id.lng);
+    if (!t) { el.hidden = true; return; }
+    h = `<div class="sheet-top"><div><h3>Thermik ${t.level}</h3><p class="fine" style="margin:0">${t.elev} m · ${W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else {
     const st = S.plan.stations.find(x => x.code === id);
     h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · vor ${st.age} min</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
@@ -804,6 +938,7 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'thermal': T.on = b.dataset.on === '1'; store.set('thermal', T.on); updateThermal(); break;
     case 'logdel': { const log = store.get('log', []); log.splice(Number(b.dataset.i), 1); store.set('log', log); renderProfile(); break; }
     case 'export': {
       try {
@@ -832,7 +967,7 @@ document.addEventListener('change', e => {
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); renderMap(); } }
 });
 document.addEventListener('input', e => {
-  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(updateWind, 150); }
+  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); }, 150); }
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
@@ -848,6 +983,7 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   applyTheme();
   W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
+  T.on = store.get('thermal') === true;
   render();
   loadPlan();
   setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);
