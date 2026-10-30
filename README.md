@@ -28,6 +28,8 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 **Thermik-Wärmekarte:** `node tools/build-thermal-grid.js` schreibt das Geländeraster `lib/terrain-grid.bin` (ca. 250 m: Höhe, Neigung, Exposition, Geländeform). Die App schätzt daraus je Stunde, wo Thermik ablöst (Ansicht «Thermik») oder wo der Wind frontal auf steile Hänge trifft (Ansicht «Soaring», Wind auf Geländehöhe aus Boden, 2000 m und 3000 m): Sonne auf dem Hang (Einfallswinkel, diese und die vorherige Stunde), Thermikobergrenze aus dem Temperaturprofil, Kreten und Kuppen, tiefe Wolken und Regen. Antippen der Karte zeigt die Begründung.
 
+**Abgleich mit echten Flügen:** `node tools/calibrate-kk7.js` vergleicht die Wärmekarte mit [thermal.kk7.ch](https://thermal.kk7.ch) (Auswertung von rund 3,8 Mio. Flügen, CC BY-NC-SA 4.0, nur nicht-kommerziell) und sucht die Gewichtung, die am besten zu den Flügen passt. Ergebnis in `data/kk7-abgleich.txt`. Muss auf dem Mac laufen. Die kk7-Thermik und -Skyways lassen sich auch direkt als Kartenebene einblenden.
+
 ## Rückblick-Test
 
 `node tools/backtest.js --days 90` (oder Doppelklick auf `tools/AFC Rückblick-Test.command`) rechnet AFC mit archivierten Prognosen von Open-Meteo für vergangene Tage durch und vergleicht das Urteil je Gebiet mit den Messungen der MeteoSchweiz (Föhn, Starkwind, Regen). Ergebnis in `data/backtest-<datum>.txt` und `.csv`. Getestet wird die Bewertungslogik mit kurzfristigen Prognosen; die Messung stammt von Talstationen.
