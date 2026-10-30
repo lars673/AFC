@@ -257,3 +257,29 @@ test('Pilotenprofil: Erfahrung, Übung und Pause bestimmen die Stufe', async () 
   assert.equal(pilotHint({ flights: 20, hours12: 5, glider: 'A' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'warn');
   assert.equal(pilotHint({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-10-25' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'ok');
 });
+
+test('Routenplaner: umfliegt zu hohes Gelände, nutzt Thermik, meldet Gegenwind', async () => {
+  const { planRoute } = await import('../lib/route.js');
+  const nx = 40, ny = 30, N = nx * ny;
+  const F = { la0: 46.5, lo0: 7.5, dla: 0.009, dlo: 0.013, nx, ny, q: new Float32Array(N).fill(0.5), top: new Float32Array(N).fill(3000), ground: new Float32Array(N).fill(1500), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N).fill(2), land: new Uint8Array(N).fill(1) };
+  // Bergkette in der Mitte (x = 20) über der Thermik, mit einer Lücke bei y = 25
+  for (let y = 0; y < ny; y++) if (y !== 25) F.ground[y * nx + 20] = 3200;
+  const at = (x, y) => [F.la0 + y * F.dla, F.lo0 + x * F.dlo];
+  const r = planRoute(F, at(5, 5), at(35, 5));
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.cells.some(k => k === 25 * nx + 20), 'Route muss durch die Lücke');
+  assert.ok(r.distKm > 30 && r.hours > 0, `${r.distKm} km ${r.hours} h`);
+  // ohne Lücke: keine Route
+  F.ground[25 * nx + 20] = 3200;
+  assert.equal(planRoute(F, at(5, 5), at(35, 5)).ok, false);
+  // starker Gegenwind wird gemeldet
+  F.ground[25 * nx + 20] = 1500;
+  F.u.fill(-20);
+  const h = planRoute(F, at(5, 25), at(35, 25));
+  assert.ok(h.issues.some(i => i.kind === 'head'), JSON.stringify(h.issues));
+  // sicher meidet Strecken ohne Landeplatz stärker als schnell
+  F.u.fill(0);
+  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) if (y < 20) F.land[y * nx + x] = 0;
+  const safe = planRoute(F, at(5, 22), at(35, 22), { mode: 'safe' });
+  assert.ok(safe.ok && safe.issues.every(i => i.kind !== 'land'), JSON.stringify(safe.issues));
+});

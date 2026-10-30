@@ -3,7 +3,7 @@
 // - /api/ wird nie zwischengespeichert; die App hält den letzten Plan selbst vor und kennzeichnet ihn als alt.
 // - Leaflet (cdnjs) wird zwischengespeichert, damit die Karte nach dem ersten Besuch schneller startet.
 const CACHE = 'afc-8.0';
-const CORE = ['/', '/app.js', '/pilot.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+const CORE = ['/', '/app.js', '/pilot.js', '/route.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => e.waitUntil((async () => {
   const c = await caches.open(CACHE);

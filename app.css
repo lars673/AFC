@@ -287,3 +287,7 @@ table.plain th { color: var(--muted); font-weight: 600; }
 
 .pilot-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 14px; margin-bottom: 8px; }
 .pilot-form .chk, .pilot-form .btn-row { grid-column: 1 / -1; }
+.rt-pin { width: 28px; height: 28px; border-radius: 50%; background: #0b6e99; color: #fff; font-weight: 800; display: grid; place-items: center; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.rt-issue { width: 22px; height: 22px; border-radius: 50%; background: var(--c); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; border: 2px solid #fff; }
+.rt-issues { margin: 6px 0 8px; padding-left: 22px; font-size: 14px; }
+.rt-issues li::marker { color: var(--c); font-weight: 800; }

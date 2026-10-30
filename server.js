@@ -361,6 +361,7 @@ const STATIC = new Map([
   ['/manifest.json', ['manifest.json', 'application/manifest+json; charset=utf-8']],
   ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
   ['/pilot.js', ['lib/pilot.js', 'text/javascript; charset=utf-8']],
+  ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
 ]);

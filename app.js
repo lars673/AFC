@@ -600,7 +600,7 @@ function initMap() {
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   syncLayerPanel();
-  M.map.on('click', e => { if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else $('#mapSheet').hidden = true; });
+  M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else $('#mapSheet').hidden = true; });
   return true;
 }
 function arrowIcon(dir, label) {
@@ -619,14 +619,14 @@ function renderMap() {
   for (const s of S.plan.sites) {
     const b = s.days[S.day]?.best, c = s.blocked ? 'none' : cls(b?.score);
     const icon = L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b ? b.score : '–'}</div>` });
-    L.marker([s.lat, s.lon], { icon, title: `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 }).on('click', () => mapSheet('site', s.id)).addTo(M.group);
+    L.marker([s.lat, s.lon], { icon, title: `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 }).on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }) : mapSheet('site', s.id))).addTo(M.group);
   }
   if (showOv('landings')) for (const l of S.plan.landings || []) {
-    L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-l"></div>' }), title: 'Landeplatz ' + l.name, keyboard: true }).on('click', () => mapSheet('landing', l.id)).addTo(M.group);
+    L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-l"></div>' }), title: 'Landeplatz ' + l.name, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: l.lat, lng: l.lon }) : mapSheet('landing', l.id))).addTo(M.group);
   }
   if (showOv('stations')) for (const st of S.plan.stations || []) {
     if (!num(st.wind)) continue;
-    L.marker([st.lat, st.lon], { icon: arrowIcon(st.dir, Math.round(st.wind)), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}`, keyboard: true }).on('click', () => mapSheet('station', st.code)).addTo(M.group);
+    L.marker([st.lat, st.lon], { icon: arrowIcon(st.dir, Math.round(st.wind)), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}`, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: st.lat, lng: st.lon }) : mapSheet('station', st.code))).addTo(M.group);
   }
 }
 /* ---- Windkarte: Partikel strömen mit dem Prognosewind (eigene Canvas-Ebene, ohne Zusatzbibliothek) */
@@ -744,7 +744,7 @@ function syncWindBar() {
   $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
   $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === T.mode)));
   const on = W.level !== 'off';
-  $('#windBar .wind-time').hidden = !on && T.mode === 'off'; $('#windBar .wind-legend').hidden = !on;
+  $('#windBar .wind-time').hidden = !on && T.mode === 'off' && !RT.res; $('#windBar .wind-legend').hidden = !on;
   $('#windBar .thermal-legend').hidden = T.mode !== 'thermal'; $('#windBar .soar-legend').hidden = T.mode !== 'soar';
   $('#windHour').value = W.hour;
   $('#windHourT').textContent = `${W.hour} Uhr`;
@@ -936,6 +936,112 @@ function soarWhy(c) {
   return { title: 'Soaring ' + level, elev: c.elev, why };
 }
 
+/** Thermik- und Winddaten einer Stunde (zwischengespeichert); null, solange der Server noch lädt. */
+async function thermalData(iso) {
+  let d = T.cache.get(iso);
+  if (d) return d;
+  const r = await fetch(`/api/thermal?t=${encodeURIComponent(iso)}`);
+  if (r.status === 202) return null;
+  if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
+  d = await r.json();
+  d.url = {};
+  T.cache.set(iso, d);
+  if (T.cache.size > 30) T.cache.delete(T.cache.keys().next().value);
+  return d;
+}
+
+/* ---- XC-Routenplaner (lib/route.js): A und B auf der Karte antippen */
+const RT = { active: false, a: null, b: null, mode: 'safe', layer: null, res: null, req: 0, fields: new Map() };
+const GLIDE = 7, LAND_RESERVE = 300;   // vorsichtige Gleitzahl und Reserve über dem Landeplatz
+
+/** Raster ca. 1 km für die Routensuche aus Gelände- und Wetterdaten. */
+function routeField(g, d) {
+  const B = 4, nx = Math.floor(g.nx / B), ny = Math.floor(g.ny / B), N = nx * ny;
+  const F = { la0: g.la0 + (B - 1) * g.dla / 2, lo0: g.lo0 + (B - 1) * g.dlo / 2, dla: g.dla * B, dlo: g.dlo * B, nx, ny,
+    q: new Float32Array(N), top: new Float32Array(N), ground: new Float32Array(N), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N), land: new Uint8Array(N) };
+  const lands = (S.plan?.landings || []).filter(l => num(l.lat) && num(l.alt));
+  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+    const k = y * nx + x, lat = F.la0 + y * F.dla, lon = F.lo0 + x * F.dlo;
+    let qs = [], gmax = 0;
+    for (let yy = 0; yy < B; yy++) for (let xx = 0; xx < B; xx++) {
+      const gy = y * B + yy, gx = x * B + xx, gk = gy * g.nx + gx;
+      gmax = Math.max(gmax, g.elev[gk]);
+      qs.push(thermalCell(d, g, gk, g.la0 + gy * g.dla, g.lo0 + gx * g.dlo).v);
+    }
+    qs.sort((a, b) => b - a);
+    F.q[k] = (qs[0] + qs[1] + qs[2]) / 3;                       // die besten Stellen im Quadratkilometer zählen
+    F.ground[k] = gmax;
+    F.top[k] = fieldAt(d, d.top, lat, lon) ?? NaN;
+    F.wstar[k] = fieldAt(d, d.wstar, lat, lon) ?? 0;
+    const w = windAtAlt(d, lat, lon, Math.max(gmax, (F.top[k] || 2500) - 500));   // Wind auf Flughöhe
+    F.u[k] = w ? w[0] : 0; F.v[k] = w ? w[1] : 0;
+    const reach = ((F.top[k] || 0) - LAND_RESERVE);
+    F.land[k] = lands.some(l => reach > l.alt && haversineKm(lat, lon, l.lat, l.lon) <= (reach - l.alt) * GLIDE / 1000) ? 1 : 0;
+  }
+  return F;
+}
+function haversineKm(a, b, c, e) {
+  const r = Math.PI / 180, x = Math.sin((c - a) * r / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin((e - b) * r / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(x));
+}
+function nearName(p) {
+  let best = null, bd = 2.5;
+  for (const s of [...(S.plan?.sites || []), ...(S.plan?.landings || [])]) { const dd = haversineKm(p[0], p[1], s.lat, s.lon); if (dd < bd) { bd = dd; best = s.name; } }
+  return best;
+}
+function routeStart() {
+  RT.active = true; RT.a = RT.b = RT.res = null; clearRoute();
+  $('#mapSheet').hidden = true;
+  mapMsg('Route: tippe auf den Startpunkt A');
+}
+function clearRoute() { if (RT.layer) { M.map.removeLayer(RT.layer); RT.layer = null; } }
+function routeClick(ll) {
+  if (!RT.a) { RT.a = [ll.lat, ll.lng]; drawRoute(); mapMsg('Route: tippe auf das Ziel B'); return; }
+  RT.b = [ll.lat, ll.lng]; RT.active = false; mapMsg(''); computeRoute();
+}
+async function computeRoute() {
+  if (!RT.a || !RT.b) return;
+  const req = ++RT.req, iso = windTimeIso();
+  mapMsg('Route wird berechnet …');
+  try {
+    const g = await thermalGrid(), d = await thermalData(iso);
+    if (!d) throw new Error('Wetterdaten werden noch geladen, bitte in ein paar Minuten nochmals versuchen');
+    let F = RT.fields.get(iso);
+    if (!F) { F = routeField(g, d); RT.fields.set(iso, F); if (RT.fields.size > 6) RT.fields.delete(RT.fields.keys().next().value); }
+    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode });
+    if (req !== RT.req) return;
+    RT.res = res; mapMsg(''); drawRoute(); mapSheet('route'); syncWindBar();
+    if (res.ok) M.map.fitBounds(L.latLngBounds(res.path), { paddingTopLeft: [40, 40], paddingBottomRight: [40, Math.min(360, $('#mapSheet').offsetHeight + 40)] });
+  } catch (err) { if (req === RT.req) { mapMsg('Route: ' + err.message); setTimeout(() => mapMsg(''), 7000); } }
+}
+const ISSUE_COL = { weak: '#d97706', low: '#dc2626', head: '#7c3aed', land: '#b45309' };
+function drawRoute() {
+  clearRoute();
+  const grp = L.layerGroup();
+  const pin = (p, t) => L.marker(p, { icon: L.divIcon({ className: '', iconSize: [28, 28], iconAnchor: [14, 14], html: `<div class="rt-pin">${t}</div>` }), keyboard: false }).addTo(grp);
+  if (RT.res?.ok) {
+    L.polyline(RT.res.path, { color: '#ffffff', weight: 8, opacity: 0.8 }).addTo(grp);
+    L.polyline(RT.res.path, { color: '#0b6e99', weight: 4 }).addTo(grp);
+    RT.res.issues.forEach((it, i) => L.marker(it.at, { icon: L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11], html: `<div class="rt-issue" style="--c:${ISSUE_COL[it.kind]}">${i + 1}</div>` }), title: it.text }).addTo(grp));
+  }
+  if (RT.a) pin(RT.a, 'A');
+  if (RT.b) pin(RT.b, 'B');
+  RT.layer = grp.addTo(M.map);
+}
+function routeSheetHtml() {
+  const r = RT.res;
+  const seg = `<div><div class="seg" role="group" aria-label="Routenart">${Object.entries(window.AFCRoute.ROUTE_MODES).map(([k, m]) => `<button type="button" data-act="rtmode" data-v="${k}" aria-pressed="${RT.mode === k}">${m.label}</button>`).join('')}</div></div>`;
+  const from = nearName(RT.a), to = nearName(RT.b);
+  const head = `<div class="sheet-top"><div><h3>Route ${esc(from || 'A')} → ${esc(to || 'B')}</h3><p class="fine" style="margin:0">${dayName(S.day)}, ${W.hour} Uhr · Uhrzeit mit dem Regler unten ändern</p></div></div>`;
+  if (!r?.ok) return `${head}<p>${esc(r?.reason || 'Keine Route gefunden')}</p>${seg}`;
+  const t = r.hours >= 1 ? `${Math.floor(r.hours)} h ${Math.round((r.hours % 1) * 60)} min` : `${Math.round(r.hours * 60)} min`;
+  return `${head}
+    <div class="kv"><div><b>${r.distKm} km</b><span>Strecke</span></div><div><b>${t}</b><span>Flugzeit (Schätzung)</span></div><div><b>${r.avgKmh ?? '–'} km/h</b><span>Schnitt inkl. Kurbeln</span></div></div>
+    ${seg}
+    ${r.issues.length ? `<h3 class="why-h">Kritische Stellen</h3><ol class="rt-issues">${r.issues.map(i => `<li style="--c:${ISSUE_COL[i.kind]}">${esc(i.text)}</li>`).join('')}</ol>` : '<p>Keine kritischen Stellen gefunden: Thermik, Arbeitshöhe, Wind und Landeplätze passen auf der ganzen Strecke.</p>'}
+    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, Arbeitshöhe und Landeplätzen im Gleitbereich (Gleitzahl 7, 300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Schätzung für eine Uhrzeit. <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
+}
+
 async function updateThermal() {
   syncWindBar();
   if (!M.map) return;
@@ -943,16 +1049,8 @@ async function updateThermal() {
   const iso = windTimeIso(), req = ++T.req, mode = T.mode;
   try {
     const g = await thermalGrid();
-    let d = T.cache.get(iso);
-    if (!d) {
-      const r = await fetch(`/api/thermal?t=${encodeURIComponent(iso)}`);
-      if (r.status === 202) { mapMsg('Thermikkarte wird noch geladen, bitte in ein paar Minuten nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
-      if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
-      d = await r.json();
-      d.url = {};
-      T.cache.set(iso, d);
-      if (T.cache.size > 30) T.cache.delete(T.cache.keys().next().value);
-    }
+    const d = await thermalData(iso);
+    if (!d) { mapMsg('Thermikkarte wird noch geladen, bitte in ein paar Minuten nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
     d.url[mode] ??= thermalImage(d, g, mode);
     if (req !== T.req || T.mode !== mode) return;
     T.data = d;
@@ -972,6 +1070,8 @@ function mapSheet(kind, id) {
   } else if (kind === 'landing') {
     const l = S.plan.landings.find(x => x.id === id);
     h = `<div class="sheet-top"><div><h3>Landeplatz ${esc(l.name)}</h3><p class="fine" style="margin:0">${l.alt ?? '–'} m${l.status ? ' · ' + esc(l.status) : ''}</p></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+  } else if (kind === 'route') {
+    h = routeSheetHtml() + `<div class="sheet-act"><button class="btn sec" type="button" data-act="route">Neue Route</button><button class="btn sec" type="button" data-act="routeoff">Schliessen</button></div>`;
   } else if (kind === 'thermal') {
     const t = thermalWhy(id.lat, id.lng);
     if (!t) { el.hidden = true; return; }
@@ -1036,6 +1136,9 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'route': routeStart(); break;
+    case 'routeoff': RT.active = false; RT.a = RT.b = RT.res = null; RT.req++; clearRoute(); mapMsg(''); $('#mapSheet').hidden = true; break;
+    case 'rtmode': RT.mode = b.dataset.v; computeRoute(); break;
     case 'thermal': T.mode = b.dataset.mode; store.set('thermal', T.mode); updateThermal(); break;
     case 'logdel': { const log = store.get('log', []); log.splice(Number(b.dataset.i), 1); store.set('log', log); renderProfile(); break; }
     case 'export': {
@@ -1068,7 +1171,7 @@ document.addEventListener('change', e => {
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); renderMap(); } }
 });
 document.addEventListener('input', e => {
-  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); }, 150); }
+  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
