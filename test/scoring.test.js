@@ -301,3 +301,15 @@ test('Routenplaner: Gleitflug ohne Thermik geht, solange die Höhe reicht (Niede
   assert.ok(r.arriveAgl > 100 && r.climbs === 0, `Ankunft ${r.arriveAgl} m, Thermik ${r.climbs}`);
   assert.equal(planRoute(F, at(2, 5), at(58, 5), { startAlt: 1950 }).ok, false, '28 km reichen ohne Thermik nicht');
 });
+
+test('Routenplaner: Wetter ändert sich während des Flugs (Thermik hört nach einer Stunde auf)', async () => {
+  const { planRoute } = await import('../lib/route.js');
+  const nx = 120, ny = 6, N = nx * ny;
+  const mk = (q, top) => ({ la0: 46.6, lo0: 7.0, dla: 0.0045, dlo: 0.0065, nx, ny, q: new Float32Array(N).fill(q), top: new Float32Array(N).fill(top), ground: new Float32Array(N).fill(1000), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N).fill(q ? 2 : 0), needH: new Float32Array(N).fill(0) });
+  const good = mk(0.6, 3000), dead = mk(0, 1000);
+  const at = x => [46.6 + 3 * 0.0045, 7.0 + x * 0.0065];
+  const all = planRoute(good, at(2), at(117), { startAlt: 1800, later: [good, good, good] });   // ca. 57 km
+  assert.equal(all.ok, true, all.reason);
+  assert.ok(all.hours > 1.2, 'Flug dauert ' + all.hours + ' h');
+  assert.equal(planRoute(good, at(2), at(117), { startAlt: 1800, later: [dead] }).ok, false, 'ohne Thermik ab der 2. Stunde nicht machbar');
+});

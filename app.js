@@ -963,10 +963,13 @@ async function thermalData(iso) {
 
 /* ---- XC-Routenplaner (lib/route.js): A und B auf der Karte antippen */
 const RT = { active: false, a: null, b: null, mode: 'safe', layer: null, res: null, req: 0, fields: new Map() };
-const GLIDE = 7, LAND_RESERVE = 300;   // vorsichtige Gleitzahl und Reserve über dem Landeplatz
+const LAND_RESERVE = 300;   // Reserve über dem Landeplatz
+// vorsichtige Gleitzahl und Trimmgeschwindigkeit je Schirmklasse (eher tiefer als Herstellerangaben, mit Kurbeln und Sinken)
+const GLIDER_PERF = { A: { glide: 6.5, airspeed: 34 }, B: { glide: 7, airspeed: 36 }, C: { glide: 7.5, airspeed: 38 }, D: { glide: 8, airspeed: 40 } };
+function gliderPerf() { const k = store.get('pilot')?.glider; return { key: GLIDER_PERF[k] ? k : 'B', ...(GLIDER_PERF[k] || GLIDER_PERF.B) }; }
 
 /** Raster ca. 500 m für die Routensuche aus Gelände- und Wetterdaten. */
-function routeField(g, d) {
+function routeField(g, d, glide) {
   const B = 2, nx = Math.floor(g.nx / B), ny = Math.floor(g.ny / B), N = nx * ny;
   const F = { la0: g.la0 + (B - 1) * g.dla / 2, lo0: g.lo0 + (B - 1) * g.dlo / 2, dla: g.dla * B, dlo: g.dlo * B, nx, ny,
     q: new Float32Array(N), top: new Float32Array(N), ground: new Float32Array(N), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N), needH: new Float32Array(N) };
@@ -987,7 +990,7 @@ function routeField(g, d) {
     const w = windAtAlt(d, lat, lon, Math.max(gmax, (F.top[k] || 2500) - 500));   // Wind auf Flughöhe
     F.u[k] = w ? w[0] : 0; F.v[k] = w ? w[1] : 0;
     // Mindesthöhe, um den nächsten Landeplatz mit Reserve zu erreichen
-    F.needH[k] = lands.reduce((m, l) => Math.min(m, l.alt + LAND_RESERVE + haversineKm(lat, lon, l.lat, l.lon) * 1000 / GLIDE), Infinity);
+    F.needH[k] = lands.reduce((m, l) => Math.min(m, l.alt + LAND_RESERVE + haversineKm(lat, lon, l.lat, l.lon) * 1000 / glide), Infinity);
   }
   return F;
 }
@@ -1017,11 +1020,26 @@ async function computeRoute() {
   try {
     const g = await thermalGrid(), d = await thermalData(iso);
     if (!d) throw new Error('Wetterdaten werden noch geladen, bitte in ein paar Minuten nochmals versuchen');
-    let F = RT.fields.get(iso);
-    if (!F) { F = routeField(g, d); RT.fields.set(iso, F); if (RT.fields.size > 6) RT.fields.delete(RT.fields.keys().next().value); }
+    const perf = gliderPerf();
+    const field = (key, dd) => {
+      let F = RT.fields.get(key);
+      if (!F) { F = routeField(g, dd, perf.glide); RT.fields.set(key, F); if (RT.fields.size > 12) RT.fields.delete(RT.fields.keys().next().value); }
+      return F;
+    };
+    const F = field(iso + perf.key, d);
+    // folgende Stunden (bis 20 Uhr), damit sich das Wetter während des Flugs mitverändert
+    const date = S.plan?.dates?.[S.day], later = [];
+    for (let h = W.hour + 1; date && h <= Math.min(20, W.hour + 4); h++) {
+      const iso2 = new Date(`${date}T${String(h).padStart(2, '0')}:00:00`).toISOString();
+      const d2 = await thermalData(iso2).catch(() => null);
+      if (!d2) break;
+      later.push(field(iso2 + perf.key, d2));
+    }
+    if (req !== RT.req) return;
     // Starthöhe: Startplatz oder Gelände am Punkt A
     const ga = Math.round((RT.a[0] - g.la0) / g.dla) * g.nx + Math.round((RT.a[1] - g.lo0) / g.dlo);
-    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode, startAlt: RT.alt ?? g.elev[ga] ?? null, glide: GLIDE });
+    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode, startAlt: RT.alt ?? g.elev[ga] ?? null, glide: perf.glide, airspeed: perf.airspeed, later });
+    res.perf = perf; res.laterHours = later.length;
     if (req !== RT.req) return;
     RT.res = res; mapMsg(''); drawRoute(); mapSheet('route'); syncWindBar();
     if (res.ok) M.map.fitBounds(L.latLngBounds(res.path), { paddingTopLeft: [40, 40], paddingBottomRight: [40, Math.min(360, $('#mapSheet').offsetHeight + 40)] });
@@ -1052,7 +1070,7 @@ function routeSheetHtml() {
     <div class="kv"><div><b>${r.distKm} km</b><span>Strecke</span></div><div><b>${t}</b><span>Flugzeit (Schätzung)</span></div><div><b>${r.climbs ? r.climbs + '×' : 'Gleitflug'}</b><span>${r.climbs ? 'Thermik nötig' : 'ohne Thermik möglich'}</span></div><div><b>${r.arriveAgl} m</b><span>Ankunft über Grund</span></div></div>
     ${seg}
     ${r.issues.length ? `<h3 class="why-h">Kritische Stellen</h3><ol class="rt-issues">${r.issues.map(i => `<li style="--c:${ISSUE_COL[i.kind]}">${esc(i.text)}</li>`).join('')}</ol>` : '<p>Keine kritischen Stellen gefunden: Thermik, Arbeitshöhe, Wind und Landeplätze passen auf der ganzen Strecke.</p>'}
-    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (Gleitzahl 7, 300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Schätzung für eine Uhrzeit. <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
+    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Gerechnet mit ${esc(window.AFCPilot?.GLIDERS?.[r.perf.key] || 'EN-B')} (Gleitzahl ${r.perf.glide}, ${r.perf.airspeed} km/h)${store.get('pilot')?.glider ? '' : ', Schirm im Profil ändern'}. ${r.laterHours ? `Wetter ab Start bis ${W.hour + r.laterHours} Uhr berücksichtigt.` : 'Schätzung für eine Uhrzeit.'} <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
 }
 
 async function updateThermal() {
