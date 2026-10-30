@@ -212,7 +212,8 @@ for (let d = from; d <= to; d += DAY) {
       const near = peakMs ? [peakMs - 3600000, peakMs, peakMs + 3600000].map(ms => mst.rows.get(ms)).filter(o => o && isNum(o.wind)) : [];
       if (near.length) {
         const mw = Math.max(...near.map(o => o.wind)), mg = Math.max(...near.map(o => o.gust ?? o.wind));
-        const windKo = /Wind|Böen/.test(ko + ' ' + reasons);
+        // nur zählen, wenn Wind oder Böen den Score wirklich gedrückt haben (K.-o. oder deutlicher Abzug)
+        const windKo = /Wind|Böen/.test(ko) || /deutliche Böen|kräftiger Wind|stärkerer Wind/.test(reasons);
         const mv = afc === 'Start' && (mg >= 40 || mw >= 28) ? 'GEFÄHRLICH' : afc === 'Nein' && windKo && mg < 25 ? 'zu streng' : 'passt';
         mRows.push({ date, area: a.name, site: site.name, station: mst.code, stationName: mst.name, best, afc, fcWind: fc.wind, fcGust: fc.gust, obsWind: Math.round(mw), obsGust: Math.round(mg), verdict: mv });
       }
