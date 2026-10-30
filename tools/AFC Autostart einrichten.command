@@ -27,6 +27,7 @@ cat > "$PLIST" <<PL
     <key>PORT</key><string>$PORT</string>
     <key>HOST</key><string>127.0.0.1</string>
     <key>AFC_TRUSTED_PROXY_HOPS</key><string>0</string>
+    <key>AFC_AUTOSTART</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

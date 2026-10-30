@@ -16,6 +16,8 @@ import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stati
 import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
+import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
+import { createUpdater } from './lib/updater.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -53,6 +55,15 @@ catch (e) {
   Object.assign(storageProblem, { degraded: true, reason: String(e.code || e.message), actual: fallback });
 }
 const backupsDir = path.join(dataDir, 'backups');
+// Open-Meteo-Verbrauch über einen Neustart hinweg mitzählen
+const usageFile = path.join(dataDir, 'openmeteo-usage.json');
+let usageSaveT = null;
+initOpenMeteoUsage((() => { try { return JSON.parse(fsc.readFileSync(usageFile, 'utf8')); } catch { return null; } })(),
+  u => { clearTimeout(usageSaveT); usageSaveT = setTimeout(() => fs.writeFile(usageFile, JSON.stringify(u)).catch(() => {}), 2000); usageSaveT.unref?.(); });
+// Update über die App: nur im Autostart (launchd startet nach dem Beenden neu) und nur vom eigenen Mac aus
+const AUTOSTART = process.env.XPC_SERVICE_NAME === 'ch.afc.server' || process.env.AFC_AUTOSTART === '1';
+const updater = createUpdater(ROOT, { enabled: process.env.AFC_UPDATE_CHECK !== '0' });
+const isLocal = req => /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
 const db = new DatabaseSync(path.join(dataDir, 'afc.sqlite'));
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
@@ -452,6 +463,24 @@ const server = http.createServer(async (req, res) => {
           backupCount: (await fs.readdir(backupsDir).catch(() => [])).filter(x => x.endsWith('.sqlite')).length
         });
       }
+      if (req.method === 'GET' && p === '/api/status') {
+        // Verbrauch und Update-Stand für die Anzeige unter Profil
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) } });
+      }
+      if (req.method === 'POST' && p === '/api/update') {
+        if (!isLocal(req) || !AUTOSTART) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
+        if (req.headers['x-afc-client'] === undefined) return sendJson(req, res, 400, { error: 'Kopfzeile fehlt' });
+        const r = await updater.apply();
+        if (!r.ok) return sendJson(req, res, 500, { error: r.error });
+        sendJson(req, res, 200, { ok: true, restarting: true });
+        // launchd startet den Dienst nach dem Beenden mit der neuen Version wieder
+        setTimeout(() => shutdown('Update'), 300);
+        return;
+      }
+      if (req.method === 'POST' && p === '/api/update/check') {
+        if (!isLocal(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
+        return sendJson(req, res, 200, { ok: true, update: { ...(await updater.check()), canApply: AUTOSTART } });
+      }
       if (req.method === 'GET' && p === '/api/meta') {
         return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, publicApp: PUBLIC_APP || null, sites: RANKED.length, areas: AREAS.length, sitesChecked: SITES_FILE.meta?.checked });
       }
@@ -564,6 +593,7 @@ async function start() {
   timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
+  updater.start();
 }
 
 function shutdown(sig) {

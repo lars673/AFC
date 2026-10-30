@@ -11,7 +11,7 @@ async function boot(scenario, port) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1' },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -155,4 +155,24 @@ test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', as
     // Im Mock ist die Prognose immer gut, gemessen wird jeden 7. Tag Sturm: das muss als GEFÄHRLICH auffallen
     assert.match(txt, /GEFÄHRLICH: +[1-9]/);
   } finally { await mock.close(); }
+});
+
+test('Status zeigt Open-Meteo-Verbrauch, Update nur mit Autostart', async () => {
+  const s = await boot('good', 18789);
+  try {
+    const j = await (await fetch(s.base + '/api/status')).json();
+    assert.equal(j.ok, true);
+    assert.ok(j.openMeteo.calls > 0 && j.openMeteo.requests > 0, JSON.stringify(j.openMeteo));
+    assert.equal(j.openMeteo.limitDay, 10000);
+    assert.equal(j.update.enabled, false);
+    assert.equal(j.update.canApply, false);
+    assert.equal((await fetch(s.base + '/api/update', { method: 'POST', headers: { 'X-AFC-Client': 'x' } })).status, 403);
+  } finally { await s.stop(); }
+});
+
+test('Open-Meteo-Gewichtung: Orte x angefangene 10 Variablen', async () => {
+  const { openMeteoWeight } = await import('../lib/http.js');
+  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2,3&longitude=1,2,3&hourly=a,b,c&forecast_days=5'), 3);
+  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2&longitude=1,2&hourly=' + 'v,'.repeat(14) + 'v&forecast_days=7'), 4);
+  assert.equal(openMeteoWeight('https://data.geo.admin.ch/x.csv'), 0);
 });

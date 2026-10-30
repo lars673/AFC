@@ -297,3 +297,13 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .wind-bar.folded .bar-body { display: none; }
 .bar-body { display: grid; gap: 6px; }
 .linkbtn { background: none; border: 0; padding: 0 4px; min-height: 44px; color: var(--accent); font-weight: 600; text-decoration: underline; }
+
+/* Einführung */
+.intro p { margin: 0; font-size: 17px; line-height: 1.5; }
+.intro-dots { display: flex; gap: 6px; justify-content: center; }
+.intro-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.intro-dots span.on { background: var(--accent); }
+.banner.upd { border-left-color: var(--accent); display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.banner.upd .btn-row { flex-wrap: nowrap; }
+.usage-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 4px; }
+.usage-bar span { display: block; height: 100%; background: var(--accent); }

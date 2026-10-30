@@ -17,7 +17,9 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 ## Lokal auf dem Mac (ohne Terminal)
 
 * **Autostart einrichten:** `tools/AFC Autostart einrichten.command` doppelklicken. Der Server läuft dann im Hintergrund (launchd), startet beim Anmelden und nach einem Absturz neu. Adresse: http://localhost:8787, Protokoll in `data/server.log`.
-* **Update holen:** `tools/AFC aktualisieren.command` doppelklicken (git pull + Neustart), dann Cmd+R in der App.
+* **Update holen:** AFC schaut alle 3 Stunden (per `git fetch`) nach einer neuen Version und zeigt dann oben einen Hinweis mit «Jetzt aktualisieren». Das macht `git pull`, beendet den Server, launchd startet ihn mit der neuen Version neu und die App lädt sich selbst neu. Unter Profil > «Verbrauch und Updates» lässt sich auch von Hand suchen. Der Knopf erscheint nur auf dem eigenen Mac (localhost) mit eingerichtetem Autostart. Ohne Autostart: `tools/AFC aktualisieren.command` doppelklicken.
+* **Open-Meteo-Verbrauch:** Profil > «Verbrauch und Updates» zeigt die Aufrufe des Tages (wie Open-Meteo sie zählt) gegen das Gratislimit von 10 000.
+* **Einführung:** erscheint beim ersten Öffnen, später unter Profil > Hilfe.
 * **Nach eigenen Änderungen an `server.js` oder `lib/`:** `tools/AFC neu starten.command` doppelklicken, dann die App neu laden (Cmd+R). Änderungen an `app.js`, `app.css`, `index.html` brauchen nur Cmd+R.
 * **Entfernen:** `tools/AFC Autostart entfernen.command`.
 * Liegt der Ordner auf dem Schreibtisch oder in Dokumente, fragt macOS evtl. nach Zugriff für `node`. Das Einrichtungsskript erkennt das und sagt, was zu tun ist.
@@ -57,6 +59,8 @@ Healthcheck: `/healthz` (ohne DB-Zugriff). Vollstatus mit Quellenzustand: `/api/
 | `AFC_OBS_MIN` / `AFC_FORECAST_MIN` / `AFC_WINDGRID_MIN` | `10` / `60` / `180` | Abrufrhythmus in Minuten. Open-Meteo zählt jeden Punkt (und je 10 Variablen) als Abruf, gratis 10 000/Tag. Die Vorgaben brauchen rund 6 500. Die Modelle (ICON-CH1/CH2) rechnen ohnehin nur alle 3–6 h neu |
 | `AFC_FETCH_TIMEOUT_MS` | `20000` | Timeout externer Abrufe |
 | `PUBLIC_APP_URL` | – | nur informativ (`/api/meta`) |
+| `AFC_UPDATE_CHECK` | `1` | `0` schaltet die Update-Prüfung aus |
+| `AFC_AUTOSTART` | – | `1` erlaubt das Update aus der App (setzt das Autostart-Skript) |
 
 Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_META_URL`.
 
@@ -72,6 +76,8 @@ Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_MET
 | `POST /api/flight-report` | Flugmeldung (Header `X-AFC-Client`), validiert: bekannter Startplatz, Zeit der letzten 14 Tage, Bewertung 1–5, höchstens 20 pro Tag |
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |
+| `GET /api/status` | Open-Meteo-Verbrauch heute und Update-Stand |
+| `POST /api/update/check`, `POST /api/update` | Nach Update suchen / Update einspielen und neu starten (nur localhost, Update nur mit Autostart) |
 
 Rate-Limits pro IP (über `X-Forwarded-For`, `AFC_TRUSTED_PROXY_HOPS`): 180 Anfragen/min allgemein, 10/min für Schreibzugriffe. Body höchstens 16 KB.
 

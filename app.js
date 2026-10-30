@@ -365,6 +365,55 @@ function sourcesHtml() {
   ];
   return `<div class="srcs">${items.map(([n, x, d]) => `<div><span class="dot ${x?.ok ? (x.error ? 'warn' : 'ok') : 'bad'}"></span><span>${esc(n)}<small>${x?.at ? 'Stand ' + timeOf(x.at) + ' Uhr' : 'noch nie geladen'}${d ? ' · ' + esc(d) : ''}${x?.error ? ' · ' + esc(x.error) : ''}</small></span></div>`).join('')}</div>`;
 }
+/* ---- Status: Open-Meteo-Verbrauch und Update-Hinweis (/api/status) */
+const ST = { data: null, busy: false };
+async function loadStatus() {
+  try { const r = await fetch('/api/status', { cache: 'no-store' }); if (r.ok) ST.data = await r.json(); } catch {}
+  renderUpdBanner();
+  if (S.tab === 'profile') { const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml(); }
+}
+function updText(u) {
+  const when = u.latest?.date ? new Date(u.latest.date).toLocaleDateString('de-CH') : '';
+  return `${u.behind === 1 ? 'Eine Änderung' : u.behind + ' Änderungen'}${when ? ' vom ' + when : ''}${u.latest?.msg ? ': ' + u.latest.msg : ''}`;
+}
+function renderUpdBanner() {
+  const u = ST.data?.update, b = $('#updBanner');
+  if (!u?.available || store.get('updSkip') === u.latest?.date) { b.hidden = true; return; }
+  b.hidden = false;
+  b.innerHTML = `<span><b>Neue AFC-Version verfügbar.</b> ${esc(updText(u))}</span><span class="btn-row">${u.canApply
+    ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>${ST.busy ? 'Wird aktualisiert …' : 'Jetzt aktualisieren'}</button>`
+    : '<span class="fine">Auf dem Mac «AFC aktualisieren» doppelklicken.</span>'}<button class="btn sec" type="button" data-act="updskip">Später</button></span>`;
+}
+async function applyUpdate() {
+  ST.busy = true; renderUpdBanner();
+  try {
+    const r = await fetch('/api/update', { method: 'POST', headers: { 'X-AFC-Client': clientId } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+    toast('Update geladen, AFC startet neu …');
+    // warten, bis der Dienst mit der neuen Version wieder antwortet
+    await new Promise(res => setTimeout(res, 2500));
+    for (let i = 0; i < 40; i++) {
+      try { if ((await fetch('/healthz', { cache: 'no-store' })).ok) { location.reload(); return; } } catch {}
+      await new Promise(res => setTimeout(res, 1000));
+    }
+    throw new Error('AFC antwortet nicht. Auf dem Mac «AFC neu starten» doppelklicken.');
+  } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + err.message); }
+}
+function statusHtml() {
+  const d = ST.data;
+  if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
+  const o = d.openMeteo, pct = Math.min(100, Math.round(o.calls / o.limitDay * 100)), u = d.update;
+  const upd = !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
+    : u.error ? `Letzte Prüfung fehlgeschlagen (${esc(u.error)}).`
+    : u.available ? `Neue Version verfügbar. ${esc(updText(u))}`
+    : u.checkedAt ? `Aktuell (geprüft ${timeOf(u.checkedAt)} Uhr).` : 'Noch nicht geprüft.';
+  return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
+      <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
+      <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
+    <div style="margin-top:12px"><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
+      <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>`;
+}
 function renderProfile() {
   const el = $('#v-profile');
   const log = store.get('log', []);
@@ -380,8 +429,10 @@ function renderProfile() {
       ${log.length ? `<div class="tw"><table class="plain"><thead><tr><th>Datum</th><th>Startplatz</th><th>Flug</th><th>Score</th><th></th></tr></thead><tbody>${log.slice().reverse().map((r, i) => `<tr><td>${new Date(r.launchTime).toLocaleDateString('de-CH')}</td><td>${esc(r.name)}</td><td>${r.launched ? '★'.repeat(r.quality) : 'nicht geflogen'}</td><td>${num(r.afcScore) ? r.afcScore : '–'}${flightMatch(r) && flightMatch(r) !== 'passt' ? ` <span class="fine" title="${flightMatch(r)}">(${flightMatch(r)})</span>` : ''}</td><td><button type="button" class="star" data-act="logdel" data-i="${log.length - 1 - i}" aria-label="Eintrag entfernen">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="fine" style="margin:0">Noch keine Einträge. Nach einem Flug über die Startplatz-Ansicht melden.</p>'}
       <p class="fine">Gemeldete Flüge werden anonym gespeichert (ohne Namen, mit zufälliger Gerätekennung).</p></div>
     <div class="panel"><h3>Datenquellen</h3>${sourcesHtml()}</div>
+    <div class="panel"><h3>Verbrauch und Updates</h3><div id="statusPanel">${statusHtml()}</div></div>
     <div class="panel"><h3>Datenschutz</h3>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="export">Meine Daten exportieren</button><button class="btn sec" type="button" data-act="wipe">Meine Daten löschen</button><a class="btn sec" href="/privacy">Datenschutzerklärung</a></div></div>
+    <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button></div></div>
     <p class="fine">AFC ${esc(S.plan?.version || '8.0')} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
 }
 
@@ -447,6 +498,30 @@ function ask({ title, text, ok = 'OK', danger = false, cancel = 'Abbrechen' }) {
     const onc = () => { d.removeEventListener('click', on); res(false); };
     d.addEventListener('click', on); d.addEventListener('close', onc, { once: true });
   });
+}
+/* ---- Kurze Einführung beim ersten Öffnen (später unter Profil nochmals aufrufbar) */
+const INTRO_VER = 1;
+const INTRO = [
+  ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.'],
+  ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.'],
+  ['Karte, Thermik und Soaring', 'Auf der Karte unten «Thermik» oder «Soaring» wählen. Tippe irgendwo auf die Karte, dann erklärt AFC, warum es dort steigt oder nicht. Unter «Ebenen» kannst du die Thermik-Hotspots und Flugspuren von kk7 einblenden.'],
+  ['Route von A nach B', 'Auf der Karte «Route» tippen, dann Startpunkt A und Ziel B. AFC sucht eine Strecke über die Thermik, mit genug Höhe und Landeplätzen im Gleitbereich, und markiert kritische Stellen. Luftraum ist noch nicht drin.'],
+  ['Dein Profil', 'Unter «Profil» trägst du Flüge, Stunden, Schirm und letzten Flug ein. Daraus wählt AFC deine Grenzen für Wind und Thermik und rechnet die Route mit deiner Gleitzahl. AFC ersetzt nie deine eigene Beurteilung am Startplatz.']
+];
+function showIntro(i = 0) {
+  const last = i === INTRO.length - 1, [t, x] = INTRO[i];
+  const d = dlg('#msgDlg', `<div class="dlg-in intro"><div class="dlg-h"><h2 id="msgDlgT">${esc(t)}</h2><button class="x-btn" type="button" data-intro="end" aria-label="Schliessen">×</button></div>
+    <p>${esc(x)}</p>
+    <div class="intro-dots" aria-label="Schritt ${i + 1} von ${INTRO.length}">${INTRO.map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('')}</div>
+    <div class="btn-row">${i ? `<button class="btn sec" type="button" data-intro="${i - 1}">Zurück</button>` : `<button class="btn sec" type="button" data-intro="end">Überspringen</button>`}<button class="btn" type="button" data-intro="${last ? (store.get('pilot')?.flights != null ? 'end' : 'profile') : i + 1}" autofocus>${last ? (store.get('pilot')?.flights != null ? 'Los gehts' : 'Profil ausfüllen') : 'Weiter'}</button></div></div>`);
+  d.onclick = e => {
+    const b = e.target.closest('[data-intro]'); if (!b) return;
+    const v = b.dataset.intro;
+    if (/^\d+$/.test(v)) return showIntro(Number(v));
+    d.onclick = null; store.set('intro', INTRO_VER); closeDlg(d);
+    if (v === 'profile') setTab('profile');
+  };
+  d.onclose = () => store.set('intro', INTRO_VER);
 }
 let toastT;
 function toast(msg) {
@@ -1129,6 +1204,7 @@ function setTab(t) {
   S.tab = t; store.set('tab', t);
   render();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
+  if (t === 'profile') loadStatus();
   window.scrollTo({ top: 0 });
 }
 document.addEventListener('click', async e => {
@@ -1170,6 +1246,15 @@ document.addEventListener('click', async e => {
     case 'tab': setTab(b.dataset.tab); break;
     case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
+    case 'intro': showIntro(); break;
+    case 'update': applyUpdate(); break;
+    case 'updskip': store.set('updSkip', ST.data?.update?.latest?.date); renderUpdBanner(); break;
+    case 'updcheck': {
+      b.disabled = true; b.textContent = 'Suche …';
+      try { const r = await fetch('/api/update/check', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (ST.data && j.update) ST.data.update = j.update; } catch {}
+      store.del('updSkip'); renderUpdBanner(); const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml();
+      break;
+    }
     case 'routeoff': RT.active = false; RT.a = RT.b = RT.res = null; RT.req++; clearRoute(); mapMsg(''); $('#mapSheet').hidden = true; break;
     case 'rtmode': RT.mode = b.dataset.v; computeRoute(); break;
     case 'thermal': T.mode = b.dataset.mode; store.set('thermal', T.mode); updateThermal(); break;
@@ -1225,6 +1310,8 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   T.mode = ['thermal', 'soar'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
   render();
   loadPlan();
+  loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
+  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
