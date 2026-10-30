@@ -261,7 +261,7 @@ test('Pilotenprofil: Erfahrung, Übung und Pause bestimmen die Stufe', async () 
 test('Routenplaner: umfliegt zu hohes Gelände, nutzt Thermik, meldet Gegenwind', async () => {
   const { planRoute } = await import('../lib/route.js');
   const nx = 40, ny = 30, N = nx * ny;
-  const F = { la0: 46.5, lo0: 7.5, dla: 0.009, dlo: 0.013, nx, ny, q: new Float32Array(N).fill(0.5), top: new Float32Array(N).fill(3000), ground: new Float32Array(N).fill(1500), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N).fill(2), land: new Uint8Array(N).fill(1) };
+  const F = { la0: 46.5, lo0: 7.5, dla: 0.009, dlo: 0.013, nx, ny, q: new Float32Array(N).fill(0.5), top: new Float32Array(N).fill(3000), ground: new Float32Array(N).fill(1500), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N).fill(2), needH: new Float32Array(N).fill(0) };
   // Bergkette in der Mitte (x = 20) über der Thermik, mit einer Lücke bei y = 25
   for (let y = 0; y < ny; y++) if (y !== 25) F.ground[y * nx + 20] = 3200;
   const at = (x, y) => [F.la0 + y * F.dla, F.lo0 + x * F.dlo];
@@ -279,7 +279,19 @@ test('Routenplaner: umfliegt zu hohes Gelände, nutzt Thermik, meldet Gegenwind'
   assert.ok(h.issues.some(i => i.kind === 'head'), JSON.stringify(h.issues));
   // sicher meidet Strecken ohne Landeplatz stärker als schnell
   F.u.fill(0);
-  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) if (y < 20) F.land[y * nx + x] = 0;
+  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) if (y < 20) F.needH[y * nx + x] = Infinity;
   const safe = planRoute(F, at(5, 22), at(35, 22), { mode: 'safe' });
   assert.ok(safe.ok && safe.issues.every(i => i.kind !== 'land'), JSON.stringify(safe.issues));
+});
+
+test('Routenplaner: Gleitflug ohne Thermik geht, solange die Höhe reicht (Niederhorn nach Interlaken)', async () => {
+  const { planRoute } = await import('../lib/route.js');
+  const nx = 60, ny = 10, N = nx * ny;
+  // 500-m-Raster, Talboden 600 m, keine Thermik
+  const F = { la0: 46.6, lo0: 7.6, dla: 0.0045, dlo: 0.0065, nx, ny, q: new Float32Array(N), top: new Float32Array(N).fill(600), ground: new Float32Array(N).fill(600), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N), needH: new Float32Array(N).fill(800) };
+  const at = (x, y) => [F.la0 + y * F.dla, F.lo0 + x * F.dlo];
+  const r = planRoute(F, at(2, 5), at(18, 5), { startAlt: 1950 });   // ca. 8 km
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.arriveAgl > 100 && r.climbs === 0, `Ankunft ${r.arriveAgl} m, Thermik ${r.climbs}`);
+  assert.equal(planRoute(F, at(2, 5), at(58, 5), { startAlt: 1950 }).ok, false, '28 km reichen ohne Thermik nicht');
 });

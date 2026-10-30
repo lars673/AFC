@@ -619,10 +619,10 @@ function renderMap() {
   for (const s of S.plan.sites) {
     const b = s.days[S.day]?.best, c = s.blocked ? 'none' : cls(b?.score);
     const icon = L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b ? b.score : '–'}</div>` });
-    L.marker([s.lat, s.lon], { icon, title: `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 }).on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }) : mapSheet('site', s.id))).addTo(M.group);
+    L.marker([s.lat, s.lon], { icon, title: `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 }).on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : mapSheet('site', s.id))).addTo(M.group);
   }
   if (showOv('landings')) for (const l of S.plan.landings || []) {
-    L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-l"></div>' }), title: 'Landeplatz ' + l.name, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: l.lat, lng: l.lon }) : mapSheet('landing', l.id))).addTo(M.group);
+    L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-l"></div>' }), title: 'Landeplatz ' + l.name, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: l.lat, lng: l.lon }, l.alt) : mapSheet('landing', l.id))).addTo(M.group);
   }
   if (showOv('stations')) for (const st of S.plan.stations || []) {
     if (!num(st.wind)) continue;
@@ -954,29 +954,29 @@ async function thermalData(iso) {
 const RT = { active: false, a: null, b: null, mode: 'safe', layer: null, res: null, req: 0, fields: new Map() };
 const GLIDE = 7, LAND_RESERVE = 300;   // vorsichtige Gleitzahl und Reserve über dem Landeplatz
 
-/** Raster ca. 1 km für die Routensuche aus Gelände- und Wetterdaten. */
+/** Raster ca. 500 m für die Routensuche aus Gelände- und Wetterdaten. */
 function routeField(g, d) {
-  const B = 4, nx = Math.floor(g.nx / B), ny = Math.floor(g.ny / B), N = nx * ny;
+  const B = 2, nx = Math.floor(g.nx / B), ny = Math.floor(g.ny / B), N = nx * ny;
   const F = { la0: g.la0 + (B - 1) * g.dla / 2, lo0: g.lo0 + (B - 1) * g.dlo / 2, dla: g.dla * B, dlo: g.dlo * B, nx, ny,
-    q: new Float32Array(N), top: new Float32Array(N), ground: new Float32Array(N), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N), land: new Uint8Array(N) };
+    q: new Float32Array(N), top: new Float32Array(N), ground: new Float32Array(N), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N), needH: new Float32Array(N) };
   const lands = (S.plan?.landings || []).filter(l => num(l.lat) && num(l.alt));
   for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
     const k = y * nx + x, lat = F.la0 + y * F.dla, lon = F.lo0 + x * F.dlo;
-    let qs = [], gmax = 0;
+    let qs = [], gmax = 0, gsum = 0;
     for (let yy = 0; yy < B; yy++) for (let xx = 0; xx < B; xx++) {
       const gy = y * B + yy, gx = x * B + xx, gk = gy * g.nx + gx;
-      gmax = Math.max(gmax, g.elev[gk]);
+      gmax = Math.max(gmax, g.elev[gk]); gsum += g.elev[gk];
       qs.push(thermalCell(d, g, gk, g.la0 + gy * g.dla, g.lo0 + gx * g.dlo).v);
     }
     qs.sort((a, b) => b - a);
-    F.q[k] = (qs[0] + qs[1] + qs[2]) / 3;                       // die besten Stellen im Quadratkilometer zählen
-    F.ground[k] = gmax;
+    F.q[k] = (qs[0] + qs[1]) / 2;                                // die besten Stellen der Zelle zählen
+    F.ground[k] = (gmax + gsum / (B * B)) / 2;                  // zwischen höchstem und mittlerem Gelände der Zelle
     F.top[k] = fieldAt(d, d.top, lat, lon) ?? NaN;
     F.wstar[k] = fieldAt(d, d.wstar, lat, lon) ?? 0;
     const w = windAtAlt(d, lat, lon, Math.max(gmax, (F.top[k] || 2500) - 500));   // Wind auf Flughöhe
     F.u[k] = w ? w[0] : 0; F.v[k] = w ? w[1] : 0;
-    const reach = ((F.top[k] || 0) - LAND_RESERVE);
-    F.land[k] = lands.some(l => reach > l.alt && haversineKm(lat, lon, l.lat, l.lon) <= (reach - l.alt) * GLIDE / 1000) ? 1 : 0;
+    // Mindesthöhe, um den nächsten Landeplatz mit Reserve zu erreichen
+    F.needH[k] = lands.reduce((m, l) => Math.min(m, l.alt + LAND_RESERVE + haversineKm(lat, lon, l.lat, l.lon) * 1000 / GLIDE), Infinity);
   }
   return F;
 }
@@ -995,8 +995,8 @@ function routeStart() {
   mapMsg('Route: tippe auf den Startpunkt A');
 }
 function clearRoute() { if (RT.layer) { M.map.removeLayer(RT.layer); RT.layer = null; } }
-function routeClick(ll) {
-  if (!RT.a) { RT.a = [ll.lat, ll.lng]; drawRoute(); mapMsg('Route: tippe auf das Ziel B'); return; }
+function routeClick(ll, alt) {
+  if (!RT.a) { RT.a = [ll.lat, ll.lng]; RT.alt = num(alt) ? alt : null; drawRoute(); mapMsg('Route: tippe auf das Ziel B'); return; }
   RT.b = [ll.lat, ll.lng]; RT.active = false; mapMsg(''); computeRoute();
 }
 async function computeRoute() {
@@ -1008,7 +1008,9 @@ async function computeRoute() {
     if (!d) throw new Error('Wetterdaten werden noch geladen, bitte in ein paar Minuten nochmals versuchen');
     let F = RT.fields.get(iso);
     if (!F) { F = routeField(g, d); RT.fields.set(iso, F); if (RT.fields.size > 6) RT.fields.delete(RT.fields.keys().next().value); }
-    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode });
+    // Starthöhe: Startplatz oder Gelände am Punkt A
+    const ga = Math.round((RT.a[0] - g.la0) / g.dla) * g.nx + Math.round((RT.a[1] - g.lo0) / g.dlo);
+    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode, startAlt: RT.alt ?? g.elev[ga] ?? null, glide: GLIDE });
     if (req !== RT.req) return;
     RT.res = res; mapMsg(''); drawRoute(); mapSheet('route'); syncWindBar();
     if (res.ok) M.map.fitBounds(L.latLngBounds(res.path), { paddingTopLeft: [40, 40], paddingBottomRight: [40, Math.min(360, $('#mapSheet').offsetHeight + 40)] });
@@ -1036,10 +1038,10 @@ function routeSheetHtml() {
   if (!r?.ok) return `${head}<p>${esc(r?.reason || 'Keine Route gefunden')}</p>${seg}`;
   const t = r.hours >= 1 ? `${Math.floor(r.hours)} h ${Math.round((r.hours % 1) * 60)} min` : `${Math.round(r.hours * 60)} min`;
   return `${head}
-    <div class="kv"><div><b>${r.distKm} km</b><span>Strecke</span></div><div><b>${t}</b><span>Flugzeit (Schätzung)</span></div><div><b>${r.avgKmh ?? '–'} km/h</b><span>Schnitt inkl. Kurbeln</span></div></div>
+    <div class="kv"><div><b>${r.distKm} km</b><span>Strecke</span></div><div><b>${t}</b><span>Flugzeit (Schätzung)</span></div><div><b>${r.climbs ? r.climbs + '×' : 'Gleitflug'}</b><span>${r.climbs ? 'Thermik nötig' : 'ohne Thermik möglich'}</span></div><div><b>${r.arriveAgl} m</b><span>Ankunft über Grund</span></div></div>
     ${seg}
     ${r.issues.length ? `<h3 class="why-h">Kritische Stellen</h3><ol class="rt-issues">${r.issues.map(i => `<li style="--c:${ISSUE_COL[i.kind]}">${esc(i.text)}</li>`).join('')}</ol>` : '<p>Keine kritischen Stellen gefunden: Thermik, Arbeitshöhe, Wind und Landeplätze passen auf der ganzen Strecke.</p>'}
-    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, Arbeitshöhe und Landeplätzen im Gleitbereich (Gleitzahl 7, 300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Schätzung für eine Uhrzeit. <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
+    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (Gleitzahl 7, 300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Schätzung für eine Uhrzeit. <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
 }
 
 async function updateThermal() {
