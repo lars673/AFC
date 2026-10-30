@@ -49,22 +49,32 @@ function normalize(d) {
 async function history(points, vars, models) {
   const byId = {};
   const start = ymd(from - 2 * DAY), end = ymd(Math.min(to + 5 * DAY, today.getTime() - DAY));
-  for (let i = 0; i < points.length; i += 10) {
-    const chunk = points.slice(i, i + 10);
+  // Open-Meteo gewichtet Abrufe nach Orten, Variablen und Zeitraum und erlaubt rund 600 pro Minute.
+  // Deshalb kleine Pakete mit Pause nach Gewicht und bei «HTTP 429» (zu viele Abrufe) warten und wiederholen.
+  const SIZE = 5;
+  const weight = SIZE * Math.max(1, vars.length / 10) * Math.max(1, (Date.parse(end) - Date.parse(start)) / DAY / 14);
+  for (let i = 0; i < points.length; i += SIZE) {
+    const chunk = points.slice(i, i + SIZE);
     let lastErr;
     for (const model of models) {
-      try {
-        const url = `${HIST}/v1/forecast?latitude=${chunk.map(p => p.lat.toFixed(4)).join(',')}&longitude=${chunk.map(p => p.lon.toFixed(4)).join(',')}&hourly=${vars.join(',')}&models=${model}&start_date=${start}&end_date=${end}&timezone=UTC&wind_speed_unit=kmh`;
-        const raw = await (await httpGet(url, { accept: 'application/json', timeoutMs: 60000 })).json();
-        const arr = Array.isArray(raw) ? raw : [raw];
-        chunk.forEach((p, k) => { const n = normalize(arr[k]); if (n) byId[p.id] = n; });
-        lastErr = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          const url = `${HIST}/v1/forecast?latitude=${chunk.map(p => p.lat.toFixed(4)).join(',')}&longitude=${chunk.map(p => p.lon.toFixed(4)).join(',')}&hourly=${vars.join(',')}&models=${model}&start_date=${start}&end_date=${end}&timezone=UTC&wind_speed_unit=kmh`;
+          const raw = await (await httpGet(url, { accept: 'application/json', timeoutMs: 60000, retries: 0 })).json();
+          const arr = Array.isArray(raw) ? raw : [raw];
+          chunk.forEach((p, k) => { const n = normalize(arr[k]); if (n) byId[p.id] = n; });
+          lastErr = null;
+        } catch (e) {
+          lastErr = e;
+          if (/HTTP 429/.test(e.message)) { process.stdout.write(' (Open-Meteo bremst, warte 1 Minute) '); await new Promise(r => setTimeout(r, 65000)); continue; }
+        }
         break;
-      } catch (e) { lastErr = e; }
+      }
+      if (!lastErr) break;
     }
     if (lastErr) throw new Error(`Prognose-Archiv (${vars.length} Variablen): ${lastErr.message}`);
     process.stdout.write('.');
-    await new Promise(r => setTimeout(r, 400));   // Open-Meteo schonen
+    await new Promise(r => setTimeout(r, Math.min(60000, weight / 400 * 60000)));
   }
   return byId;
 }
