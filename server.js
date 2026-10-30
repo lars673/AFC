@@ -14,7 +14,7 @@ import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
 import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
-import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
+import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
@@ -154,12 +154,14 @@ async function collectForecast() {
     fetchForecast(sitePoints()), fetchForecast(areaPoints()), fetchPressureLevels(areaPoints()),
     fetchSecondModel(areaPoints().filter(p => p.id !== 'REF').concat([REF_POINT])), fetchForecast(stationPoints(), { days: 2 })
   ]);
+  // Föhnregel: Druck Lugano und Zürich-Kloten (2 Orte, kaum Verbrauch)
+  const gradR = await fetchForecast(FOEHN_POINTS).catch(() => ({ byId: {} }));
   const at = nowIso();
   if (!areaR.byId.REF) {
     ingest.forecast = { ...ingest.forecast, ok: false, at, error: areaR.errors.slice(-3).join(' | ') || 'keine Referenzdaten' };
     return;
   }
-  const raw = { fetchedAt: Date.now(), model: areaR.used?.model, sites: sitesR.byId, areas: {}, ref: { sea: areaR.byId.REF, pl: plR.byId.REF || null }, stations: stR.byId };
+  const raw = { fetchedAt: Date.now(), model: areaR.used?.model, sites: sitesR.byId, areas: {}, ref: { sea: areaR.byId.REF, pl: plR.byId.REF || null }, stations: stR.byId, grad: gradR.byId };
   for (const a of AREAS) raw.areas[a.id] = { sea: areaR.byId[a.id] || null, pl: plR.byId[a.id] || null, ecmwf: ecR.byId[a.id] || null };
   state.raw = raw;
   const partial = Object.keys(sitesR.byId).length < RANKED.length;

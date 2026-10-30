@@ -15,7 +15,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { httpGet } from '../lib/http.js';
-import { PlanModel, areasOf, isRanked, REF_POINT } from '../lib/plan.js';
+import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from '../lib/plan.js';
 import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js';
 import { regionalFromObs } from '../lib/regional.js';
 import { PRESSURE_LEVELS } from '../lib/openmeteo.js';
@@ -156,7 +156,19 @@ const mountainFor = site => Object.values(mountain).map(m => ({ m, d: haversineK
   .filter(x => x.d <= 20 && x.dz <= 700).sort((a, b) => a.d + a.dz / 100 - (b.d + b.dz / 100))[0]?.m || null;
 const mRows = [];
 
-const raw = { fetchedAt: to, model: 'Archiv', sites: sfcSites, areas: {}, ref: { sea: sfcAreas.REF, pl: plAreas.REF || null }, stations: {} };
+// Föhnregel: Druck Lugano und Zürich-Kloten (wird bei älteren Zwischenspeichern nachgeladen)
+let grad = cache?.grad;
+if (!grad) {
+  process.stdout.write('Druck Lugano/Zürich laden ');
+  try {
+    grad = await history(FOEHN_POINTS, ['pressure_msl'], ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
+    const prev = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    prev.grad = grad;
+    await fs.writeFile(cacheFile, JSON.stringify(prev));
+    console.log(' ok');
+  } catch (e) { console.log(` nicht verfügbar (${e.message}), ohne Föhnregel weiter`); grad = {}; }
+}
+const raw = { fetchedAt: to, model: 'Archiv', sites: sfcSites, areas: {}, ref: { sea: sfcAreas.REF, pl: plAreas.REF || null }, stations: {}, grad };
 for (const a of areas) raw.areas[a.id] = { sea: sfcAreas[a.id] || null, pl: plAreas[a.id] || null, ecmwf: null };
 if (!raw.ref.sea) { console.error('Keine Referenzprognose, Abbruch.'); process.exit(1); }
 
@@ -165,7 +177,7 @@ const obsAt = ms => Object.fromEntries(Object.entries(obs).map(([c, m]) => [c, m
 /** Nächste Kernstation mit Messwerten zu einem Gebiet. */
 const nearestStation = a => Object.entries(CORE_STATIONS).filter(([c]) => obs[c]).map(([c, s]) => ({ c, d: haversineKm(a.lat, a.lon, s.lat, s.lon) })).sort((x, y) => x.d - y.d)[0];
 
-const rows = [], dayLines = [];
+const rows = [], dayLines = [], foehnDays = [];
 for (let d = from; d <= to; d += DAY) {
   const date = ymd(d);
   // Wie in der App am Morgen: Prognose plus die Messwerte von dann (Föhn am Alpenkamm, Bise, Talwind)
@@ -180,6 +192,9 @@ for (let d = from; d <= to; d += DAY) {
   for (let ms = d; ms < d + DAY; ms += 3600000) { const h = zurichParts(ms).hour; if (h >= 10 && h <= 16) hrs.push(ms); }
   // Föhn aus Messungen (gleiche Logik wie live), mindestens 2 Stunden
   const foehnHours = hrs.filter(ms => regionalFromObs(obsAt(ms), {}).foehn === 'danger').length;
+  // Föhnregel aus der Prognose: grösster Druckunterschied Lugano–Zürich im Startfenster
+  const dpMax = Math.max(-99, ...plan.region.days[di].hours.filter(h => h.h >= 10 && h.h <= 16).map(h => h.dp ?? -99));
+  if (dpMax > -99) foehnDays.push({ date, dp: dpMax, measured: foehnHours >= 2 });
   const parts = [];
   for (const a of plan.areas) {
     const bestObj = a.days[di] ?? null;
@@ -235,6 +250,21 @@ const cnt = v => rows.filter(r => r.verdict === v).length;
 const pct = x => (n ? Math.round(x / n * 100) : 0) + ' %';
 const byTruth = t => rows.filter(r => r.truth === t && r.best !== null);
 const avg = a => (a.length ? Math.round(a.reduce((s, r) => s + r.best, 0) / a.length) : '–');
+/** Föhnregel Lugano–Zürich gegen gemessenen Föhn: trifft sie, und wie oft warnt sie umsonst? */
+function foehnReport() {
+  if (!foehnDays.length) return ['FÖHNREGEL (Druck Lugano–Zürich): keine Druckdaten', ''];
+  const row = (lo, hi) => { const d = foehnDays.filter(x => x.dp >= lo && x.dp < hi); return `${d.length} Tage, davon Föhn gemessen ${d.filter(x => x.measured).length}`; };
+  const missed = foehnDays.filter(x => x.measured && x.dp < 4);
+  return [
+    'FÖHNREGEL (Druck Lugano minus Zürich-Kloten, grösster Wert 10–16 Uhr)',
+    `  unter 4 hPa (kein Signal): ${row(-99, 4)}`,
+    `  4 bis 8 hPa (Vorsicht):    ${row(4, 8)}`,
+    `  ab 8 hPa (Föhn-K.-o.):     ${row(8, 99)}`,
+    `  Föhntage ohne Signal: ${missed.length ? missed.map(x => `${x.date} (${x.dp.toFixed(1)} hPa)`).join(', ') : 'keine'}`,
+    ''
+  ];
+}
+
 const report = [
   `AFC Rückblick-Test ${ymd(from)} bis ${ymd(to)} (Erfahrungsstufe Normal, bestes Startfenster 10–16 Uhr je Gebiet)`,
   '',
@@ -258,6 +288,7 @@ const report = [
   '',
   'Hinweis: getestet wird die Bewertungslogik mit kurzfristigen Prognosen. Die Messung stammt von Talstationen.',
   '',
+  ...foehnReport(),
   ...mountainReport()
 ].join('\n');
 

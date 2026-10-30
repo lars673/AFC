@@ -357,3 +357,17 @@ test('Routenplaner: bleibt unter einem Luftraum und fliegt um eine Kontrollzone 
   assert.equal(c.ok, true, c.reason);
   assert.ok(c.cells.every(k => { const x = k % nx, y = Math.floor(k / nx); return !(x >= 25 && x <= 35 && y >= 5 && y <= 25); }), 'nicht durch die CTR');
 });
+
+test('Föhnregel: Druck Lugano minus Zürich', async () => {
+  const { foehnFromGradient, worstLevel } = await import('../lib/scoring.js');
+  assert.equal(foehnFromGradient(null), 'ok');
+  assert.equal(foehnFromGradient(2.5), 'ok');
+  assert.equal(foehnFromGradient(5), 'warn');
+  assert.equal(foehnFromGradient(9.2), 'danger');
+  assert.equal(worstLevel('ok', 'warn', 'ok'), 'warn');
+  assert.equal(worstLevel('warn', 'danger'), 'danger');
+  // Föhnsignal: höchstens «Vorsicht» und der Grund nennt den Druckunterschied
+  const a = assessHour(site, good({ foehn: 'warn', foehnDp: 5.4 }));
+  assert.ok(a.score <= 74, 'Score ' + a.score);
+  assert.ok(a.reasons.some(r => /Lugano–Zürich \+5\.4 hPa/.test(r)), a.reasons.join(' | '));
+});
