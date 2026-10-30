@@ -93,6 +93,12 @@ test('Böen am Startplatz nicht kleiner als 10-m-Böen', () => {
   assert.ok(gustAtLaunch(30, 12, 20) > 30);
 });
 
+test('Modellböen bei schwachem Wind werden begrenzt (Bergstationen: 5/43 prognostiziert, 5/10 gemessen)', () => {
+  assert.ok(gustAtLaunch(5, 4, 43) <= 20, String(gustAtLaunch(5, 4, 43)));
+  assert.ok(gustAtLaunch(19, 15, 70) <= 38, String(gustAtLaunch(19, 15, 70)));
+  assert.ok(gustAtLaunch(30, 25, 55) >= 55, 'bei kräftigem Wind bleiben echte Böen');
+});
+
 test('Regionsurteil: Front ist K.-o., Höhenwind nur Abzug', () => {
   assert.equal(regionVerdict({ front: { level: 'danger' }, cape: 0, pop: 0 }).score, 0);
   assert.ok(regionVerdict({ front: { level: 'ok' }, up800: { speed: 55 }, cape: 0, pop: 0 }).score >= 80);
