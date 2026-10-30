@@ -367,10 +367,10 @@ const fileCache = new Map();
 async function serveStatic(req, res, route) {
   const [file, type, isSw] = route;
   try {
-    const st = await fs.stat(path.join(ROOT, file));
+    const st = await fs.stat(path.resolve(ROOT, file));
     let c = fileCache.get(file);
     if (!c || c.mtime !== st.mtimeMs) {
-      const buf = await fs.readFile(path.join(ROOT, file));
+      const buf = await fs.readFile(path.resolve(ROOT, file));
       const text = /^(text|application\/(manifest|json|octet-stream))/.test(type);   // Geländeraster komprimiert sich gut
       c = { mtime: st.mtimeMs, buf, gz: text ? zlib.gzipSync(buf) : null, etag: '"' + crypto.createHash('sha1').update(buf).digest('base64url').slice(0, 20) + '"' };
       fileCache.set(file, c);
@@ -493,6 +493,11 @@ const server = http.createServer(async (req, res) => {
       return sendJson(req, res, 404, { error: 'not found' });
     }
 
+    if (p === '/kk7-grid.bin' && (req.method === 'GET' || req.method === 'HEAD')) {
+      // Thermik aus Flügen (kk7, CC BY-NC-SA): wird lokal von tools/calibrate-kk7.js erzeugt, nicht im Repository
+      if (!fsc.existsSync(path.join(dataDir, 'kk7-grid.bin'))) return sendJson(req, res, 404, { error: 'kein kk7-Abgleich vorhanden' });
+      return serveStatic(req, res, [path.join(dataDir, 'kk7-grid.bin'), 'application/octet-stream']);
+    }
     const route = STATIC.get(p);
     if (route && (req.method === 'GET' || req.method === 'HEAD')) return serveStatic(req, res, route);
     return sendJson(req, res, 404, { error: 'not found' });

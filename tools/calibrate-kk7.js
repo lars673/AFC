@@ -96,7 +96,8 @@ for (const h of HOURS) {
 }
 
 /* ---------------------------------------------------------------- Modell mit Parametern (wie app.js thermalCell) */
-const BASE = { diffuse: 0.25, formBase: 0.55, formScale: 100, slopeFloor: 0.45, slopeFull: 25, flat: 0.15, top: 3200 };
+// Stand app.js nach dem ersten Abgleich (30.10.2026); top = angenommene Thermikobergrenze an einem guten Sommertag
+const BASE = { diffuse: 0.28, formBase: 0.62, formScale: 230, slopeFloor: 0.84, slopeFull: 40, flat: 0.6, top: 3750 };
 function model(p, k) {
   const heat = p.diffuse * sunS[k] + (1 - p.diffuse) * sunR[k];
   const fReach = Math.min(1, Math.max(0, (p.top - elev[k] - 100) / 900));
@@ -113,6 +114,22 @@ for (let y = 0; y < G.ny; y += 2) for (let x = 0; x < G.nx; x += 2) {
   if (any) covered.push(y * G.nx + x);
 }
 if (covered.length < 500) { console.error(`Zu wenig kk7-Daten im Gebiet (${covered.length} Zellen). Stimmt die Ebene «${LAYER}»?`); process.exit(1); }
+
+// Thermik aus Flügen je Zelle für die App (data/kk7-grid.bin): Rang 1–255 unter allen Zellen mit kk7-Signal,
+// 0 = beflogenes Gebiet ohne Thermik, 128 = keine Flüge in der Nähe (neutral)
+{
+  const cov = new Uint8Array(N);
+  for (const k of covered) { const y = Math.floor(k / G.nx), x = k % G.nx; for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) if (y + dy < G.ny && x + dx < G.nx) cov[(y + dy) * G.nx + x + dx] = 1; }
+  const sig = []; for (let k = 0; k < N; k++) if (kA[k] > 0.02) sig.push(k);
+  sig.sort((a, b) => kA[a] - kA[b]);
+  const grid = new Uint8Array(N).fill(128);
+  for (let k = 0; k < N; k++) if (cov[k]) grid[k] = 0;
+  sig.forEach((k, i) => { grid[k] = 1 + Math.floor(254 * i / Math.max(1, sig.length - 1)); });
+  const head = Buffer.from(JSON.stringify({ la0: G.la0, lo0: G.lo0, dla: G.dla, dlo: G.dlo, ny: G.ny, nx: G.nx, layer: LAYER, source: 'thermal.kk7.ch, CC BY-NC-SA 4.0', built: new Date().toISOString().slice(0, 10) }));
+  const out = Buffer.alloc(4 + head.length + N); out.writeUInt32LE(head.length, 0); head.copy(out, 4); Buffer.from(grid.buffer).copy(out, 4 + head.length);
+  await fs.mkdir(OUT_DIR, { recursive: true });
+  await fs.writeFile(path.join(OUT_DIR, 'kk7-grid.bin'), out);
+}
 
 const ranks = vals => { const idx = vals.map((v, i) => i).sort((a, b) => vals[a] - vals[b]); const r = new Float64Array(vals.length); idx.forEach((i, j) => (r[i] = j)); return r; };
 function spearman(a, b) {
@@ -178,4 +195,4 @@ const report = [
 await fs.mkdir(OUT_DIR, { recursive: true });
 await fs.writeFile(path.join(OUT_DIR, 'kk7-abgleich.txt'), report + '\n');
 await fs.writeFile(path.join(OUT_DIR, 'kk7-abgleich.json'), JSON.stringify({ layer: LAYER, covered: covered.length, truthName, base: { p: BASE, ...base }, best, effect }, null, 1));
-console.log('\n' + report + `\n\nGespeichert: ${path.join(OUT_DIR, 'kk7-abgleich.txt')}`);
+console.log('\n' + report + `\n\nGespeichert: ${path.join(OUT_DIR, 'kk7-abgleich.txt')}\nThermik aus Flügen für die Karte: ${path.join(OUT_DIR, 'kk7-grid.bin')} (Seite neu laden mit Cmd+R)`);

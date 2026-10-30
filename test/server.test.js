@@ -75,6 +75,7 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.ok(th.sunPos.elev > 20, 'Sonnenhöhe ' + th.sunPos.elev);
     assert.ok(th.top.every(x => x === null || x > 1000) && th.top.some(x => x > 1500), 'Thermikhöhe ' + th.top.slice(0, 3));
     assert.equal(th.wind['800'].u.length, th.grid.nx * th.grid.ny);
+    assert.equal((await fetch(s.base + '/kk7-grid.bin')).status, 404);   // nur nach lokalem kk7-Abgleich vorhanden
     const gr = await fetch(s.base + '/terrain-grid.bin');
     assert.equal(gr.status, 200);
     const buf = Buffer.from(await gr.arrayBuffer()), hl = buf.readUInt32LE(0), meta = JSON.parse(buf.subarray(4, 4 + hl));

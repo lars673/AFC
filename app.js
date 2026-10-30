@@ -758,7 +758,16 @@ async function thermalGrid() {
     const g = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
     const o = 4 + hl + ((4 + hl) % 2), N = g.ny * g.nx;
     const copy = (Ctor, off, n) => new Ctor(buf.slice(off, off + n * Ctor.BYTES_PER_ELEMENT));
-    T.grid = { ...g, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
+    // Optional: Thermik aus Flügen (kk7), auf diesem Mac mit tools/calibrate-kk7.js erzeugt
+    let kk7 = null;
+    try {
+      const rk = await fetch('/kk7-grid.bin');
+      if (rk.ok) {
+        const kb = await rk.arrayBuffer(), kl = new DataView(kb).getUint32(0, true), km = JSON.parse(new TextDecoder().decode(new Uint8Array(kb, 4, kl)));
+        if (km.nx === g.nx && km.ny === g.ny) kk7 = new Uint8Array(kb, 4 + kl, N);
+      }
+    } catch {}
+    T.grid = { ...g, kk7, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
     return T.grid;
   })().catch(e => { T.gridReq = null; throw e; });
   return T.gridReq;
@@ -780,7 +789,7 @@ function slopeSun(sw, pos, slopeDeg, aspectDeg) {
   if (!(sw > 0) || !(pos.elev > 0)) return 0;
   const s = slopeDeg * D2R, e = pos.elev * D2R;
   const cosi = Math.cos(s) * Math.sin(e) + Math.sin(s) * Math.cos(e) * Math.cos((pos.az - aspectDeg) * D2R);
-  return sw * (0.25 + 0.75 * Math.min(3, Math.max(0, cosi) / Math.max(Math.sin(e), 0.15)));
+  return sw * (0.28 + 0.72 * Math.min(3, Math.max(0, cosi) / Math.max(Math.sin(e), 0.15)));
 }
 
 /** Thermikwert 0–1 einer Rasterzelle mit Begründung. */
@@ -794,12 +803,17 @@ function thermalCell(d, g, k, lat, lon) {
   const heat = Math.min(1.2, (0.6 * heatNow + 0.4 * heatBefore) / 750);
   const reach = top == null ? 0 : top - elev;
   const fReach = Math.min(1, Math.max(0, (reach - 100) / 900));
-  const fForm = Math.min(1.3, Math.max(0.25, 0.55 + form / 100));      // Kreten und Kuppen lösen Thermik aus, Mulden kaum
-  const fSlope = slope < 2 ? 0.15 : 0.45 + 0.55 * Math.min(1, slope / 25);   // Seen und Talböden heizen kaum auf
+  // Gewichtung abgeglichen mit kk7 (rund 3,8 Mio. Flüge, tools/calibrate-kk7.js, 30.10.2026):
+  // Geländeform und Steilheit zählen weniger als angenommen, auch flaches Gelände liefert Thermik
+  const fForm = Math.min(1.3, Math.max(0.25, 0.62 + form / 230));      // Kreten und Kuppen lösen etwas besser aus
+  const fSlope = slope < 2 ? 0.6 : 0.84 + 0.16 * Math.min(1, slope / 40);
+  // Wo Piloten tatsächlich Thermik gefunden haben (kk7), falls auf diesem Mac abgeglichen; sonst neutral
+  const flights = g.kk7 ? g.kk7[k] / 255 : null;
+  const fFlights = flights == null ? 1 : 0.4 + 0.9 * flights;
   const fStrength = Math.min(1.2, Math.max(0.2, wstar / 2));
   const fCloud = (1 - 0.7 * Math.min(100, low) / 100) * (rain >= 0.3 ? 0 : rain >= 0.1 ? 0.5 : 1);
-  const v = Math.min(1, (heat * fReach * fForm * fSlope * fStrength * fCloud) ** 1.4);   // nur die besten Stellen leuchten
-  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
+  const v = Math.min(1, (heat * fReach * fForm * fSlope * fStrength * fCloud * fFlights) ** 1.4);   // nur die besten Stellen leuchten
+  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, flights, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
 }
 
 const THERMAL_RAMP = [[0.2, [255, 230, 90, 0]], [0.3, [255, 210, 60, 110]], [0.5, [255, 140, 30, 170]], [0.7, [235, 60, 30, 200]], [1, [180, 0, 60, 220]]];
@@ -871,6 +885,11 @@ function thermalWhy(lat, lon) {
   else why.push(`Thermik bis ca. ${Math.round(c.top / 100) * 100} m (${Math.round(c.reach / 100) * 100} m über Gelände), Steigen um ${c.wstar.toFixed(1)} m/s`);
   if (c.form >= 25) why.push('Krete oder Kuppe: hier lösen Thermikblasen ab');
   else if (c.form <= -25) why.push('Mulde oder Tal: Thermik löst eher weiter oben ab');
+  if (c.flights != null && c.flights !== 0.5) {
+    if (c.flights >= 0.9) why.push('Bekannter Thermikspot: hier fanden Piloten besonders oft Thermik (kk7, 3,8 Mio. Flüge)');
+    else if (c.flights >= 0.7) why.push('In Flügen häufig Thermik an dieser Stelle (kk7)');
+    else if (c.flights <= 0.15) why.push('In Flügen selten Thermik an dieser Stelle (kk7)');
+  }
   if (c.rain >= 0.1) why.push('Regen dämpft die Thermik');
   else if (c.low >= 40) why.push(`tiefe Wolken (${Math.round(c.low)} %) beschatten den Hang`);
   return { title: 'Thermik ' + level, elev: c.elev, why };
