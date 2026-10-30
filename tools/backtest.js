@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { httpGet } from '../lib/http.js';
 import { PlanModel, areasOf, isRanked, REF_POINT } from '../lib/plan.js';
-import { CORE_STATIONS, parseCSVLine } from '../lib/stations.js';
+import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js';
 import { regionalFromObs } from '../lib/regional.js';
 import { PRESSURE_LEVELS } from '../lib/openmeteo.js';
 import { omTimeToMs, zurichParts, haversineKm, isNum } from '../lib/util.js';
@@ -137,6 +137,25 @@ else {
 }
 if (!Object.keys(obs).length) { console.error('Keine Messwerte, Abbruch.'); process.exit(1); }
 
+// Bergstationen (ab 1500 m): messen Wind und Böen dort, wo gestartet wird, nicht im Tal
+const mountain = {};
+if (cache?.mountain) for (const [c, v] of Object.entries(cache.mountain)) mountain[c] = { ...v.meta, rows: new Map(v.rows) };
+else {
+  process.stdout.write('Bergstationen laden ');
+  const { list } = await loadStationList();
+  for (const st of Object.values(list).filter(x => isNum(x.alt) && x.alt >= 1500)) {
+    try { mountain[st.code] = { code: st.code, name: st.name, lat: st.lat, lon: st.lon, alt: st.alt, rows: await stationHours(st.code) }; process.stdout.write('.'); } catch (e) { console.log(`\n  ${st.code}: ${e.message}`); }
+  }
+  console.log(` ${Object.keys(mountain).length} Stationen`);
+  const prev = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+  prev.mountain = Object.fromEntries(Object.entries(mountain).map(([c, m]) => [c, { meta: { code: m.code, name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }, rows: [...m.rows] }]));
+  await fs.writeFile(cacheFile, JSON.stringify(prev));
+}
+/** Nächste Bergstation zu einem Startplatz: höchstens 20 km entfernt und 700 m Höhenunterschied. */
+const mountainFor = site => Object.values(mountain).map(m => ({ m, d: haversineKm(site.lat, site.lon, m.lat, m.lon), dz: Math.abs((site.alt ?? 0) - m.alt) }))
+  .filter(x => x.d <= 20 && x.dz <= 700).sort((a, b) => a.d + a.dz / 100 - (b.d + b.dz / 100))[0]?.m || null;
+const mRows = [];
+
 const raw = { fetchedAt: to, model: 'Archiv', sites: sfcSites, areas: {}, ref: { sea: sfcAreas.REF, pl: plAreas.REF || null }, stations: {} };
 for (const a of areas) raw.areas[a.id] = { sea: sfcAreas[a.id] || null, pl: plAreas[a.id] || null, ecmwf: null };
 if (!raw.ref.sea) { console.error('Keine Referenzprognose, Abbruch.'); process.exit(1); }
@@ -186,6 +205,18 @@ for (let d = from; d <= to; d += DAY) {
     const truth = why.length ? 'schlecht' : (rain === 0 && maxGust < 30 ? 'gut' : 'mittel');
     const afc = best === null ? '–' : best >= 80 ? 'Start' : best >= 55 ? 'Prüfen' : 'Nein';
     const verdict = best === null ? 'keine Bewertung' : afc === 'Start' && truth === 'schlecht' ? 'GEFÄHRLICH' : afc === 'Nein' && truth === 'gut' ? 'zu streng' : 'passt';
+    // Vergleich mit der Bergstation zur besten Stunde (± 1 Stunde)
+    const site = fc.site ? sites.find(x => x.id === fc.site) : null, mst = site ? mountainFor(site) : null;
+    if (mst && best !== null) {
+      const peakMs = hrs.find(ms => zurichParts(ms).hour === fc.hour);
+      const near = peakMs ? [peakMs - 3600000, peakMs, peakMs + 3600000].map(ms => mst.rows.get(ms)).filter(o => o && isNum(o.wind)) : [];
+      if (near.length) {
+        const mw = Math.max(...near.map(o => o.wind)), mg = Math.max(...near.map(o => o.gust ?? o.wind));
+        const windKo = /Wind|Böen/.test(ko + ' ' + reasons);
+        const mv = afc === 'Start' && (mg >= 40 || mw >= 28) ? 'GEFÄHRLICH' : afc === 'Nein' && windKo && mg < 25 ? 'zu streng' : 'passt';
+        mRows.push({ date, area: a.name, site: site.name, station: mst.code, stationName: mst.name, best, afc, fcWind: fc.wind, fcGust: fc.gust, obsWind: Math.round(mw), obsGust: Math.round(mg), verdict: mv });
+      }
+    }
     rows.push({ date, area: a.name, best, afc, truth, verdict, why: why.join('; '), station: st.c, maxWind: Math.round(maxWind), maxGust: Math.round(maxGust), rain: +rain.toFixed(1), site: fc.site ?? '', hour: fc.hour ?? '', fcWind: fc.wind ?? '', fcGust: fc.gust ?? '', fcCape: fc.cape ?? '', fcPop: fc.pop ?? '', thermal: fc.therm ?? '', ko, reasons });
     if (verdict !== 'passt' && best !== null) parts.push(`${a.name} ${best} → ${verdict}${why.length ? ' (' + why.join('; ') + ')' : ''}`);
   }
@@ -221,12 +252,36 @@ const report = [
   'Tag für Tag (nur Abweichungen):',
   ...dayLines,
   '',
-  'Hinweis: getestet wird die Bewertungslogik mit kurzfristigen Prognosen. Die Messung stammt von Talstationen.'
+  'Hinweis: getestet wird die Bewertungslogik mit kurzfristigen Prognosen. Die Messung stammt von Talstationen.',
+  '',
+  ...mountainReport()
 ].join('\n');
+
+function mountainReport() {
+  if (!mRows.length) return ['Bergstationen: keine passenden Messungen (Station höchstens 20 km und 700 m Höhe vom Startplatz).'];
+  const c = v => mRows.filter(r => r.verdict === v).length;
+  const err = (rs, k) => { const v = rs.filter(r => isNum(r['fc' + k]) && isNum(r['obs' + k])).map(r => r['fc' + k] - r['obs' + k]); return v.length ? { bias: v.reduce((x, y) => x + y, 0) / v.length, mae: v.reduce((x, y) => x + Math.abs(y), 0) / v.length, n: v.length } : null; };
+  const f = e => (e ? `${e.bias >= 0 ? '+' : ''}${e.bias.toFixed(1)} km/h (Ø Abweichung ${e.mae.toFixed(1)})` : '–');
+  const byStation = Object.values(mRows.reduce((m, r) => { (m[r.station] ||= { name: r.stationName, code: r.station, rs: [] }).rs.push(r); return m; }, {}));
+  return [
+    'WIND UND BÖEN AUF STARTHÖHE (Bergstationen ab 1500 m, beste Stunde ± 1 h)',
+    `Verglichene Gebietstage: ${mRows.length}`,
+    `  passt:       ${c('passt')} (${Math.round(c('passt') / mRows.length * 100)} %)`,
+    `  GEFÄHRLICH:  ${c('GEFÄHRLICH')}  AFC sagte «Start», oben gemessen Böen ab 40 oder Wind ab 28 km/h`,
+    `  zu streng:   ${c('zu streng')}  AFC sagte «Nein» wegen Wind/Böen, oben gemessen Böen unter 25 km/h`,
+    `Prognose minus Messung, alle: Wind ${f(err(mRows, 'Wind'))}, Böen ${f(err(mRows, 'Gust'))}`,
+    '(Plus = AFC rechnet mit mehr Wind als gemessen, Minus = AFC unterschätzt den Wind.)',
+    'Je Station:',
+    ...byStation.map(b => `  ${b.name} (${b.code}, ${b.rs.length} Tage): Wind ${f(err(b.rs, 'Wind'))}, Böen ${f(err(b.rs, 'Gust'))}`),
+    ...(c('GEFÄHRLICH') ? ['Gefährliche Fälle (oben gemessen):', ...mRows.filter(r => r.verdict === 'GEFÄHRLICH').map(r => `  ${r.date} ${r.area} (${r.site}): Score ${r.best}, Prognose ${r.fcWind}/${r.fcGust}, gemessen ${r.obsWind}/${r.obsGust} km/h (${r.stationName})`)] : []),
+    ...(c('zu streng') ? ['Zu streng wegen Wind (oben ruhig):', ...mRows.filter(r => r.verdict === 'zu streng').slice(0, 15).map(r => `  ${r.date} ${r.area} (${r.site}): Score ${r.best}, Prognose ${r.fcWind}/${r.fcGust}, gemessen ${r.obsWind}/${r.obsGust} km/h (${r.stationName})`)] : [])
+  ];
+}
 console.log('\n' + report);
 const stamp = ymd(Date.now());
 await fs.mkdir(OUT, { recursive: true });
 await fs.writeFile(path.join(OUT, `backtest-${stamp}.txt`), report + '\n');
 const head = Object.keys(rows[0] || { date: 0 });
 await fs.writeFile(path.join(OUT, `backtest-${stamp}.csv`), [head.join(';'), ...rows.map(r => head.map(k => String(r[k] ?? '').replace(/;/g, ',')).join(';'))].join('\n') + '\n');
+if (mRows.length) { const mh = Object.keys(mRows[0]); await fs.writeFile(path.join(OUT, `backtest-${stamp}-berg.csv`), [mh.join(';'), ...mRows.map(r => mh.map(k => String(r[k] ?? '').replace(/;/g, ',')).join(';'))].join('\n') + '\n'); }
 console.log(`\nGespeichert: ${path.join(OUT, `backtest-${stamp}.txt`)} und .csv`);
