@@ -51,9 +51,12 @@ export function startMock(scenario = 'good', port = 0) {
       const vars = u.searchParams.get('hourly').split(',');
       const model = u.searchParams.get('models');
       if (state.failVars && vars.includes(state.failVars)) { res.writeHead(400); return res.end('{"error":true,"reason":"bad var"}'); }
+      // Archiv-Abfrage (start_date/end_date): Zeitreihe über den verlangten Zeitraum
+      const sd = u.searchParams.get('start_date'), ed = u.searchParams.get('end_date');
+      const tt = sd && ed ? Array.from({ length: (Date.parse(ed) - Date.parse(sd)) / 3600000 + 24 }, (_, i) => new Date(Date.parse(sd) + i * 3600000).toISOString().slice(0, 16)) : times;
       const out = lats.map(lat => {
-        const hourly = { time: times };
-        for (const v of vars) hourly[v] = times.map((_, i) => series(v, lat, i) + (model === 'ecmwf_ifs025' && v.startsWith('wind_speed') ? 3 : 0));
+        const hourly = { time: tt };
+        for (const v of vars) hourly[v] = tt.map((_, i) => series(v, lat, i) + (model === 'ecmwf_ifs025' && v.startsWith('wind_speed') ? 3 : 0));
         return { latitude: lat, elevation: 1000, hourly };
       });
       return json(out.length === 1 ? out[0] : out);
@@ -65,6 +68,17 @@ export function startMock(scenario = 'good', port = 0) {
       const rows = ['GRH', 'THU', 'INT', 'ABO', 'MER', 'GTT', 'KAS', 'BER', 'GUE', 'SCM'].map(c => `${c};${ts};${wind};${wind * 1.4};${dir};14.0;60;900;6;300;0`);
       res.writeHead(200, { 'Content-Type': 'text/csv' });
       return res.end(['station_abbr;reference_timestamp;fu3010z0;fu3010z1;dkl010z0;tre200s0;ure200s0;prestas0;tde200s0;gre000z0;rre150z0', ...rows].join('\n'));
+    }
+    if (/ogd-smn_[a-z]+_h_recent\.csv$/.test(u.pathname)) {
+      const rows = [];
+      for (let i = 0; i < 24 * 60; i++) {
+        const d = new Date(day0 - 50 * 86400000 + i * 3600000);
+        const ts = `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2, '0')}:00`;
+        const bad = d.getUTCDate() % 7 === 0;   // jeder 7. Tag: Starkwind und Regen
+        rows.push(`${u.pathname.match(/smn_([a-z]+)_h/)[1].toUpperCase()};${ts};${bad ? 35 : 8};${bad ? 60 : 15};200;${bad ? 1.2 : 0}`);
+      }
+      res.writeHead(200, { 'Content-Type': 'text/csv' });
+      return res.end(['station_abbr;reference_timestamp;fu3010h0;fu3010h1;dkl010h0;rre150h0', ...rows].join('\n'));
     }
     if (u.pathname.includes('foehn')) return json({ features: [{ id: 'ABO', properties: { value: state.scenario === 'foehn' ? 2 : 0 } }] });
     if (u.pathname.endsWith('meta_stations.csv')) {

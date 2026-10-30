@@ -26,6 +26,10 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 `node tools/build-terrain.js` berechnet aus einem Höhenmodell (AWS Terrain Tiles, ca. 26 m) für jeden Startplatz Hangneigung, Exposition, Relief und den Horizont in 24 Richtungen (Bergschatten) und schreibt sie in `lib/sites.json`. Nur nötig, wenn Startplätze dazukommen oder sich ändern. Fehlt die Platzhöhe, wird sie aus dem Höhenmodell übernommen (`altSource`).
 
+## Rückblick-Test
+
+`node tools/backtest.js --days 90` (oder Doppelklick auf `tools/AFC Rückblick-Test.command`) rechnet AFC mit archivierten Prognosen von Open-Meteo für vergangene Tage durch und vergleicht das Urteil je Gebiet mit den Messungen der MeteoSchweiz (Föhn, Starkwind, Regen). Ergebnis in `data/backtest-<datum>.txt` und `.csv`. Getestet wird die Bewertungslogik mit kurzfristigen Prognosen; die Messung stammt von Talstationen.
+
 ## Deployment
 
 * **Render**: `render.yaml` (Disk auf `/app/data`).

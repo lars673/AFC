@@ -126,3 +126,19 @@ test('Rate-Limit nach X-Forwarded-For', async () => {
     assert.equal(other.status, 200);
   } finally { await s.stop(); }
 });
+
+test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', async () => {
+  const mock = await startMock('good');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-bt-'));
+  try {
+    const code = await new Promise(r => spawn(process.execPath, ['tools/backtest.js', '--days', '15'], {
+      cwd: path.resolve(import.meta.dirname, '..'), stdio: 'ignore',
+      env: { ...process.env, AFC_HISTORY_URL: mock.url, AFC_SMN_URL: mock.url, AFC_DATA_DIR: dir }
+    }).on('exit', r));
+    assert.equal(code, 0);
+    const txt = fs.readFileSync(path.join(dir, fs.readdirSync(dir).find(f => f.endsWith('.txt'))), 'utf8');
+    assert.match(txt, /Bewertete Gebietstage: \d+/);
+    // Im Mock ist die Prognose immer gut, gemessen wird jeden 7. Tag Sturm: das muss als GEFÄHRLICH auffallen
+    assert.match(txt, /GEFÄHRLICH: +[1-9]/);
+  } finally { await mock.close(); }
+});
