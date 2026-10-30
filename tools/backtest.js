@@ -97,20 +97,34 @@ const ranked = sites.filter(isRanked);
 const areas = areasOf(sites.map(s => ({ ...s })));
 console.log(`Rückblick ${ymd(from)} bis ${ymd(to)}: ${ranked.length} Startplätze, ${areas.length} Gebiete`);
 
-process.stdout.write('Prognose-Archiv laden ');
-const sitePts = ranked.map(s => ({ id: s.id, lat: s.lat, lon: s.lon }));
-const areaPts = [...areas.map(a => ({ id: a.id, lat: a.lat, lon: a.lon })), REF_POINT];
-const sfcSites = await history(sitePts, SURFACE, ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
-const sfcAreas = await history(areaPts, SURFACE, ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
-const plAreas = await history(areaPts, PL, ['icon_seamless', 'best_match']);
-console.log(' ok');
-
-process.stdout.write('Messwerte MeteoSchweiz laden ');
-const obs = {};
-for (const code of Object.keys(CORE_STATIONS)) {
-  try { obs[code] = await stationHours(code); process.stdout.write('.'); } catch (e) { console.log(`\n  ${e.message}`); }
+// Archivdaten zwischenspeichern: ein zweiter Lauf über denselben Zeitraum braucht keine Abrufe
+const cacheFile = path.join(OUT, `backtest-cache-${ymd(from)}-${ymd(to)}.json`);
+let cache = null;
+if (!process.argv.includes('--fresh')) { try { cache = JSON.parse(await fs.readFile(cacheFile, 'utf8')); } catch { /* kein Cache */ } }
+let sfcSites, sfcAreas, plAreas;
+if (cache) { ({ sfcSites, sfcAreas, plAreas } = cache); console.log('Prognose-Archiv aus Zwischenspeicher (--fresh lädt neu)'); }
+else {
+  process.stdout.write('Prognose-Archiv laden ');
+  const sitePts = ranked.map(s => ({ id: s.id, lat: s.lat, lon: s.lon }));
+  const areaPts = [...areas.map(a => ({ id: a.id, lat: a.lat, lon: a.lon })), REF_POINT];
+  sfcSites = await history(sitePts, SURFACE, ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
+  sfcAreas = await history(areaPts, SURFACE, ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
+  plAreas = await history(areaPts, PL, ['icon_seamless', 'best_match']);
+  console.log(' ok');
+  await fs.mkdir(OUT, { recursive: true });
+  await fs.writeFile(cacheFile, JSON.stringify({ sfcSites, sfcAreas, plAreas }));
 }
-console.log(' ok');
+
+const obs = {};
+if (cache?.obs) for (const [c, rows] of Object.entries(cache.obs)) obs[c] = new Map(rows);
+else {
+  process.stdout.write('Messwerte MeteoSchweiz laden ');
+  for (const code of Object.keys(CORE_STATIONS)) {
+    try { obs[code] = await stationHours(code); process.stdout.write('.'); } catch (e) { console.log(`\n  ${e.message}`); }
+  }
+  console.log(' ok');
+  await fs.writeFile(cacheFile, JSON.stringify({ sfcSites, sfcAreas, plAreas, obs: Object.fromEntries(Object.entries(obs).map(([c, m]) => [c, [...m]])) }));
+}
 if (!Object.keys(obs).length) { console.error('Keine Messwerte, Abbruch.'); process.exit(1); }
 
 const raw = { fetchedAt: to, model: 'Archiv', sites: sfcSites, areas: {}, ref: { sea: sfcAreas.REF, pl: plAreas.REF || null }, stations: {} };
@@ -136,7 +150,18 @@ for (let d = from; d <= to; d += DAY) {
   const foehnHours = hrs.filter(ms => regionalFromObs(obsAt(ms), {}).foehn === 'danger').length;
   const parts = [];
   for (const a of plan.areas) {
-    const best = a.days[di]?.best?.score ?? null;
+    const bestObj = a.days[di] ?? null;
+    const best = bestObj?.best?.score ?? null;
+    // Was hat AFC zu diesem Urteil gebracht? Gründe zur besten Stunde des besten Startplatzes
+    let ko = '', reasons = '', fc = {};
+    if (bestObj) {
+      const hr = model.siteDetail(bestObj.siteId, 'normal')?.days[di]?.hours.find(h => h.h === bestObj.best.peak);
+      if (hr) {
+        ko = hr.hard.map(x => x.replace(/^K\.-o\.: /, '')).join(', ');
+        reasons = hr.reasons.slice(0, 3).join(', ');
+        fc = { wind: hr.speed, gust: hr.gust, cape: hr.cape, pop: hr.pop, therm: hr.thermal, site: bestObj.siteId, hour: hr.h };
+      }
+    }
     const area = areas.find(x => x.id === a.id);
     const st = nearestStation(area);
     const series = hrs.map(ms => obs[st.c].get(ms)).filter(Boolean);
@@ -151,7 +176,7 @@ for (let d = from; d <= to; d += DAY) {
     const truth = why.length ? 'schlecht' : (rain === 0 && maxGust < 30 ? 'gut' : 'mittel');
     const afc = best === null ? '–' : best >= 80 ? 'Start' : best >= 55 ? 'Prüfen' : 'Nein';
     const verdict = best === null ? 'keine Bewertung' : afc === 'Start' && truth === 'schlecht' ? 'GEFÄHRLICH' : afc === 'Nein' && truth === 'gut' ? 'zu streng' : 'passt';
-    rows.push({ date, area: a.name, best, afc, truth, verdict, why: why.join('; '), station: st.c, maxWind: Math.round(maxWind), maxGust: Math.round(maxGust), rain: +rain.toFixed(1) });
+    rows.push({ date, area: a.name, best, afc, truth, verdict, why: why.join('; '), station: st.c, maxWind: Math.round(maxWind), maxGust: Math.round(maxGust), rain: +rain.toFixed(1), site: fc.site ?? '', hour: fc.hour ?? '', fcWind: fc.wind ?? '', fcGust: fc.gust ?? '', fcCape: fc.cape ?? '', fcPop: fc.pop ?? '', thermal: fc.therm ?? '', ko, reasons });
     if (verdict !== 'passt' && best !== null) parts.push(`${a.name} ${best} → ${verdict}${why.length ? ' (' + why.join('; ') + ')' : ''}`);
   }
   dayLines.push(`${date}  ${parts.length ? parts.join(' | ') : 'alles passt'}`);
@@ -177,8 +202,11 @@ const report = [
   '(Ein guter Score trennt diese drei Gruppen deutlich.)',
   '',
   'Gefährliche Fälle:',
-  ...(rows.filter(r => r.verdict === 'GEFÄHRLICH').map(r => `  ${r.date} ${r.area}: Score ${r.best}, ${r.why}`)),
+  ...(rows.filter(r => r.verdict === 'GEFÄHRLICH').map(r => `  ${r.date} ${r.area}: Score ${r.best} (${r.site} ${r.hour} Uhr: Prognose Wind ${r.fcWind}/${r.fcGust}, CAPE ${r.fcCape}, Regen ${r.fcPop} %), gemessen: ${r.why}`)),
   ...(cnt('GEFÄHRLICH') ? [] : ['  keine']),
+  '',
+  'Häufigste Gründe, wenn AFC zu streng war:',
+  ...Object.entries(rows.filter(r => r.verdict === 'zu streng').reduce((m, r) => { const k = r.ko || r.reasons.split(', ')[0] || '–'; m[k] = (m[k] || 0) + 1; return m; }, {})).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([k, v]) => `  ${v}× ${k}`),
   '',
   'Tag für Tag (nur Abweichungen):',
   ...dayLines,
