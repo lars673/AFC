@@ -292,6 +292,7 @@ function renderLage() {
     ['Wind 2000 m', h => wc(h.up800, 40)],
     ['Wind 3000 m', h => wc(h.up700, 60)],
     ['Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
+    ['Thermik bis km', h => (num(h.top) ? `<div class="bc mut" aria-label="Thermik bis ${h.top} m${h.inv ? ', Inversion ab ' + h.inv + ' m' : ''}">${(h.top / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
     ['Thermik', h => `<div class="bc mut" aria-label="Thermikindex ${h.therm}">${h.therm >= 60 ? '●●●' : h.therm >= 30 ? '●●○' : h.therm > 8 ? '●○○' : '○○○'}</div>`],
     ['Urteil', h => `<div class="bc v s-${cls(h.v)}" aria-label="Regionsurteil ${h.v}">${h.v}</div>`]
   ];
@@ -446,6 +447,7 @@ function renderSite() {
         <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
         <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko, CAPE ${hr.cape ?? '–'}</span></div>
         <div><b>${hr.thermal}</b><span>Thermikindex (0–100)</span></div>
+        ${hr.thermalTop != null ? `<div><b>${hr.thermalTop} m</b><span>Thermik bis${hr.topMargin != null ? ' (' + (hr.topMargin >= 0 ? '+' : '') + hr.topMargin + ' m über Start)' : ''}${hr.wstar ? ', Steigen ca. ' + hr.wstar.toFixed(1) + ' m/s' : ''}${hr.inversion ? ', Inversion ab ' + hr.inversion + ' m' : ''}</span></div>` : ''}
         <div><b>${hr.valley ? hr.valley[0] + ' / ' + hr.valley[1] : '–'}</b><span>Landewind Wind / Böen km/h</span></div>
         <div><b>${hr.shear ?? '–'}</b><span>Scherung 500 m über Start km/h</span></div>
         ${hr.spread != null ? `<div><b>${hr.spread}</b><span>Modell-Unterschied km/h</span></div>` : ''}

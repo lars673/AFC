@@ -17,7 +17,8 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 ## Lokal auf dem Mac (ohne Terminal)
 
 * **Autostart einrichten:** `tools/AFC Autostart einrichten.command` doppelklicken. Der Server läuft dann im Hintergrund (launchd), startet beim Anmelden und nach einem Absturz neu. Adresse: http://localhost:8787, Protokoll in `data/server.log`.
-* **Nach Änderungen an `server.js` oder `lib/`:** `tools/AFC neu starten.command` doppelklicken, dann die App neu laden (Cmd+R). Änderungen an `app.js`, `app.css`, `index.html` brauchen nur Cmd+R.
+* **Update holen:** `tools/AFC aktualisieren.command` doppelklicken (git pull + Neustart), dann Cmd+R in der App.
+* **Nach eigenen Änderungen an `server.js` oder `lib/`:** `tools/AFC neu starten.command` doppelklicken, dann die App neu laden (Cmd+R). Änderungen an `app.js`, `app.css`, `index.html` brauchen nur Cmd+R.
 * **Entfernen:** `tools/AFC Autostart entfernen.command`.
 * Liegt der Ordner auf dem Schreibtisch oder in Dokumente, fragt macOS evtl. nach Zugriff für `node`. Das Einrichtungsskript erkennt das und sagt, was zu tun ist.
 

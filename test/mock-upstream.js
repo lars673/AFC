@@ -31,10 +31,11 @@ export function startMock(scenario = 'good', port = 0) {
       case 'shortwave_radiation': return Math.round(front ? sun(i) * 0.3 : sun(i));
       default: break;
     }
-    const m = v.match(/^(wind_speed|wind_direction|geopotential_height)_(\d+)hPa$/);
+    const m = v.match(/^(wind_speed|wind_direction|geopotential_height|temperature)_(\d+)hPa$/);
     if (m) {
       const l = Number(m[2]);
       if (m[1] === 'geopotential_height') return ZH[l];
+      if (m[1] === 'temperature') return +(sc === 'inversion' && ZH[l] >= 1460 && ZH[l] <= 1950 ? 14 : 18 - 0.0072 * (ZH[l] - 500)).toFixed(1);
       if (m[1] === 'wind_speed') return sc === 'foehn' && l <= 700 ? 55 : (front && hour > 10 && l === 800 ? 40 : 14 + (ZH[l] - 500) / 250);
       return sc === 'foehn' ? 185 : (front && hour > 10 ? 285 : 200 + (ZH[l] - 500) / 100);
     }

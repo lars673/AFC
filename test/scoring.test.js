@@ -171,3 +171,24 @@ test('Sonnenstand: Mittag, Auf- und Untergang in Bern stimmen', async () => {
   assert.ok(solarPosition(Date.UTC(2026, 5, 21, 17, 0), 46.95, 7.45).elevationDeg > 15, 'Sommer 19 Uhr: Sonne noch hoch');
   assert.ok(solarPosition(Date.UTC(2026, 11, 21, 17, 0), 46.95, 7.45).elevationDeg < 0, 'Winter 18 Uhr: Nacht');
 });
+
+test('Thermikprofil: labile Luft trägt hoch, Inversion deckelt', async () => {
+  const { thermalProfile } = await import('../lib/scoring.js');
+  const std = [1500, 2000, 2500, 3000, 4000].map(z => ({ z, temp: 18 - 0.0085 * (z - 1000) }));
+  const inv = [{ z: 1500, temp: 15 }, { z: 2000, temp: 16 }, { z: 3000, temp: 10 }, { z: 4000, temp: 3 }];
+  const a = thermalProfile(std, 18, 1000, 650), b = thermalProfile(inv, 18, 1000, 650);
+  assert.ok(a.top > 2500, 'labil ' + a.top);
+  assert.ok(b.top < 1700, 'Inversion ' + b.top);
+  assert.equal(b.inversion, 1500);
+  assert.ok(a.wstar > b.wstar);
+  assert.equal(thermalProfile(std, 18, 1000, 0).top, 1000, 'ohne Sonne keine Thermik');
+});
+
+test('Ruhiger Tag ohne Thermik ist höchstens «Prüfen», nicht «Starten»', () => {
+  const stable = { top: 1550, inversion: 1500, wstar: 0.4 };
+  const r = assessHour(site, good({ speed: 4, gust: 6, thermik: stable }));
+  assert.equal(r.hard.length, 0);
+  assert.ok(r.score <= 74 && r.score >= 60, 'Score ' + r.score);
+  const unstable = { top: 3400, inversion: null, wstar: 2.2 };
+  assert.ok(assessHour(site, good({ speed: 4, gust: 6, thermik: unstable })).score >= 80);
+});
