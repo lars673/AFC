@@ -200,3 +200,9 @@ test('Abendliche Abkühlung ist kein Frontsignal', () => {
   const s = frontRiskSeries({ P, T, D800: Array(n).fill(200), S800: Array(n).fill(15), CAPE: Array(n).fill(0), POP: Array(n).fill(0), lh });
   assert.ok(s.every(x => x.level === 'ok'), s.map(x => x.level).join(','));
 });
+
+test('Ruhiger Herbsttag mit mässiger Thermik bleibt unter «Startbereit»', () => {
+  // echte Werte Kuonisbergli 30.10.2026, 12 Uhr: kaum Wind, Sonne 500 W/m², trockene Luft
+  const r = assessHour({ ...site, alt: 1700, aspects: [90] }, good({ ms: Date.UTC(2026, 9, 30, 11), speed: 4, gust: 11, dir: 81, cloudBase: 2700, cloudCover: 0, cloudCoverLow: 0, sun: 500, cape: 0 }));
+  assert.ok(r.score < 80 && r.score >= 65, 'Score ' + r.score);
+});
