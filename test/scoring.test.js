@@ -219,3 +219,25 @@ test('Kurz erklärt: fünf Punkte, Gefahren rot', async () => {
   const wt = good({ dir: 0, speed: 14 });
   assert.equal(explainHour(assessHour(site, wt), wt).find(f => f.k === 'Start').lvl, 'danger');
 });
+
+test('Schauer am Nachmittag senken das Startfenster am Mittag (Rückblick 3.8.2026)', () => {
+  const unstable = { top: 3400, inversion: null, wstar: 2.2 };
+  const dry = assessHour(site, good({ thermik: unstable })).score;
+  const r = assessHour(site, good({ thermik: unstable, later: { precip: 2.3, cape: 860, hour: 16 } }));
+  assert.ok(dry >= 80 && r.score < 80, `${dry} -> ${r.score}`);
+  assert.ok(r.reasons.some(x => /ab ca. 16 Uhr/.test(x)), r.reasons.join(' | '));
+});
+
+test('Hohe Schleierwolken lösen kein «Wolke am Startplatz» aus', () => {
+  const r = assessHour(site, good({ cloudBase: 1600, cloudCover: 90, cloudCoverLow: 0 }));
+  assert.ok(!r.hard.some(x => /Wolke/.test(x)), r.hard.join(' | '));
+  assert.ok(assessHour(site, good({ cloudBase: 1600, cloudCover: 90, cloudCoverLow: 60 })).hard.some(x => /Wolke/.test(x)));
+});
+
+test('Sicherer Tag ohne Thermik fällt nicht auf «Nicht starten»', () => {
+  const stable = { top: 1550, inversion: 1500, wstar: 0.4 };
+  // deutliche Böen ohne Thermik: früher unter 55 («Nicht starten»), obwohl nichts gefährlich ist
+  const r = assessHour(site, good({ speed: 4, gust: 19, thermik: stable }));
+  assert.equal(r.hard.length, 0);
+  assert.ok(r.score >= 55 && r.score < 80, 'Score ' + r.score);
+});
