@@ -344,3 +344,13 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .lb-dur-in { display: flex; align-items: center; gap: 6px; }
 .lb-dur-in input { width: 5em; }
 @media (max-width: 420px) { .lb-grid { grid-template-columns: 1fr; } }
+.lb-file { position: relative; overflow: hidden; cursor: pointer; }
+.lb-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.lb-head .btn-row { gap: 8px; }
+.lb-track { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.lb-map { display: block; width: 100%; max-height: 220px; margin-top: 6px; }
+.lb-map polyline, .lb-prof polyline { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.lb-map .th { fill: color-mix(in srgb, var(--go) 35%, transparent); stroke: var(--go); stroke-width: 1.5; }
+.lb-map .st { fill: var(--go); }
+.lb-map .ld { fill: var(--ink); }
+.lb-prof { display: block; width: 100%; height: 50px; margin-top: 4px; border-top: 1px solid var(--line); }

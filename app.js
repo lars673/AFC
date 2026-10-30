@@ -530,7 +530,7 @@ function renderBook() {
   el.innerHTML = `
     ${gearAlertHtml()}
     <div class="panel">
-      <div class="lb-head"><h3>Flugbuch</h3><button class="btn" type="button" data-act="lbflight">+ Flug</button></div>
+      <div class="lb-head"><h3>Flugbuch</h3><span class="btn-row"><label class="btn sec lb-file" title="IGC-Dateien vom Vario oder Handy (auch mehrere, oder hierher ziehen)">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC" multiple></label><button class="btn" type="button" data-act="lbflight">+ Flug</button></span></div>
       <div class="kv lb-kv">
         <div><b>${st.total}</b><span>Flüge total</span></div>
         <div><b>${L.fmtDur(st.totalMin)} h</b><span>Flugzeit total</span></div>
@@ -559,6 +559,57 @@ function renderBook() {
     </div>`;
 }
 
+/* ---- IGC-Import (lib/igc.js): Spur lesen, Start- und Landeplatz zuordnen, als Flug speichern */
+const toMin = hm => (hm ? Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5)) : NaN);
+async function importIgc(files) {
+  const I = window.AFCIgc, L = LG();
+  if (!I || !L || !files?.length) return;
+  const d = await lbLoad().catch(err => { toast(err.message); return null; });
+  if (!d) return;
+  const starts = [...(S.plan?.sites || []), ...(S.plan?.unrated || [])], lands = S.plan?.landings || [];
+  const def = d.settings.defaults || {};
+  let added = 0, dup = 0, bad = 0, lastId = null;
+  for (const file of files) {
+    let a = null;
+    try { a = file.size < 20e6 ? I.analyzeIgc(await file.text(), file.name) : null; } catch {}
+    if (!a) { bad++; continue; }
+    if (d.flights.some(f => f.track?.file === file.name && f.date === a.date || (f.date === a.date && Math.abs(toMin(f.start) - toMin(a.start)) <= 5))) { dup++; continue; }
+    const site = I.nearestPlace(starts, a.takeoff, 800), land = I.nearestPlace(lands, a.landing, 1000);
+    const item = {
+      id: L.newId(), date: a.date, start: a.start, durMin: a.durMin, maxAlt: a.maxAlt, km: a.km,
+      siteId: site?.id || null, siteName: site?.name || '', landingId: land?.id || null, landingName: land?.name || '',
+      kind: a.km >= 15 ? 'xc' : a.track.thermals.length ? 'thermik' : a.durMin <= 20 ? 'abgleiter' : '',
+      gliderId: def.glider || null, harnessId: def.harness || null, reserveId: def.reserve || null,
+      track: { ...a.track, takeoff: a.takeoff, landing: a.landing }
+    };
+    if (site && a.date === todayKey()) item.afcScore = site.days?.[0]?.best?.score ?? null;
+    try { lastId = (await lbSave('flight', item, true)).id; added++; } catch { bad++; }
+  }
+  lbSyncProfile();
+  if (S.tab === 'book') renderBook();
+  toast([added && `${added} ${added === 1 ? 'Flug' : 'Flüge'} importiert`, dup && `${dup} schon im Flugbuch`, bad && `${bad} nicht lesbar`].filter(Boolean).join(', ') || 'Nichts importiert');
+  if (added === 1 && files.length === 1) flightForm(lastId);   // gleich ergänzen: Bewertung, Notiz
+}
+
+/** Spur als kleine Karte und Höhenprofil, darunter die Thermiken. */
+function trackHtml(t) {
+  const line = t.line || [];
+  let svg = '', prof = '';
+  if (line.length > 1) {
+    const la = line.map(p => p[0]), lo = line.map(p => p[1]), k = Math.cos(la[0] * Math.PI / 180);
+    const s0 = Math.min(...la), s1 = Math.max(...la), w0 = Math.min(...lo), w1 = Math.max(...lo);
+    const sc = Math.min(280 / Math.max(1e-6, (w1 - w0) * k), 150 / Math.max(1e-6, s1 - s0));
+    const X = q => (10 + ((q - w0) * k * sc) + (280 - (w1 - w0) * k * sc) / 2).toFixed(1), Y = q => (10 + (s1 - q) * sc + (150 - (s1 - s0) * sc) / 2).toFixed(1);
+    svg = `<svg class="lb-map" viewBox="0 0 300 170" role="img" aria-label="Flugspur"><polyline points="${line.map(p => X(p[1]) + ',' + Y(p[0])).join(' ')}"/>${(t.thermals || []).map(h => `<circle class="th" cx="${X(h.lon)}" cy="${Y(h.lat)}" r="${Math.min(9, 3 + h.gain / 150).toFixed(1)}"><title>${h.at} Uhr: ${h.base}–${h.alt} m, ${h.rate} m/s</title></circle>`).join('')}<circle class="st" cx="${X(line[0][1])}" cy="${Y(line[0][0])}" r="4"/><circle class="ld" cx="${X(line.at(-1)[1])}" cy="${Y(line.at(-1)[0])}" r="4"/></svg>`;
+    const al = line.map(p => p[2]), a0 = Math.min(...al), a1 = Math.max(a0 + 1, ...al);
+    prof = `<svg class="lb-prof" viewBox="0 0 300 50" preserveAspectRatio="none" role="img" aria-label="Höhenprofil ${Math.round(a0)} bis ${Math.round(a1)} m"><polyline points="${al.map((v, i) => (i / (al.length - 1) * 300).toFixed(1) + ',' + (46 - (v - a0) / (a1 - a0) * 42).toFixed(1)).join(' ')}"/></svg>`;
+  }
+  const th = (t.thermals || []).slice().sort((a, b) => b.gain - a.gain).slice(0, 4);
+  return `<div class="lb-wide lb-track"><span class="lb-type">Spur${t.file ? ' · ' + esc(t.file) : ''}</span>${svg}${prof}
+    <p class="fine" style="margin:4px 0 0">${(t.thermals || []).length} Thermiken · bestes Steigen ${t.climbMax ?? '–'} m/s${num(t.maxDistKm) ? ` · bis ${t.maxDistKm} km vom Start` : ''}</p>
+    ${th.length ? `<p class="fine" style="margin:2px 0 0">${th.map(h => `${h.at}: ${h.base} → ${h.alt} m (${h.rate} m/s)`).join(' · ')}</p>` : ''}</div>`;
+}
+
 function flightForm(id) {
   const L = LG(), d = LB.data, f = d.flights.find(x => x.id === id) || null;
   const def = d.settings.defaults || {};
@@ -580,6 +631,7 @@ function flightForm(id) {
       <label class="fld"><span>Gurtzeug</span><select name="harnessId">${opts('harness', v.harnessId)}</select></label>
       <label class="fld"><span>Retter</span><select name="reserveId">${opts('reserve', v.reserveId)}</select></label>
       <div class="fld lb-wide"><span id="lbRateL">Bewertung</span><div class="stars" role="radiogroup" aria-labelledby="lbRateL">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" ${v.rating === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
+      ${v.track ? trackHtml(v.track) : ''}
       <label class="fld lb-wide"><span>Notiz (Bedingungen, Lernpunkte)</span><textarea name="note" maxlength="500" rows="3">${esc(v.note || '')}</textarea></label>
     </div>
     <datalist id="lbSites">${sites.map(n => `<option value="${esc(n)}">`).join('')}</datalist><datalist id="lbLands">${lands.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
@@ -1567,8 +1619,16 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
+});
+// IGC-Dateien aufs Flugbuch ziehen
+document.addEventListener('dragover', e => { if (S.tab === 'book' && e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+document.addEventListener('drop', e => {
+  if (S.tab !== 'book' || !e.dataTransfer?.files?.length) return;
+  e.preventDefault();
+  importIgc([...e.dataTransfer.files].filter(f => /\.igc$/i.test(f.name)));
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }

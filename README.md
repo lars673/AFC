@@ -42,7 +42,7 @@ Der Server lädt einmal täglich die offiziellen Luftraumdateien des SHV/FSVL (h
 
 ## Flugbuch
 
-Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, Art, Strecke, Höhe, Schirm, Gurtzeug, Retter, Bewertung und Notiz. Dazu die Ausrüstung mit Fristen: AFC zählt die Stunden je Schirm und meldet fällige Schirm-Checks (nach Monaten oder Stunden) und Retter-Packtermine 30 Tage bzw. 10 Stunden im Voraus, auch oben im Reiter «Entscheid». Flüge vor dem Flugbuch lassen sich als Total nachtragen. Das Flugbuch füllt das Pilotenprofil (Flüge, Stunden der letzten 12 Monate, Schirmklasse des Standardschirms). Es liegt nur auf diesem Rechner in `data/afc.sqlite` (`lib/logbook.js`).
+Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, Art, Strecke, Höhe, Schirm, Gurtzeug, Retter, Bewertung und Notiz. Dazu die Ausrüstung mit Fristen: AFC zählt die Stunden je Schirm und meldet fällige Schirm-Checks (nach Monaten oder Stunden) und Retter-Packtermine 30 Tage bzw. 10 Stunden im Voraus, auch oben im Reiter «Entscheid». Flüge vor dem Flugbuch lassen sich als Total nachtragen. Das Flugbuch füllt das Pilotenprofil (Flüge, Stunden der letzten 12 Monate, Schirmklasse des Standardschirms). Mit «IGC laden» (oder Dateien aufs Flugbuch ziehen) werden IGC-Dateien vom Vario oder Handy übernommen: Datum, Startzeit, Dauer, max. Höhe, Strecke, Start- und Landeplatz (nächster bekannter Platz im Umkreis von 800 m bzw. 1 km), Thermiken (Ort, Basis, Obergrenze, Steigen) und eine vereinfachte Spur mit Höhenprofil (`lib/igc.js`). Doppelte Flüge werden übersprungen. Es liegt nur auf diesem Rechner in `data/afc.sqlite` (`lib/logbook.js`).
 
 ## Rückblick-Test
 

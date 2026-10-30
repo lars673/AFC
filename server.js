@@ -387,9 +387,9 @@ function sendPacked(req, res, p, code = 200) {
   res.writeHead(code, h);
   res.end(b);
 }
-async function readBody(req) {
+async function readBody(req, max = MAX_BODY) {
   let s = '';
-  for await (const c of req) { s += c; if (Buffer.byteLength(s) > MAX_BODY) throw Object.assign(new Error('payload too large'), { code: 413 }); }
+  for await (const c of req) { s += c; if (Buffer.byteLength(s) > max) throw Object.assign(new Error('payload too large'), { code: 413 }); }
   if (!s) return {};
   try { const j = JSON.parse(s); if (!j || typeof j !== 'object' || Array.isArray(j)) throw 0; return j; }
   catch { throw Object.assign(new Error('invalid json'), { code: 400 }); }
@@ -412,6 +412,7 @@ const STATIC = new Map([
   ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
   ['/airspace.js', ['lib/airspace.js', 'text/javascript; charset=utf-8']],
   ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
+  ['/igc.js', ['lib/igc.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
 ]);
@@ -564,7 +565,7 @@ const server = http.createServer(async (req, res) => {
         const [, kind, lid] = lm;
         if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); return sendJson(req, res, 200, { ok: true }); }
         if (req.method === 'PUT') {
-          const body = await readBody(req);
+          const body = await readBody(req, 64 * 1024);   // Flug mit vereinfachter IGC-Spur
           const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
           if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
           dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
