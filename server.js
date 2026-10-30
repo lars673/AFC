@@ -15,6 +15,7 @@ import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/open
 import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
+import { fetchWindGrid, windSlice, WIND_LEVELS } from './lib/windgrid.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -24,7 +25,8 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '';          // leer = nur gleich
 const PUBLIC_APP = process.env.PUBLIC_APP_URL || '';
 const TRUSTED_HOPS = Math.max(0, Number(process.env.AFC_TRUSTED_PROXY_HOPS ?? 1));
 const OBS_EVERY_MS = Number(process.env.AFC_OBS_MIN || 10) * 60000;
-const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 30) * 60000;
+const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 60) * 60000;
+const WIND_EVERY_MS = Number(process.env.AFC_WINDGRID_MIN || 180) * 60000;
 const MAX_BODY = 16 * 1024;
 const DATA = process.env.AFC_DATA_DIR ? path.resolve(process.env.AFC_DATA_DIR) : path.join(ROOT, 'data');
 
@@ -72,10 +74,11 @@ const ingest = {
   pressure: { ok: false, at: null, error: null },
   ecmwf: { ok: false, at: null, error: null },
   foehn: { ok: false, at: null, error: null },
-  stations: { ok: false, at: null, error: null, note: null }
+  stations: { ok: false, at: null, error: null, note: null },
+  windgrid: { ok: false, at: null, error: null }
 };
 const state = {
-  raw: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
+  raw: null, windgrid: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
   stationMeta: {}, stationList: {}, version: 0, model: null, modelAt: 0, payloads: new Map(), quality: null, qualityAt: 0
 };
 
@@ -152,6 +155,30 @@ async function collectForecast() {
   storePredictions(raw);
   invalidate();
   fs.writeFile(path.join(dataDir, 'raw.json.tmp'), JSON.stringify(raw)).then(() => fs.rename(path.join(dataDir, 'raw.json.tmp'), path.join(dataDir, 'raw.json'))).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ Windkarte */
+async function collectWindGrid() {
+  try {
+    const wg = await fetchWindGrid();
+    state.windgrid = wg;
+    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:')) state.payloads.delete(k);
+    ingest.windgrid = { ok: true, at: nowIso(), error: null };
+    fs.writeFile(path.join(dataDir, 'windgrid.json.tmp'), JSON.stringify(wg)).then(() => fs.rename(path.join(dataDir, 'windgrid.json.tmp'), path.join(dataDir, 'windgrid.json'))).catch(() => {});
+  } catch (e) {
+    ingest.windgrid = { ...ingest.windgrid, ok: !!state.windgrid, at: nowIso(), error: errMsg(e) };
+  }
+}
+function windResponse(ms, level) {
+  const hourMs = Math.round(ms / 3600000) * 3600000;
+  const key = `wind:${level}:${hourMs}`;
+  let p = state.payloads.get(key);
+  if (p) return p;
+  const sl = windSlice(state.windgrid, hourMs, level);
+  if (!sl) return null;
+  p = packJson(sl);
+  state.payloads.set(key, p);
+  return p;
 }
 
 /** Prognose für jetzt+3 h je Station festhalten; später mit der Messung verglichen. */
@@ -383,6 +410,15 @@ const server = http.createServer(async (req, res) => {
         if (!pk) return sendJson(req, res, 202, { warming: true });
         return sendPacked(req, res, pk);
       }
+      if (req.method === 'GET' && p === '/api/wind') {
+        const level = u.searchParams.get('level') || '10m';
+        const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
+        if (!WIND_LEVELS[level]) return sendJson(req, res, 400, { error: 'level muss 10m, 800 oder 700 sein' });
+        if (!state.windgrid) return sendJson(req, res, 202, { warming: true });
+        const pk = windResponse(t, level);
+        if (!pk) return sendJson(req, res, 404, { error: 'keine Winddaten für diese Zeit' });
+        return sendPacked(req, res, pk);
+      }
       if (req.method === 'GET' && p === '/api/health') {
         const row = dbGet('SELECT MAX(time) t FROM observations');
         const obsAge = row?.t ? Math.round((Date.now() - Date.parse(row.t)) / 60000) : null;
@@ -456,9 +492,13 @@ async function loadSnapshot() {
     const raw = JSON.parse(await fs.readFile(path.join(dataDir, 'raw.json'), 'utf8'));
     if (Date.now() - raw.fetchedAt < 3 * 3600000 && raw.ref?.sea) { state.raw = raw; ingest.forecast = { ...ingest.forecast, ok: true, at: new Date(raw.fetchedAt).toISOString(), model: raw.model, error: 'aus Zwischenspeicher, wird aktualisiert' }; }
   } catch { /* kein Zwischenspeicher */ }
+  try {
+    const wg = JSON.parse(await fs.readFile(path.join(dataDir, 'windgrid.json'), 'utf8'));
+    if (Date.now() - wg.fetchedAt < 8 * 3600000 && wg.levels) { state.windgrid = wg; ingest.windgrid = { ok: true, at: new Date(wg.fetchedAt).toISOString(), error: 'aus Zwischenspeicher, wird aktualisiert' }; }
+  } catch { /* kein Zwischenspeicher */ }
 }
 
-let busy = { obs: false, fc: false };
+let busy = { obs: false, fc: false, wind: false };
 async function tick(kind, fn) {
   if (busy[kind]) return;
   busy[kind] = true;
@@ -491,9 +531,11 @@ async function start() {
     ingest.stations = { ok: true, at: nowIso(), error: null, note };
     await tick('obs', collectObservations);
     await tick('fc', collectForecast);
+    await tick('wind', collectWindGrid);
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));
+  timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
 }

@@ -56,6 +56,16 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.equal(h.ingest.observations.ok, true);
     assert.equal(h.ingest.forecast.ok, true);
     assert.equal(h.ingest.pressure.ok, true);
+    // Windkarte
+    let wr;
+    for (let i = 0; i < 40; i++) { wr = await fetch(s.base + '/api/wind?level=800'); if (wr.status === 200) break; await new Promise(r => setTimeout(r, 250)); }
+    assert.equal(wr.status, 200, s.log());
+    const wg = await wr.json();
+    assert.equal(wg.u.length, wg.grid.nx * wg.grid.ny);
+    assert.ok(wg.u.every(Number.isFinite) && wg.v.every(Number.isFinite));
+    // Wind aus Süden (ca. 205°) strömt nach Norden: v > 0
+    assert.ok(wg.v[0] > 0, 'v ' + wg.v[0]);
+    assert.equal((await fetch(s.base + '/api/wind?level=500')).status, 400);
   } finally { await s.stop(); }
 });
 

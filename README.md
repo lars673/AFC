@@ -42,7 +42,7 @@ Healthcheck: `/healthz` (ohne DB-Zugriff). Vollstatus mit Quellenzustand: `/api/
 | `AFC_DATA_DIR` | `./data` | SQLite, Backups und Zwischenspeicher der Prognose |
 | `AFC_TRUSTED_PROXY_HOPS` | `1` | Wie viele Proxys vor dem Server stehen (für die IP des Rate-Limits). Ohne Proxy `0` |
 | `CORS_ORIGIN` | leer | Leer = nur gleiche Herkunft. Nur setzen, wenn die App von einer anderen Domain kommt |
-| `AFC_OBS_MIN` / `AFC_FORECAST_MIN` | `10` / `30` | Abrufrhythmus in Minuten |
+| `AFC_OBS_MIN` / `AFC_FORECAST_MIN` / `AFC_WINDGRID_MIN` | `10` / `60` / `180` | Abrufrhythmus in Minuten. Open-Meteo zählt jeden Punkt (und je 10 Variablen) als Abruf, gratis 10 000/Tag. Die Vorgaben brauchen rund 6 500. Die Modelle (ICON-CH1/CH2) rechnen ohnehin nur alle 3–6 h neu |
 | `AFC_FETCH_TIMEOUT_MS` | `20000` | Timeout externer Abrufe |
 | `PUBLIC_APP_URL` | – | nur informativ (`/api/meta`) |
 
@@ -53,7 +53,8 @@ Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_MET
 | Route | Zweck |
 |---|---|
 | `GET /api/plan?level=careful\|normal\|expert` | Plan für 5 Tage: Gebiete, Startplätze, Lage, Stationen, Quellenstatus. ETag, gzip. `202`, solange die ersten Daten laden |
-| `GET /api/site/:id?level=…` | Stundendetails, Windprofil, Messvergleich |
+| `GET /api/site/:id?level=…` | Stundendetails, Windprofil, Messvergleich, «Kurz erklärt» |
+| `GET /api/wind?level=10m\|800\|700&t=ISO` | Windfeld für die Karte (Raster ca. 9 km, u/v in km/h), alle 3 h aktualisiert |
 | `POST /api/flight-report` | Flugmeldung (Header `X-AFC-Client`), validiert: bekannter Startplatz, Zeit der letzten 14 Tage, Bewertung 1–5, höchstens 20 pro Tag |
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |

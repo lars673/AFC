@@ -557,9 +557,12 @@ function arrowIcon(dir, label) {
   return L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk-s">${arrow(dir)}<span>${esc(label)}</span></div>` });
 }
 function renderMap() {
+  syncWindBar();
   if (!initMap()) return;
+  updateWind();
   setTimeout(() => M.map.invalidateSize(), 50);
   if (!S.plan) { mapMsg('Wetterdaten werden geladen …'); return; }
+  if ($('#mapMsg').textContent.startsWith('Wetterdaten werden')) mapMsg('');
   M.group.clearLayers();
   const showOv = k => { const i = $(`#layerPanel input[value="${k}"]`); return i ? i.checked : true; };
   for (const s of S.plan.sites) {
@@ -575,6 +578,145 @@ function renderMap() {
     L.marker([st.lat, st.lon], { icon: arrowIcon(st.dir, Math.round(st.wind)), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}`, keyboard: true }).on('click', () => mapSheet('station', st.code)).addTo(M.group);
   }
 }
+/* ---- Windkarte: Partikel strömen mit dem Prognosewind (eigene Canvas-Ebene, ohne Zusatzbibliothek) */
+const WIND_COLORS = [[10, '#2a7fd4'], [20, '#2fa84f'], [30, '#d9b300'], [40, '#ef8a1f'], [Infinity, '#d93a32']];
+const windColor = kmh => WIND_COLORS.find(c => kmh < c[0])[1];
+const W = { level: 'off', hour: 12, data: null, cache: new Map(), layer: null, req: 0 };
+
+function windSample(d, lat, lon) {
+  const g = d.grid, fx = (lon - g.lo0) / g.dlo, fy = (lat - g.la0) / g.dla;
+  if (fx < 0 || fy < 0 || fx > g.nx - 1 || fy > g.ny - 1) return null;
+  const x0 = Math.min(Math.floor(fx), g.nx - 2), y0 = Math.min(Math.floor(fy), g.ny - 2), tx = fx - x0, ty = fy - y0;
+  const i = y0 * g.nx + x0, j = i + g.nx;
+  const at = (arr) => {
+    const a = arr[i], b = arr[i + 1], c = arr[j], e = arr[j + 1];
+    if (a == null || b == null || c == null || e == null) return null;
+    return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + e * tx) * ty;
+  };
+  const u = at(d.u), v = at(d.v);
+  return u == null || v == null ? null : [u, v];
+}
+
+const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
+  onAdd(map) {
+    this._map = map;
+    if (!map.getPane('wind')) { const p = map.createPane('wind'); p.style.zIndex = 450; p.classList.add('leaflet-wind-pane'); }
+    this._c = L.DomUtil.create('canvas', '', map.getPane('wind'));
+    this._ctx = this._c.getContext('2d');
+    this._still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    map.on('movestart zoomstart', this._stop, this);
+    map.on('moveend zoomend resize', this._reset, this);
+    this._reset();
+  },
+  onRemove(map) {
+    this._stop();
+    map.off('movestart zoomstart', this._stop, this);
+    map.off('moveend zoomend resize', this._reset, this);
+    this._c.remove();
+  },
+  setData(d) { this._d = d; this._reset(); },
+  _stop() { cancelAnimationFrame(this._raf); this._raf = 0; if (this._ctx) this._ctx.clearRect(0, 0, this._c.width, this._c.height); },
+  _reset() {
+    this._stop();
+    const map = this._map, size = map.getSize(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    L.DomUtil.setPosition(this._c, map.containerPointToLayerPoint([0, 0]));
+    this._c.width = size.x * dpr; this._c.height = size.y * dpr;
+    this._c.style.width = size.x + 'px'; this._c.style.height = size.y + 'px';
+    this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._w = size.x; this._h = size.y;
+    // Bildschirm -> Geo linear (bei dieser Kartengrösse genau genug)
+    const nw = map.containerPointToLatLng([0, 0]), se = map.containerPointToLatLng([size.x, size.y]);
+    this._geo = (x, y) => [nw.lat + (se.lat - nw.lat) * y / size.y, nw.lng + (se.lng - nw.lng) * x / size.x];
+    if (!this._d) return;
+    if (this._still) return this._drawArrows();
+    const n = Math.round(Math.min(1800, size.x * size.y / 300));
+    this._p = Array.from({ length: n }, () => this._spawn({}));
+    this._last = 0;
+    this._raf = requestAnimationFrame(t => this._frame(t));
+  },
+  _spawn(p) { p.x = Math.random() * this._w; p.y = Math.random() * this._h; p.age = Math.floor(Math.random() * 80); return p; },
+  _frame(t) {
+    this._raf = requestAnimationFrame(tt => this._frame(tt));
+    if (t - this._last < 33 || document.hidden) return;   // ca. 30 Bilder pro Sekunde
+    this._last = t;
+    const ctx = this._ctx;
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillRect(0, 0, this._w, this._h);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+    const groups = new Map();
+    for (const p of this._p) {
+      const [lat, lon] = this._geo(p.x, p.y);
+      const w = windSample(this._d, lat, lon);
+      if (!w || p.age++ > 90) { this._spawn(p); p.age = 0; continue; }
+      const k = 0.06;                                         // km/h -> Pixel je Bild, unabhängig vom Zoom
+      const nx = p.x + w[0] * k, ny = p.y - w[1] * k;
+      const col = windColor(Math.hypot(w[0], w[1]));
+      if (!groups.has(col)) groups.set(col, []);
+      groups.get(col).push(p.x, p.y, nx, ny);
+      p.x = nx; p.y = ny;
+      if (nx < 0 || ny < 0 || nx > this._w || ny > this._h) this._spawn(p);
+    }
+    for (const [col, seg] of groups) {
+      ctx.strokeStyle = col; ctx.beginPath();
+      for (let i = 0; i < seg.length; i += 4) { ctx.moveTo(seg[i], seg[i + 1]); ctx.lineTo(seg[i + 2], seg[i + 3]); }
+      ctx.stroke();
+    }
+  },
+  _drawArrows() {
+    // Ruhige Darstellung bei «Bewegung reduzieren»: Pfeile im Raster
+    const ctx = this._ctx, step = 46;
+    ctx.lineWidth = 2;
+    for (let y = step / 2; y < this._h; y += step) for (let x = step / 2; x < this._w; x += step) {
+      const [lat, lon] = this._geo(x, y), w = windSample(this._d, lat, lon);
+      if (!w) continue;
+      const sp = Math.hypot(w[0], w[1]); if (sp < 1) continue;
+      const len = Math.min(20, 6 + sp / 2), dx = w[0] / sp * len, dy = -w[1] / sp * len;
+      ctx.strokeStyle = windColor(sp); ctx.beginPath();
+      ctx.moveTo(x - dx / 2, y - dy / 2); ctx.lineTo(x + dx / 2, y + dy / 2);
+      const a = Math.atan2(dy, dx);
+      ctx.lineTo(x + dx / 2 - 6 * Math.cos(a - 0.5), y + dy / 2 - 6 * Math.sin(a - 0.5));
+      ctx.moveTo(x + dx / 2, y + dy / 2);
+      ctx.lineTo(x + dx / 2 - 6 * Math.cos(a + 0.5), y + dy / 2 - 6 * Math.sin(a + 0.5));
+      ctx.stroke();
+    }
+  }
+});
+
+function windTimeIso() {
+  const date = S.plan?.dates?.[S.day];
+  if (!date) return new Date().toISOString();
+  return new Date(`${date}T${String(W.hour).padStart(2, '0')}:00:00`).toISOString();
+}
+function syncWindBar() {
+  $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
+  const on = W.level !== 'off';
+  $('#windBar .wind-time').hidden = !on; $('#windBar .wind-legend').hidden = !on;
+  $('#windHour').value = W.hour;
+  $('#windHourT').textContent = `${W.hour} Uhr`;
+}
+async function updateWind() {
+  syncWindBar();
+  if (!M.map || !WindLayer) return;
+  if (W.level === 'off') { if (W.layer) { M.map.removeLayer(W.layer); W.layer = null; } return; }
+  const key = `${W.level}|${windTimeIso()}`, req = ++W.req;
+  let d = W.cache.get(key);
+  if (!d) {
+    try {
+      const r = await fetch(`/api/wind?level=${W.level}&t=${encodeURIComponent(windTimeIso())}`);
+      if (r.status === 202) { mapMsg('Windkarte wird noch geladen, bitte in einer Minute nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
+      if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
+      d = await r.json();
+      W.cache.set(key, d);
+      if (W.cache.size > 60) W.cache.delete(W.cache.keys().next().value);
+    } catch (err) { if (req === W.req) { mapMsg('Windkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } return; }
+  }
+  if (req !== W.req || W.level === 'off') return;
+  if (!W.layer) W.layer = new WindLayer().addTo(M.map);
+  W.layer.setData(d);
+}
+
 function mapSheet(kind, id) {
   const el = $('#mapSheet');
   let h = '';
@@ -643,6 +785,7 @@ document.addEventListener('click', async e => {
     case 'showmap': closeDlg($('#siteDlg')); setTab('map'); setTimeout(() => { const s = siteById(id); if (M.map && s) { M.map.setView([s.lat, s.lon], 14); mapSheet('site', id); } }, 200); break;
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
+    case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
     case 'logdel': { const log = store.get('log', []); log.splice(Number(b.dataset.i), 1); store.set('log', log); renderProfile(); break; }
     case 'export': {
       try {
@@ -670,6 +813,9 @@ document.addEventListener('change', e => {
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); renderMap(); } }
 });
+document.addEventListener('input', e => {
+  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(updateWind, 150); }
+});
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
 });
@@ -682,6 +828,8 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   const t = store.get('tab');
   if (['decide', 'map', 'lage', 'day', 'profile'].includes(t)) S.tab = t;
   applyTheme();
+  W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
+  W.hour = Math.min(20, Math.max(6, new Date().getHours()));
   render();
   loadPlan();
   setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);

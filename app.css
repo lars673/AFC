@@ -175,6 +175,16 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .layer-panel legend { font-weight: 700; padding: 0; margin-bottom: 2px; }
 .layer-panel label { display: flex; align-items: center; gap: 8px; min-height: 40px; font-size: 15px; }
 .layer-panel input { width: 20px; height: 20px; accent-color: var(--accent); }
+.wind-bar { position: absolute; left: 10px; bottom: 26px; z-index: 550; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.25); display: grid; gap: 6px; max-width: calc(100% - 20px); }
+.wind-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.wind-t { font-weight: 700; margin-right: 4px; }
+.wseg { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); border-radius: 8px; font-weight: 600; font-size: 14px; }
+.wseg[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.wind-time input { flex: 1; min-width: 160px; accent-color: var(--accent); height: 32px; }
+.wind-h { min-width: 64px; font-size: 14px; }
+.wind-legend { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.wind-legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; background: var(--c); margin-left: 4px; }
+.leaflet-wind-pane canvas { pointer-events: none; }
 .map-msg { position: absolute; left: 10px; right: 10px; top: 10px; z-index: 600; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--wait); padding: 10px 12px; border-radius: 8px; font-size: 14px; max-width: 520px; }
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 700; background: var(--panel); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; padding: 12px 14px 14px; box-shadow: 0 -4px 14px rgba(0,0,0,.25); display: grid; gap: 8px; }
 .sheet-top { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; }
