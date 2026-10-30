@@ -206,3 +206,16 @@ test('Ruhiger Herbsttag mit mässiger Thermik bleibt unter «Startbereit»', () 
   const r = assessHour({ ...site, alt: 1700, aspects: [90] }, good({ ms: Date.UTC(2026, 9, 30, 11), speed: 4, gust: 11, dir: 81, cloudBase: 2700, cloudCover: 0, cloudCoverLow: 0, sun: 500, cape: 0 }));
   assert.ok(r.score < 80 && r.score >= 65, 'Score ' + r.score);
 });
+
+test('Kurz erklärt: fünf Punkte, Gefahren rot', async () => {
+  const { explainHour } = await import('../lib/scoring.js');
+  const w = good();
+  const ok = explainHour(assessHour(site, w), w);
+  assert.deepEqual(ok.map(f => f.k), ['Start', 'Thermik', 'Wolken', 'Wetterlage', 'Landung']);
+  assert.ok(ok.every(f => f.lvl === 'ok'), JSON.stringify(ok));
+  const wf = good({ front: { level: 'danger', why: ['Druckfall 4.0 hPa in 6 h'] } });
+  const bad = explainHour(assessHour(site, wf), wf);
+  assert.equal(bad.find(f => f.k === 'Wetterlage').lvl, 'danger');
+  const wt = good({ dir: 0, speed: 14 });
+  assert.equal(explainHour(assessHour(site, wt), wt).find(f => f.k === 'Start').lvl, 'danger');
+});

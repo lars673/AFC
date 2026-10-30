@@ -207,6 +207,17 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .hr-head h3 { font-weight: 700; font-size: 18px; }
 .ko { margin: 0; padding: 8px 10px 8px 28px; background: color-mix(in srgb, var(--no) 16%, var(--panel)); border-left: 5px solid var(--no); border-radius: 6px; }
 .rs { margin: 0; padding: 0 0 0 20px; }
+.why-h { margin: 4px 0 6px; font: 700 16px var(--f-num); }
+.why { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.why li { display: grid; grid-template-columns: 24px 84px 1fr; gap: 8px; align-items: start; padding: 7px 10px; border-radius: 8px; background: var(--panel2); border-left: 4px solid var(--go); }
+.why li.why-warn { border-left-color: var(--wait); }
+.why li.why-danger { border-left-color: var(--no); background: color-mix(in srgb, var(--no) 10%, var(--panel)); }
+.why-i { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-weight: 700; font-size: 13px; background: var(--go); color: var(--on-go); }
+.why-warn .why-i { background: var(--wait); color: var(--on-wait); }
+.why-danger .why-i { background: var(--no); color: var(--on-no); }
+.why-more { margin: 0 0 10px; }
+.why-more summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
+@media (max-width: 420px) { .why li { grid-template-columns: 24px 1fr; } .why li span:last-child { grid-column: 2; } }
 .arr { width: 18px; height: 18px; vertical-align: -3px; }
 .profile { display: grid; gap: 4px; }
 .pr { display: grid; grid-template-columns: 64px 1fr 92px; align-items: center; gap: 8px; font-size: 14px; }
