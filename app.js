@@ -365,9 +365,7 @@ function renderProfile() {
   const log = store.get('log', []);
   const favs = [...S.fav].map(id => S.plan && siteById(id)).filter(Boolean);
   el.innerHTML = `
-    <div class="panel"><h3>Erfahrung</h3>
-      <div class="seg" role="group" aria-label="Erfahrungsstufe">${['careful', 'normal', 'expert'].map(k => `<button type="button" data-act="level" data-v="${k}" aria-pressed="${S.level === k}">${LEVEL_INFO[k][0]}</button>`).join('')}</div>
-      <p class="fine">${esc(LEVEL_INFO[S.level][1])}</p></div>
+    ${pilotPanel()}
     <div class="panel"><h3>Darstellung</h3>
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
     <div class="panel"><h3>Favoriten</h3>
@@ -380,6 +378,35 @@ function renderProfile() {
     <div class="panel"><h3>Datenschutz</h3>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="export">Meine Daten exportieren</button><button class="btn sec" type="button" data-act="wipe">Meine Daten löschen</button><a class="btn sec" href="/privacy">Datenschutzerklärung</a></div></div>
     <p class="fine">AFC ${esc(S.plan?.version || '8.0')} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
+}
+
+/* ---- Pilotenprofil: Erfahrung und Übung bestimmen die Grenzen (lib/pilot.js) */
+const P = () => window.AFCPilot;
+function pilotPanel() {
+  const pr = store.get('pilot', {}), pl = P()?.pilotLevel(pr);
+  const n = (name, label, v, extra = '') => `<label class="fld"><span>${label}</span><input type="number" inputmode="numeric" min="0" max="20000" name="${name}" value="${num(v) ? v : ''}" ${extra}></label>`;
+  return `<div class="panel"><h3>Ich als Pilot</h3>
+    <form id="pilotForm" class="pilot-form">
+      ${n('flights', 'Flüge total', pr.flights)}
+      ${n('hours12', 'Flugstunden letzte 12 Monate', pr.hours12)}
+      <label class="fld"><span>Schirm</span><select name="glider">${Object.entries(P()?.GLIDERS || {}).map(([k, t]) => `<option value="${k}" ${(pr.glider || 'B') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="fld"><span>Letzter Flug</span><input type="date" name="lastFlight" value="${esc(pr.lastFlight || '')}" max="${todayKey()}"></label>
+      <label class="chk"><input type="checkbox" name="student" ${pr.student ? 'checked' : ''}><span>Ich bin in Ausbildung (noch kein Brevet)</span></label>
+      <div class="btn-row" style="justify-content:flex-start"><button class="btn" type="submit">Speichern</button></div>
+    </form>
+    ${pl ? `<p>AFC rechnet für dich mit <b>${LEVEL_INFO[pl.level][0]}</b>${S.level !== pl.level ? ` (du hast gerade «${LEVEL_INFO[S.level][0]}» gewählt)` : ''}:</p><ul class="why-list">${pl.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul><p class="fine">${esc(LEVEL_INFO[pl.level][1])} Bei jedem Startplatz zeigt «Kurz erklärt» unter «Du», was für dich persönlich zu beachten ist.</p>`
+      : `<p class="fine">Trag deine Erfahrung ein, dann passt AFC Wind- und Böengrenzen an dich an. Bis dahin gilt «${LEVEL_INFO[S.level][0]}».</p>`}
+    <div class="seg" role="group" aria-label="Erfahrungsstufe selbst wählen">${['careful', 'normal', 'expert'].map(k => `<button type="button" data-act="level" data-v="${k}" aria-pressed="${S.level === k}">${LEVEL_INFO[k][0]}</button>`).join('')}</div>
+    <p class="fine">Stufe selbst wählen, z.B. für einen unbekannten Platz. Speichern des Profils setzt sie wieder automatisch.</p></div>`;
+}
+function savePilot(form) {
+  const f = new FormData(form), int = k => { const v = f.get(k); return v === '' || v == null ? null : Math.max(0, Math.round(Number(v))); };
+  const pr = { flights: int('flights'), hours12: int('hours12'), glider: f.get('glider') || 'B', lastFlight: f.get('lastFlight') || null, student: f.get('student') === 'on' };
+  store.set('pilot', pr); store.del('levelManual');
+  const pl = P()?.pilotLevel(pr);
+  if (pl && pl.level !== S.level) { S.level = pl.level; store.set('level', S.level); S.detail.clear(); loadPlan(); }
+  toast(pl ? `Gespeichert: Stufe «${LEVEL_INFO[pl.level][0]}»` : 'Gespeichert');
+  render();
 }
 
 /** Vergleich AFC-Score mit der eigenen Bewertung: lag AFC richtig? */
@@ -456,7 +483,7 @@ function renderSite() {
   const detailHtml = hr ? `
     <div class="hr-detail">
       <div class="hr-head">${pill(hr.score, false)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
-      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${hr.why.map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
+      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint(store.get('pilot', {}), hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
       <details class="why-more"><summary>Alle Gründe für den Score</summary>
       ${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine">Keine Auffälligkeiten.</p>'}
@@ -998,7 +1025,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'hour': S.hour = Number(b.dataset.h); if (S.detailData) renderSite(); break;
-    case 'level': if (S.level !== b.dataset.v) { S.level = b.dataset.v; store.set('level', S.level); S.detail.clear(); render(); loadPlan(); } break;
+    case 'level': if (S.level !== b.dataset.v) { S.level = b.dataset.v; store.set('level', S.level); store.set('levelManual', true); S.detail.clear(); render(); loadPlan(); } break;
     case 'theme': S.theme = b.dataset.v; store.set('theme', S.theme); render(); break;
     case 'check': {
       const key = 'check.' + todayKey(), cur = new Set(store.get(key, [])), i = Number(b.dataset.i);
@@ -1032,6 +1059,9 @@ document.addEventListener('click', async e => {
     default: break;
   }
 });
+document.addEventListener('submit', e => {
+  if (e.target.id === 'pilotForm') { e.preventDefault(); savePilot(e.target); }
+});
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
@@ -1054,6 +1084,8 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   applyTheme();
   W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
+  const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
+  if (pl && !store.get('levelManual')) { S.level = pl.level; store.set('level', S.level); }
   T.mode = ['thermal', 'soar'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
   render();
   loadPlan();

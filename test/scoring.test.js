@@ -241,3 +241,19 @@ test('Sicherer Tag ohne Thermik fällt nicht auf «Nicht starten»', () => {
   assert.equal(r.hard.length, 0);
   assert.ok(r.score >= 55 && r.score < 80, 'Score ' + r.score);
 });
+
+test('Pilotenprofil: Erfahrung, Übung und Pause bestimmen die Stufe', async () => {
+  const { pilotLevel, pilotHint } = await import('../lib/pilot.js');
+  const now = Date.UTC(2026, 9, 30);
+  assert.equal(pilotLevel({}), null);
+  assert.equal(pilotLevel({ flights: 20, hours12: 5, glider: 'A' }, now).level, 'careful');
+  assert.equal(pilotLevel({ flights: 150, hours12: 35, glider: 'B', lastFlight: '2026-10-20' }, now).level, 'normal');
+  assert.equal(pilotLevel({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-10-25' }, now).level, 'expert');
+  // lange Pause: eine Stufe vorsichtiger, nach 4 Monaten ganz vorsichtig
+  assert.equal(pilotLevel({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-09-01' }, now).level, 'normal');
+  assert.equal(pilotLevel({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-05-01' }, now).level, 'careful');
+  assert.equal(pilotLevel({ flights: 600, hours12: 80, glider: 'D', student: true }, now).level, 'careful');
+  // kräftige Thermik ist für Einsteiger ein Hinweis, für Erfahrene nicht
+  assert.equal(pilotHint({ flights: 20, hours12: 5, glider: 'A' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'warn');
+  assert.equal(pilotHint({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-10-25' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'ok');
+});

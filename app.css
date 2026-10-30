@@ -257,7 +257,7 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .stars label:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
 .fld { display: grid; gap: 4px; }
 .fld > span { font-weight: 600; font-size: 14px; }
-.fld textarea, .fld input[type="text"] { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 10px; width: 100%; min-height: 44px; }
+.fld textarea, .fld input[type="text"], .fld input[type="number"], .fld input[type="date"], .fld select { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 10px; width: 100%; min-height: 44px; }
 .chk { display: flex; gap: 12px; align-items: center; min-height: 48px; padding: 4px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
 .chk:last-child { border-bottom: 0; }
 .chk input { width: 24px; height: 24px; accent-color: var(--accent); flex: none; }
@@ -284,3 +284,6 @@ table.plain th { color: var(--muted); font-weight: 600; }
 
 @media (max-width: 560px) { .ribbon.big { gap: 1px; } .ribbon.big .rc { font-size: 11px; letter-spacing: -.02em; } }
 .ribbon.big .rc.dim { opacity: 1; }
+
+.pilot-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 14px; margin-bottom: 8px; }
+.pilot-form .chk, .pilot-form .btn-row { grid-column: 1 / -1; }
