@@ -313,7 +313,7 @@ function mountainReport() {
   ];
 }
 console.log('\n' + report);
-const stamp = ymd(Date.now());
+const stamp = `${ymd(from)}-bis-${ymd(to)}`;   // je Zeitraum eine Datei, damit Frühling und Winter sich nicht überschreiben
 await fs.mkdir(OUT, { recursive: true });
 await fs.writeFile(path.join(OUT, `backtest-${stamp}.txt`), report + '\n');
 const head = Object.keys(rows[0] || { date: 0 });
