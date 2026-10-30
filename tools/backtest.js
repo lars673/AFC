@@ -168,7 +168,10 @@ const nearestStation = a => Object.entries(CORE_STATIONS).filter(([c]) => obs[c]
 const rows = [], dayLines = [];
 for (let d = from; d <= to; d += DAY) {
   const date = ymd(d);
-  const model = new PlanModel({ now: d + 5 * 3600000, raw, obs: {}, stationMeta: {}, regional: null, trend: null, sites, fetchedAt: d });
+  // Wie in der App am Morgen: Prognose plus die Messwerte von dann (Föhn am Alpenkamm, Bise, Talwind)
+  const nowMs = d + 5 * 3600000, obsNow = obsAt(nowMs);
+  const regional = Object.keys(obsNow).length ? regionalFromObs(obsNow, {}) : null;
+  const model = new PlanModel({ now: nowMs, raw, obs: {}, stationMeta: {}, regional, trend: null, sites, fetchedAt: d });
   if (!model.ok) continue;
   const plan = model.planPayload('normal');
   const di = plan.dates.indexOf(date);

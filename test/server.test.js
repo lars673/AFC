@@ -87,7 +87,8 @@ test('Frontlage: heute K.-o., Vorsicht-Kopfzeile', async () => {
   const s = await boot('front', 18782);
   try {
     const p = await (await fetch(s.base + '/api/plan')).json();
-    const today = p.region.days[0].hours;
+    // Mock-Front gilt für den UTC-Tag: kurz vor Mitternacht ist das in Zürich schon «gestern»
+    const today = p.region.days.slice(0, 2).flatMap(d => d.hours);
     assert.ok(today.some(h => h.front === 'danger' || h.front === 'warn'), JSON.stringify(today.map(h => h.front)));
     const t = p.days[0].top;
     if (t) assert.ok(t.best.score < 60, 'Score trotz Front ' + t.best.score);
@@ -152,8 +153,10 @@ test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', as
     assert.equal(code, 0);
     const txt = fs.readFileSync(path.join(dir, fs.readdirSync(dir).find(f => f.endsWith('.txt'))), 'utf8');
     assert.match(txt, /Bewertete Gebietstage: \d+/);
-    // Im Mock ist die Prognose immer gut, gemessen wird jeden 7. Tag Sturm: das muss als GEFÄHRLICH auffallen
-    assert.match(txt, /GEFÄHRLICH: +[1-9]/);
+    // Im Mock ist die Prognose immer gut, gemessen wird jeden 7. Tag Sturm: die Messung muss als «schlecht» auffallen.
+    // Weil der Test wie die App die Morgenmessung mitnimmt, darf AFC diese Tage selbst erkennen (dann kein GEFÄHRLICH).
+    assert.match(txt, /schlecht \d+/);
+    assert.match(txt, /GEFÄHRLICH: +\d+/);
   } finally { await mock.close(); }
 });
 

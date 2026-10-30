@@ -119,8 +119,11 @@ test('Regionale Messwerte: Süd-Grimsel + Gütsch ergibt Föhn', () => {
 test('Messwerte verlieren mit der Zeit an Gewicht', () => {
   const st = { foehn: 'danger', biseScore: 50, talwindScore: 0 };
   assert.equal(localForHour(st, 0).foehn, 'danger');
-  assert.equal(localForHour(st, 4).foehn, 'warn');
-  assert.equal(localForHour(st, 6), null);
+  // Föhn hält länger als Bise und Talwind
+  assert.equal(localForHour(st, 4).foehn, 'danger');
+  assert.equal(localForHour(st, 8).foehn, 'warn');
+  assert.ok(localForHour(st, 4).biseScore < 50);
+  assert.equal(localForHour(st, 10), null);
 });
 
 test('Taupunkt', () => {

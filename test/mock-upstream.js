@@ -57,7 +57,8 @@ export function startMock(scenario = 'good', port = 0) {
 
   function series(v, lat, i) {
     const sc = state.scenario, d = Math.floor(i / 24);
-    const front = sc === 'front' && d === 0;
+    // Front am heutigen Tag in Zürich (kurz vor Mitternacht UTC ist das schon der nächste UTC-Tag)
+    const front = sc === 'front' && (d === 0 || (new Date().getUTCHours() >= 20 && d === 1));
     const hour = lh(i);
     switch (v) {
       case 'wind_speed_10m': return +(front ? 28 + (hour > 12 ? 12 : 0) : 13 + 3 * Math.sin(i / 5)).toFixed(1);
