@@ -192,3 +192,11 @@ test('Ruhiger Tag ohne Thermik ist höchstens «Prüfen», nicht «Starten»', (
   const unstable = { top: 3400, inversion: null, wstar: 2.2 };
   assert.ok(assessHour(site, good({ speed: 4, gust: 6, thermik: unstable })).score >= 80);
 });
+
+test('Abendliche Abkühlung ist kein Frontsignal', () => {
+  const n = 14, lh = Array.from({ length: n }, (_, i) => 8 + i);
+  const T = lh.map(h => (h <= 15 ? 20 : 20 - (h - 15) * 1.5));   // ab 15 Uhr 1.5 °C pro Stunde kühler
+  const P = Array.from({ length: n }, (_, i) => 1015 - i * 0.3);  // leichter Druckfall
+  const s = frontRiskSeries({ P, T, D800: Array(n).fill(200), S800: Array(n).fill(15), CAPE: Array(n).fill(0), POP: Array(n).fill(0), lh });
+  assert.ok(s.every(x => x.level === 'ok'), s.map(x => x.level).join(','));
+});
