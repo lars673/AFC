@@ -14,6 +14,17 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 * **Prognosegüte pro Station** (Prognose 3 h voraus gegen Messung) statt Gewichts-Optimierung.
 * Entfernt: Thermikkarte, Hangwindrechner, Notfallkontakt, IGC-Import, Webcams, Lern-/Backtest-Modell, `/api/forecast-snapshot`, `/api/terrain`.
 
+## Lokal auf dem Mac (ohne Terminal)
+
+* **Autostart einrichten:** `tools/AFC Autostart einrichten.command` doppelklicken. Der Server läuft dann im Hintergrund (launchd), startet beim Anmelden und nach einem Absturz neu. Adresse: http://localhost:8787, Protokoll in `data/server.log`.
+* **Nach Änderungen an `server.js` oder `lib/`:** `tools/AFC neu starten.command` doppelklicken, dann die App neu laden (Cmd+R). Änderungen an `app.js`, `app.css`, `index.html` brauchen nur Cmd+R.
+* **Entfernen:** `tools/AFC Autostart entfernen.command`.
+* Liegt der Ordner auf dem Schreibtisch oder in Dokumente, fragt macOS evtl. nach Zugriff für `node`. Das Einrichtungsskript erkennt das und sagt, was zu tun ist.
+
+## Geländedaten der Startplätze
+
+`node tools/build-terrain.js` berechnet aus einem Höhenmodell (AWS Terrain Tiles, ca. 26 m) für jeden Startplatz Hangneigung, Exposition, Relief und den Horizont in 24 Richtungen (Bergschatten) und schreibt sie in `lib/sites.json`. Nur nötig, wenn Startplätze dazukommen oder sich ändern. Fehlt die Platzhöhe, wird sie aus dem Höhenmodell übernommen (`altSource`).
+
 ## Deployment
 
 * **Render**: `render.yaml` (Disk auf `/app/data`).

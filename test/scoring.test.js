@@ -121,3 +121,53 @@ test('Taupunkt', () => {
   assert.ok(Math.abs(dewPoint(20, 50) - 9.3) < 0.3);
   assert.equal(decisionFor(90).id, 'go');
 });
+
+test('Windstille wird nicht bestraft, Richtung ist dann egal', () => {
+  const base = assessHour(site, good()).score;
+  const calm = assessHour(site, good({ speed: 3, gust: 6, dir: 0 }));
+  assert.equal(calm.hard.length, 0);
+  assert.ok(base - calm.score <= 6, `Differenz ${base - calm.score}`);
+});
+
+test('Schwacher Rückenwind ist Abzug, kein K.-o.', () => {
+  const r = assessHour(site, good({ speed: 6, gust: 9, dir: 0 }));
+  assert.equal(r.hard.length, 0);
+  assert.ok(r.score < assessHour(site, good()).score);
+});
+
+test('Seitenwind wird nur einmal abgezogen', () => {
+  const diff = assessHour(site, good()).score - assessHour(site, good({ dir: 270 })).score;
+  assert.ok(diff > 0 && diff <= 20, `Differenz ${diff}`);
+});
+
+test('Starker Gegenwind: Erfahrene bekommen kein K.-o. unter ihrer Windgrenze', () => {
+  const w = good({ speed: 34, gust: 40, speed10: 34 });
+  assert.equal(assessHour(site, w, LEVELS.expert).hard.length, 0);
+  assert.ok(assessHour(site, w, LEVELS.careful).hard.length > 0);
+});
+
+test('Bergschatten im Horizont senkt das Thermiksignal', () => {
+  const morning = Date.UTC(2026, 5, 21, 6, 0); // Sonne tief im Osten
+  const open = { ...site, aspects: [90], terrain: { slopeDeg: 25, horizonAngles: { 75: 2, 90: 2, 105: 2 } } };
+  const shaded = { ...site, aspects: [90], terrain: { slopeDeg: 25, horizonAngles: { 75: 40, 90: 40, 105: 40 } } };
+  const w = good({ ms: morning, dir: 90, sun: 400 });
+  assert.ok(assessHour(open, w).thermal > assessHour(shaded, w).thermal);
+});
+
+test('Alle Startplätze haben Geländedaten', async () => {
+  const { default: data } = await import('../lib/sites.json', { with: { type: 'json' } });
+  const starts = data.sites.filter(s => s.type === 'start');
+  for (const s of starts) {
+    assert.ok(Number.isFinite(s.terrain?.slopeDeg), s.id + ' ohne Neigung');
+    assert.equal(Object.keys(s.terrain.horizonAngles).length, 24, s.id + ' Horizont unvollständig');
+    assert.ok(Number.isFinite(s.alt), s.id + ' ohne Höhe');
+  }
+});
+
+test('Sonnenstand: Mittag, Auf- und Untergang in Bern stimmen', async () => {
+  const { solarPosition } = await import('../lib/util.js');
+  const noon = solarPosition(Date.UTC(2026, 5, 21, 11, 24), 46.95, 7.45);
+  assert.ok(Math.abs(noon.elevationDeg - 66.5) < 1 && Math.abs(noon.azimuthDeg - 180) < 8);
+  assert.ok(solarPosition(Date.UTC(2026, 5, 21, 17, 0), 46.95, 7.45).elevationDeg > 15, 'Sommer 19 Uhr: Sonne noch hoch');
+  assert.ok(solarPosition(Date.UTC(2026, 11, 21, 17, 0), 46.95, 7.45).elevationDeg < 0, 'Winter 18 Uhr: Nacht');
+});
