@@ -4,6 +4,49 @@ import http from 'node:http';
 const PL = [950, 925, 900, 850, 800, 700, 600];
 const ZH = { 950: 540, 925: 770, 900: 990, 850: 1460, 800: 1950, 700: 3010, 600: 4200 };
 
+// Erfundene Lufträume im OpenAir-Format (nur für Tests, nicht für die Navigation)
+export const MOCK_AIR = `* Testdatei
+AC CTR
+AN TEST CTR Meiringen
+AL GND
+AH 2300m AMSL
+V X=46:44:30 N 008:06:30 E
+DC 3
+AC D
+AY TMA
+AN TEST TMA Thun
+AL 1700m AMSL
+AH FL130
+DP 46:40:00 N 007:30:00 E
+DP 46:46:00 N 007:30:00 E
+DP 46:46:00 N 007:42:00 E
+DP 46:40:00 N 007:42:00 E
+AC Q
+AN TEST Gefahrengebiet Axalp
+AL GND
+AH 3000m AMSL
+V D=-
+V X=46:42:00 N 008:02:00 E
+DB 46:43:00 N 008:02:00 E, 46:41:00 N 008:02:00 E
+DP 46:42:00 N 008:01:00 E
+AC E
+AN TEST Klasse E Zürich
+AL 1950m AMSL
+AH FL130
+DP 47:20:00 N 008:20:00 E
+DP 47:30:00 N 008:20:00 E
+DP 47:30:00 N 008:40:00 E
+`;
+export const MOCK_WILD = `AC W
+AN TEST Wildruhezone Hohgant
+AL GND
+AH 300m AGL
+DP 46:46:00 N 007:52:00 E
+DP 46:47:00 N 007:52:00 E
+DP 46:47:00 N 007:54:00 E
+DP 46:46:00 N 007:54:00 E
+`;
+
 export function startMock(scenario = 'good', port = 0) {
   const state = { scenario, hits: [] };
   const day0 = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
@@ -46,6 +89,14 @@ export function startMock(scenario = 'good', port = 0) {
     const u = new URL(req.url, 'http://x');
     state.hits.push(u.pathname);
     const json = o => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (u.pathname === '/downloads/switzerland-airspace-metric.txt') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=latin1' });
+      return res.end(Buffer.from(MOCK_AIR, 'latin1'));
+    }
+    if (u.pathname === '/downloads/switzerland-wildlife-meters.txt') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      return res.end(MOCK_WILD);
+    }
     if (u.pathname === '/v1/forecast' || u.pathname === '/v1/dwd-icon') {
       const lats = u.searchParams.get('latitude').split(',').map(Number);
       const vars = u.searchParams.get('hourly').split(',');

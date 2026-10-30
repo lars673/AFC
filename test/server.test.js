@@ -11,7 +11,7 @@ async function boot(scenario, port) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -175,4 +175,17 @@ test('Open-Meteo-Gewichtung: Orte x angefangene 10 Variablen', async () => {
   assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2,3&longitude=1,2,3&hourly=a,b,c&forecast_days=5'), 3);
   assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2&longitude=1,2&hourly=' + 'v,'.repeat(14) + 'v&forecast_days=7'), 4);
   assert.equal(openMeteoWeight('https://data.geo.admin.ch/x.csv'), 0);
+});
+
+test('Lufträume: Server liefert SHV-Lufträume und Wildschutz, Klasse E ausserhalb des Gebiets fehlt', async () => {
+  const s = await boot('good', 18790);
+  try {
+    let r;
+    for (let i = 0; i < 40; i++) { r = await fetch(s.base + '/api/airspace'); if (r.status === 200) break; await new Promise(res => setTimeout(res, 250)); }
+    assert.equal(r.status, 200, s.log());
+    const j = await r.json();
+    assert.deepEqual(j.items.map(a => a.k).sort(), ['block', 'block', 'warn', 'wild']);
+    assert.ok(j.items.every(a => a.p.length >= 3 && a.b.length === 4 && a.lo && a.hi));
+    assert.match(s.log(), /Lufträume: 4/);
+  } finally { await s.stop(); }
 });

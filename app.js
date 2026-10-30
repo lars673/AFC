@@ -505,7 +505,7 @@ const INTRO = [
   ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.'],
   ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.'],
   ['Karte, Thermik und Soaring', 'Auf der Karte unten «Thermik» oder «Soaring» wählen. Tippe irgendwo auf die Karte, dann erklärt AFC, warum es dort steigt oder nicht. Unter «Ebenen» kannst du die Thermik-Hotspots und Flugspuren von kk7 einblenden.'],
-  ['Route von A nach B', 'Auf der Karte «Route» tippen, dann Startpunkt A und Ziel B. AFC sucht eine Strecke über die Thermik, mit genug Höhe und Landeplätzen im Gleitbereich, und markiert kritische Stellen. Luftraum ist noch nicht drin.'],
+  ['Route von A nach B', 'Auf der Karte «Route» tippen, dann Startpunkt A und Ziel B. AFC sucht eine Strecke über die Thermik, mit genug Höhe und Landeplätzen im Gleitbereich, bleibt unter Lufträumen und markiert kritische Stellen. Tippst du auf eine rote Fläche, siehst du den Luftraum mit seinen Höhen.'],
   ['Dein Profil', 'Unter «Profil» trägst du Flüge, Stunden, Schirm und letzten Flug ein. Daraus wählt AFC deine Grenzen für Wind und Thermik und rechnet die Route mit deiner Gleitzahl. AFC ersetzt nie deine eigene Beurteilung am Startplatz.']
 ];
 function showIntro(i = 0) {
@@ -670,6 +670,55 @@ function syncLayerPanel() {
   const ov = store.get('ov', {});
   $$('#layerPanel input[name="ov"]').forEach(i => { if (i.value in ov) i.checked = !!ov[i.value]; });
 }
+/* ---- Lufträume (SHV/FSVL, /api/airspace) auf der Karte und im Routenplaner (lib/airspace.js) */
+const AIR = { list: null, at: null, req: null, layer: null, n: 0, raster: null, rasterKey: '' };
+const AIR_STYLE = { block: { color: '#c62828', fillOpacity: 0.1, weight: 2 }, warn: { color: '#ef6c00', fillOpacity: 0.06, weight: 2, dashArray: '6 4' }, wild: { color: '#2e7d32', fillOpacity: 0.08, weight: 1.5, dashArray: '3 4' } };
+const AIR_RULE = { block: 'für Gleitschirme gesperrt (ohne Bewilligung)', warn: 'Gefahrengebiet: Aktivzeiten im DABS prüfen', wild: 'Wildschutz: nicht tief überfliegen, Abstand halten' };
+const airOn = kind => store.get('ov', {})[kind === 'wild' ? 'wild' : 'air'] !== false;
+async function airData() {
+  if (AIR.list) return AIR.list;
+  AIR.req ??= fetch('/api/airspace').then(r => (r.status === 200 ? r.json() : null)).then(j => {
+    AIR.req = null;
+    if (!j?.items) return null;
+    AIR.at = j.at;
+    AIR.list = j.items.map(a => ({ name: a.n, cls: a.c, type: a.t, kind: a.k, freq: a.f, lo: a.lo, hi: a.hi, bbox: a.b, poly: a.p }));
+    return AIR.list;
+  }).catch(() => (AIR.req = null));
+  return AIR.req;
+}
+async function updateAir() {
+  if (!M.map) return;
+  const n = ++AIR.n;
+  const list = airOn('air') || airOn('wild') ? await airData() : null;
+  if (n !== AIR.n) return;
+  if (AIR.layer) { M.map.removeLayer(AIR.layer); AIR.layer = null; }
+  if (!list) return;
+  if (!M.map.getPane('air')) { const pn = M.map.createPane('air'); pn.style.zIndex = 430; pn.style.pointerEvents = 'none'; }
+  const g = L.layerGroup();
+  for (const a of list) {
+    if (!AIR_STYLE[a.kind] || !airOn(a.kind)) continue;
+    if (a.lo.ref === 'MSL' && a.lo.m > 4500) continue;   // weit über Gleitschirmhöhe
+    L.polygon(a.poly, { pane: 'air', interactive: false, ...AIR_STYLE[a.kind] }).addTo(g);
+  }
+  AIR.layer = g.addTo(M.map);
+}
+/** Lufträume an einem Punkt als Liste für das Info-Blatt ('' = keine). */
+function airHere(lat, lon) {
+  if (!AIR.list || !window.AFCAir) return '';
+  const g = T.grid, ground = g ? g.elev[Math.round((lat - g.la0) / g.dla) * g.nx + Math.round((lon - g.lo0) / g.dlo)] || 0 : 0;
+  const here = window.AFCAir.airspaceAt(AIR.list, lat, lon, ground).filter(a => AIR_STYLE[a.kind] && airOn(a.kind));
+  if (!here.length) return '';
+  return `<h3 class="why-h">Luftraum hier</h3><ul class="air-list">${here.map(a => `<li style="--c:${AIR_STYLE[a.kind].color}"><b>${esc(a.name)}</b>${a.type || a.cls ? ` <span class="fine">(${esc(a.type || a.cls)})</span>` : ''}<br><span class="fine">${esc(a.lo.text)} bis ${esc(a.hi.text)} · ${AIR_RULE[a.kind]}${a.freq ? ' · ' + esc(a.freq) : ''}</span></li>`).join('')}</ul>`;
+}
+/** Raster der gesperrten Lufträume für den Routenplaner (gleiches Raster wie das Routenfeld). */
+async function airRaster(F) {
+  const list = await airData();
+  if (!list || !window.AFCAir) return null;
+  const key = `${F.nx}x${F.ny}:${AIR.at}`;
+  if (AIR.rasterKey !== key) { AIR.raster = window.AFCAir.airspaceRaster(list, F); AIR.rasterKey = key; }
+  return AIR.raster;
+}
+
 function initMap() {
   if (M.map) return true;
   if (typeof L === 'undefined') { mapMsg('Die Kartenbibliothek konnte nicht geladen werden. Prüfe die Verbindung und tippe auf «Aktualisieren».'); return false; }
@@ -680,7 +729,8 @@ function initMap() {
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   syncLayerPanel();
-  M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else $('#mapSheet').hidden = true; });
+  M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else if (airHere(e.latlng.lat, e.latlng.lng)) mapSheet('air', e.latlng); else $('#mapSheet').hidden = true; });
+  updateAir();
   return true;
 }
 function arrowIcon(dir, label) {
@@ -1113,14 +1163,16 @@ async function computeRoute() {
     if (req !== RT.req) return;
     // Starthöhe: Startplatz oder Gelände am Punkt A
     const ga = Math.round((RT.a[0] - g.la0) / g.dla) * g.nx + Math.round((RT.a[1] - g.lo0) / g.dlo);
-    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode, startAlt: RT.alt ?? g.elev[ga] ?? null, glide: perf.glide, airspeed: perf.airspeed, later });
-    res.perf = perf; res.laterHours = later.length;
+    const air = await airRaster(F);
+    if (req !== RT.req) return;
+    const res = window.AFCRoute.planRoute(F, RT.a, RT.b, { mode: RT.mode, startAlt: RT.alt ?? g.elev[ga] ?? null, glide: perf.glide, airspeed: perf.airspeed, later, air });
+    res.perf = perf; res.laterHours = later.length; res.airOk = !!air;
     if (req !== RT.req) return;
     RT.res = res; mapMsg(''); drawRoute(); mapSheet('route'); syncWindBar();
     if (res.ok) M.map.fitBounds(L.latLngBounds(res.path), { paddingTopLeft: [40, 40], paddingBottomRight: [40, Math.min(360, $('#mapSheet').offsetHeight + 40)] });
   } catch (err) { if (req === RT.req) { mapMsg('Route: ' + err.message); setTimeout(() => mapMsg(''), 7000); } }
 }
-const ISSUE_COL = { weak: '#d97706', low: '#dc2626', head: '#7c3aed', land: '#b45309' };
+const ISSUE_COL = { weak: '#d97706', low: '#dc2626', head: '#7c3aed', land: '#b45309', air: '#c2185b' };
 function drawRoute() {
   clearRoute();
   const grp = L.layerGroup();
@@ -1145,7 +1197,7 @@ function routeSheetHtml() {
     <div class="kv"><div><b>${r.distKm} km</b><span>Strecke</span></div><div><b>${t}</b><span>Flugzeit (Schätzung)</span></div><div><b>${r.climbs ? r.climbs + '×' : 'Gleitflug'}</b><span>${r.climbs ? 'Thermik nötig' : 'ohne Thermik möglich'}</span></div><div><b>${r.arriveAgl} m</b><span>Ankunft über Grund</span></div></div>
     ${seg}
     ${r.issues.length ? `<h3 class="why-h">Kritische Stellen</h3><ol class="rt-issues">${r.issues.map(i => `<li style="--c:${ISSUE_COL[i.kind]}">${esc(i.text)}</li>`).join('')}</ol>` : '<p>Keine kritischen Stellen gefunden: Thermik, Arbeitshöhe, Wind und Landeplätze passen auf der ganzen Strecke.</p>'}
-    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Gerechnet mit ${esc(window.AFCPilot?.GLIDERS?.[r.perf.key] || 'EN-B')} (Gleitzahl ${r.perf.glide}, ${r.perf.airspeed} km/h)${store.get('pilot')?.glider ? '' : ', Schirm im Profil ändern'}. ${r.laterHours ? `Wetter ab Start bis ${W.hour + r.laterHours} Uhr berücksichtigt.` : 'Schätzung für eine Uhrzeit.'} <b>Luftraum ist noch nicht berücksichtigt</b>, vor dem Flug prüfen.</p>`;
+    <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Gerechnet mit ${esc(window.AFCPilot?.GLIDERS?.[r.perf.key] || 'EN-B')} (Gleitzahl ${r.perf.glide}, ${r.perf.airspeed} km/h)${store.get('pilot')?.glider ? '' : ', Schirm im Profil ändern'}. ${r.laterHours ? `Wetter ab Start bis ${W.hour + r.laterHours} Uhr berücksichtigt.` : 'Schätzung für eine Uhrzeit.'} ${r.airOk ? 'Lufträume (SHV) sind berücksichtigt: Aktivzeiten und NOTAM im DABS selbst prüfen.' : '<b>Lufträume konnten nicht geladen werden</b>, vor dem Flug selbst prüfen.'}</p>`;
 }
 
 async function updateThermal() {
@@ -1178,10 +1230,12 @@ function mapSheet(kind, id) {
     h = `<div class="sheet-top"><div><h3>Landeplatz ${esc(l.name)}</h3><p class="fine" style="margin:0">${l.alt ?? '–'} m${l.status ? ' · ' + esc(l.status) : ''}</p></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else if (kind === 'route') {
     h = routeSheetHtml() + `<div class="sheet-act"><button class="btn sec" type="button" data-act="route">Neue Route</button><button class="btn sec" type="button" data-act="routeoff">Schliessen</button></div>`;
+  } else if (kind === 'air') {
+    h = `<div class="sheet-top"><div><h3>Luftraum</h3><p class="fine" style="margin:0">Quelle SHV/FSVL${AIR.at ? ', geladen ' + new Date(AIR.at).toLocaleDateString('de-CH') : ''}</p></div></div>${airHere(id.lat, id.lng)}<p class="fine">Aktivzeiten (z.B. Militär) und NOTAM vor dem Flug im DABS prüfen.</p><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else if (kind === 'thermal') {
     const t = thermalWhy(id.lat, id.lng);
     if (!t) { el.hidden = true; return; }
-    h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+    h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${airHere(id.lat, id.lng)}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else {
     const st = S.plan.stations.find(x => x.code === id);
     h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · vor ${st.age} min</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
@@ -1286,7 +1340,7 @@ document.addEventListener('submit', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
-  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); renderMap(); } }
+  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }

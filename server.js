@@ -18,6 +18,8 @@ import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
+import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
+import { httpGet } from './lib/http.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -86,7 +88,8 @@ const ingest = {
   ecmwf: { ok: false, at: null, error: null },
   foehn: { ok: false, at: null, error: null },
   stations: { ok: false, at: null, error: null, note: null },
-  windgrid: { ok: false, at: null, error: null }
+  windgrid: { ok: false, at: null, error: null },
+  airspace: { ok: false, at: null, error: null, count: 0 }
 };
 const state = {
   raw: null, windgrid: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
@@ -169,6 +172,36 @@ async function collectForecast() {
 }
 
 /* ------------------------------------------------------------------ Windkarte */
+/* ---- Lufträume (SHV/FSVL, OpenAir, Meter) einmal täglich; bei Fehlern die letzte gespeicherte Datei */
+const AIR_BASE = () => (process.env.AFC_AIRSPACE_URL || 'https://airspace.shv-fsvl.ch').replace(/\/$/, '');
+const AIR_FILES = [['air', '/downloads/switzerland-airspace-metric.txt'], ['wild', '/downloads/switzerland-wildlife-meters.txt']];
+const AIR_BOX = [46.0, 6.6, 47.2, 8.9];   // Berner Oberland mit Rand
+const decodeText = buf => { const t = new TextDecoder('utf-8').decode(buf); return t.includes('\uFFFD') ? new TextDecoder('latin1').decode(buf) : t; };
+async function collectAirspace() {
+  const items = [], errors = [];
+  for (const [kind, file] of AIR_FILES) {
+    const local = path.join(dataDir, 'airspace-' + kind + '.txt');
+    let text = null;
+    try {
+      text = decodeText(new Uint8Array(await (await httpGet(AIR_BASE() + file, { timeoutMs: 30000 })).arrayBuffer()));
+      if (!/^\s*AC\s/m.test(text)) throw new Error('keine OpenAir-Datei');
+      await fs.writeFile(local, text);
+    } catch (e) {
+      errors.push(errMsg(e));
+      text = await fs.readFile(local, 'utf8').catch(() => null);
+    }
+    if (!text) continue;
+    for (const a of clipToBox(parseOpenAir(text), AIR_BOX)) items.push({ ...a, kind: kind === 'wild' ? 'wild' : a.kind });
+  }
+  if (items.length) {
+    const round = v => Math.round(v * 1e5) / 1e5;
+    state.airspace = packJson({ ok: true, at: nowIso(), source: 'SHV/FSVL airspace.shv-fsvl.ch', items: items.map(a => ({ n: a.name, c: a.cls, t: a.type || undefined, k: a.kind, f: a.freq, lo: a.lo, hi: a.hi, b: bboxOf(a.poly).map(round), p: a.poly.map(([la, lo]) => [round(la), round(lo)]) })) });
+    const by = items.reduce((m, a) => ((m[a.kind] = (m[a.kind] || 0) + 1), m), {});
+    console.log(`Lufträume: ${items.length} (${Object.entries(by).map(([k, v]) => k + ' ' + v).join(', ')})${errors.length ? ', aus Zwischenspeicher: ' + errors.join('; ') : ''}`);
+  }
+  ingest.airspace = { ok: items.length > 0, at: nowIso(), error: errors.length ? errors.join('; ') : null, count: items.length };
+}
+
 async function collectWindGrid() {
   try {
     const wg = await fetchWindGrid();
@@ -373,6 +406,7 @@ const STATIC = new Map([
   ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
   ['/pilot.js', ['lib/pilot.js', 'text/javascript; charset=utf-8']],
   ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
+  ['/airspace.js', ['lib/airspace.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
 ]);
@@ -450,6 +484,10 @@ const server = http.createServer(async (req, res) => {
         const pk = thermalResponse(t);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/airspace') {
+        if (!state.airspace) return sendJson(req, res, 202, { warming: true, error: ingest.airspace.error });
+        return sendPacked(req, res, state.airspace);
       }
       if (req.method === 'GET' && p === '/api/health') {
         const row = dbGet('SELECT MAX(time) t FROM observations');
@@ -587,11 +625,13 @@ async function start() {
     await tick('obs', collectObservations);
     await tick('fc', collectForecast);
     await tick('wind', collectWindGrid);
+    await tick('air', collectAirspace);
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));
   timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
+  timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
   updater.start();
 }

@@ -313,3 +313,44 @@ test('Routenplaner: Wetter ändert sich während des Flugs (Thermik hört nach e
   assert.ok(all.hours > 1.2, 'Flug dauert ' + all.hours + ' h');
   assert.equal(planRoute(good, at(2), at(117), { startAlt: 1800, later: [dead] }).ok, false, 'ohne Thermik ab der 2. Stunde nicht machbar');
 });
+
+test('Lufträume: OpenAir lesen (Kreis, Bogen, Höhen) und Art für Gleitschirme', async () => {
+  const { parseOpenAir, parseHeight, airspaceAt, airKind } = await import('../lib/airspace.js');
+  const { MOCK_AIR } = await import('./mock-upstream.js');
+  const l = parseOpenAir(MOCK_AIR);
+  assert.equal(l.length, 4, l.map(a => a.name).join(', '));
+  const ctr = l.find(a => /CTR/.test(a.name));
+  assert.equal(ctr.kind, 'block');
+  assert.deepEqual([ctr.lo.m, ctr.lo.ref, ctr.hi.m], [0, 'AGL', 2300]);
+  assert.ok(Math.abs(ctr.poly[0][0] - (46.7417 + 3 * 1.852 / 111.32)) < 0.002, 'Kreis 3 NM um den Mittelpunkt');
+  assert.equal(l.find(a => /TMA/.test(a.name)).hi.m, 3962);
+  assert.equal(l.find(a => /Gefahren/.test(a.name)).kind, 'warn');
+  assert.deepEqual(airspaceAt(l, 46.7417, 8.1083).map(a => a.name), ['TEST CTR Meiringen']);
+  assert.deepEqual(airspaceAt(l, 46.70, 8.012).map(a => a.name), ['TEST Gefahrengebiet Axalp'], 'Bogen gegen den Uhrzeigersinn liegt im Westen');
+  assert.deepEqual(parseHeight('1000ft AGL'), { m: 305, ref: 'AGL', text: '305 m über Grund' });
+  assert.equal(parseHeight('FL 95').m, 2896);
+  assert.equal(parseHeight('2900 m AMSL').m, 2900);
+  assert.equal(airKind('E', ''), 'info');
+  assert.equal(airKind('C', 'TMA'), 'block');
+});
+
+test('Routenplaner: bleibt unter einem Luftraum und fliegt um eine Kontrollzone herum', async () => {
+  const { planRoute } = await import('../lib/route.js');
+  const nx = 60, ny = 30, N = nx * ny;
+  const F = { la0: 46.6, lo0: 7.6, dla: 0.0045, dlo: 0.0065, nx, ny, q: new Float32Array(N).fill(0.6), top: new Float32Array(N).fill(3200), ground: new Float32Array(N).fill(800), u: new Float32Array(N), v: new Float32Array(N), wstar: new Float32Array(N).fill(2), needH: new Float32Array(N).fill(0) };
+  const at = (x, y) => [F.la0 + y * F.dla, F.lo0 + x * F.dlo];
+  const air = { lo: new Float32Array(N).fill(NaN), hi: new Float32Array(N).fill(NaN), name: new Array(N).fill(null) };
+  // TMA ab 1700 m über der ganzen rechten Hälfte
+  for (let y = 0; y < ny; y++) for (let x = 30; x < nx; x++) { const k = y * nx + x; air.lo[k] = 1700; air.hi[k] = 3962; air.name[k] = 'TMA'; }
+  const r = planRoute(F, at(2, 15), at(55, 15), { startAlt: 1800, air });
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.cells.every((k, i) => (k % nx) < 30 || r.heights[i] <= 1650), 'unter der TMA: ' + r.heights.join(','));
+  assert.ok(r.issues.some(i => i.kind === 'air' && /TMA/.test(i.text)), JSON.stringify(r.issues));
+  // Kontrollzone vom Boden bis 2300 m in der Mitte (x 25–35, y 5–25): die Route geht aussen herum
+  air.lo.fill(NaN); air.hi.fill(NaN);
+  for (let y = 5; y <= 25; y++) for (let x = 25; x <= 35; x++) { const k = y * nx + x; air.lo[k] = 800; air.hi[k] = 2300; air.name[k] = 'CTR'; }
+  F.top.fill(2000);   // Thermik reicht nicht über die CTR
+  const c = planRoute(F, at(2, 15), at(55, 15), { startAlt: 1800, air });
+  assert.equal(c.ok, true, c.reason);
+  assert.ok(c.cells.every(k => { const x = k % nx, y = Math.floor(k / nx); return !(x >= 25 && x <= 35 && y >= 5 && y <= 25); }), 'nicht durch die CTR');
+});

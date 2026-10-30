@@ -30,11 +30,15 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 
 **Pilotenprofil:** Unter «Profil» trägt man Flüge, Stunden der letzten 12 Monate, Schirmklasse, letzten Flug und Ausbildungsstand ein (`lib/pilot.js`, nur im Browser gespeichert). Daraus folgt die Erfahrungsstufe (Wind- und Böengrenzen); nach über 6 Wochen Pause eine Stufe vorsichtiger, nach 4 Monaten vorsichtig. «Kurz erklärt» zeigt unter «Du» persönliche Hinweise (kräftige Thermik für Einsteiger, Böen, lange Pause).
 
-**XC-Routenplaner:** Auf der Karte «Route», dann Start A und Ziel B antippen (`lib/route.js`). Gesucht wird die schnellste Route über ein 500-m-Raster mit der Flughöhe als Zustand: Gleiten kostet Höhe (Gleitzahl und Geschwindigkeit aus dem Schirm im Profil: EN-A 6.5/34 km/h, EN-B 7/36, EN-C 7.5/38, EN-D 8/40), brauchbare Thermik bringt sie bis zur Obergrenze zurück, reine Gleitflüge ab Starthöhe gehen auch ohne Thermik; dazu Abstand zum Gelände, Wind auf Flughöhe (Gegen- und Seitenwind), Landeplätze im Gleitbereich (300 m Reserve). Das Wetter der folgenden Stunden (bis 4 h, höchstens 20 Uhr) fliesst mit ein, je nachdem wann man an einer Stelle ankommt. «Sicher» meidet schwache Abschnitte und fehlende Landeplätze stärker als «Schnell». Kritische Stellen werden nummeriert angezeigt. Luftraum ist noch nicht berücksichtigt.
+**XC-Routenplaner:** Auf der Karte «Route», dann Start A und Ziel B antippen (`lib/route.js`). Gesucht wird die schnellste Route über ein 500-m-Raster mit der Flughöhe als Zustand: Gleiten kostet Höhe (Gleitzahl und Geschwindigkeit aus dem Schirm im Profil: EN-A 6.5/34 km/h, EN-B 7/36, EN-C 7.5/38, EN-D 8/40), brauchbare Thermik bringt sie bis zur Obergrenze zurück, reine Gleitflüge ab Starthöhe gehen auch ohne Thermik; dazu Abstand zum Gelände, Wind auf Flughöhe (Gegen- und Seitenwind), Landeplätze im Gleitbereich (300 m Reserve). Das Wetter der folgenden Stunden (bis 4 h, höchstens 20 Uhr) fliesst mit ein, je nachdem wann man an einer Stelle ankommt. «Sicher» meidet schwache Abschnitte und fehlende Landeplätze stärker als «Schnell». Kritische Stellen werden nummeriert angezeigt. Lufträume: siehe unten.
 
 **Thermik-Wärmekarte:** `node tools/build-thermal-grid.js` schreibt das Geländeraster `lib/terrain-grid.bin` (ca. 250 m: Höhe, Neigung, Exposition, Geländeform). Die App schätzt daraus je Stunde, wo Thermik ablöst (Ansicht «Thermik») oder wo der Wind frontal auf steile Hänge trifft (Ansicht «Soaring», Wind auf Geländehöhe aus Boden, 2000 m und 3000 m): Sonne auf dem Hang (Einfallswinkel, diese und die vorherige Stunde), Thermikobergrenze aus dem Temperaturprofil, Kreten und Kuppen, tiefe Wolken und Regen. Antippen der Karte zeigt die Begründung.
 
 **Abgleich mit echten Flügen:** `node tools/calibrate-kk7.js` vergleicht die Wärmekarte mit [thermal.kk7.ch](https://thermal.kk7.ch) (Auswertung von rund 3,8 Mio. Flügen, CC BY-NC-SA 4.0, nur nicht-kommerziell) und sucht die Gewichtung, die am besten zu den Flügen passt. Ergebnis in `data/kk7-abgleich.txt`. Muss auf dem Mac laufen. Die kk7-Thermik und -Skyways lassen sich auch direkt als Kartenebene einblenden.
+
+## Lufträume
+
+Der Server lädt einmal täglich die offiziellen Luftraumdateien des SHV/FSVL (https://airspace.shv-fsvl.ch, OpenAir in Metern: CTR, TMA, Sperr- und Gefahrengebiete sowie Wildschutzgebiete), schneidet sie aufs Berner Oberland zu und liefert sie unter `/api/airspace`. Kopie in `data/airspace-*.txt`, falls der Abruf einmal nicht klappt. Auf der Karte (Ebenen: «Lufträume», «Wildschutzgebiete») rot = für Gleitschirme gesperrt (Klasse A–D, CTR, R, P, TMZ), orange = Gefahrengebiet, grün = Wildschutz. Antippen zeigt Name, Klasse und Höhen. Der Routenplaner bleibt unter gesperrten Lufträumen (50 m Abstand) oder darüber und fliegt um solche bis zum Boden herum (`lib/airspace.js`, `lib/route.js`). Aktivzeiten (Militär) und NOTAM sind nicht drin: vor dem Flug im DABS prüfen.
 
 ## Rückblick-Test
 
@@ -62,7 +66,7 @@ Healthcheck: `/healthz` (ohne DB-Zugriff). Vollstatus mit Quellenzustand: `/api/
 | `AFC_UPDATE_CHECK` | `1` | `0` schaltet die Update-Prüfung aus |
 | `AFC_AUTOSTART` | – | `1` erlaubt das Update aus der App (setzt das Autostart-Skript) |
 
-Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_META_URL`.
+Für Tests überschreibbar: `AFC_AIRSPACE_URL`, `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_META_URL`.
 
 ## API
 
@@ -76,6 +80,7 @@ Für Tests überschreibbar: `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_MET
 | `POST /api/flight-report` | Flugmeldung (Header `X-AFC-Client`), validiert: bekannter Startplatz, Zeit der letzten 14 Tage, Bewertung 1–5, höchstens 20 pro Tag |
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |
+| `GET /api/airspace` | Lufträume und Wildschutzgebiete (SHV/FSVL) im Gebiet |
 | `GET /api/status` | Open-Meteo-Verbrauch heute und Update-Stand |
 | `POST /api/update/check`, `POST /api/update` | Nach Update suchen / Update einspielen und neu starten (nur localhost, Update nur mit Autostart) |
 

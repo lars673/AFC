@@ -66,6 +66,8 @@
           <label><input type="radio" name="base" value="osm"> OpenStreetMap</label>
         </fieldset>
         <fieldset><legend>Auflagen</legend>
+          <label><input type="checkbox" name="ov" value="air" checked> Lufträume (SHV)</label>
+          <label><input type="checkbox" name="ov" value="wild" checked> Wildschutzgebiete</label>
           <label><input type="checkbox" name="ov" value="slope"> Hangneigung über 30°</label>
           <label><input type="checkbox" name="ov" value="obst"> Hindernisse und Kabel</label>
           <label><input type="checkbox" name="ov" value="kk7thermal"> Thermik aus 3,8 Mio. Flügen (kk7)</label>
@@ -118,6 +120,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js" defer></script>
 <script type="module" src="/pilot.js"></script>
 <script type="module" src="/route.js"></script>
+<script type="module" src="/airspace.js"></script>
 <script src="/app.js" defer></script>
 <noscript><p style="padding:16px">AFC benötigt JavaScript.</p></noscript>
 </body>

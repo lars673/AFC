@@ -307,3 +307,5 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .banner.upd .btn-row { flex-wrap: nowrap; }
 .usage-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 4px; }
 .usage-bar span { display: block; height: 100%; background: var(--accent); }
+.air-list { margin: 0 0 8px; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 15px; }
+.air-list li { border-left: 4px solid var(--c); padding-left: 8px; }
