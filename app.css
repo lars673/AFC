@@ -309,3 +309,4 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .usage-bar span { display: block; height: 100%; background: var(--accent); }
 .air-list { margin: 0 0 8px; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 15px; }
 .air-list li { border-left: 4px solid var(--c); padding-left: 8px; }
+.map-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

@@ -57,6 +57,7 @@
         <button class="map-btn" data-act="layers" aria-expanded="false" aria-controls="layerPanel">Ebenen</button>
         <button class="map-btn" data-act="locate">Standort</button>
         <button class="map-btn" data-act="route">Route</button>
+        <button class="map-btn" data-act="airtoggle" aria-pressed="false">Luftraum</button>
       </div>
       <div id="layerPanel" class="layer-panel" hidden>
         <fieldset><legend>Grundkarte</legend>
@@ -66,8 +67,8 @@
           <label><input type="radio" name="base" value="osm"> OpenStreetMap</label>
         </fieldset>
         <fieldset><legend>Auflagen</legend>
-          <label><input type="checkbox" name="ov" value="air" checked> Lufträume (SHV)</label>
-          <label><input type="checkbox" name="ov" value="wild" checked> Wildschutzgebiete</label>
+          <label><input type="checkbox" name="ov" value="air"> Lufträume (SHV)</label>
+          <label><input type="checkbox" name="ov" value="wild"> Wildschutzgebiete</label>
           <label><input type="checkbox" name="ov" value="slope"> Hangneigung über 30°</label>
           <label><input type="checkbox" name="ov" value="obst"> Hindernisse und Kabel</label>
           <label><input type="checkbox" name="ov" value="kk7thermal"> Thermik aus 3,8 Mio. Flügen (kk7)</label>

@@ -674,7 +674,8 @@ function syncLayerPanel() {
 const AIR = { list: null, at: null, req: null, layer: null, n: 0, raster: null, rasterKey: '' };
 const AIR_STYLE = { block: { color: '#c62828', fillOpacity: 0.1, weight: 2 }, warn: { color: '#ef6c00', fillOpacity: 0.06, weight: 2, dashArray: '6 4' }, wild: { color: '#2e7d32', fillOpacity: 0.08, weight: 1.5, dashArray: '3 4' } };
 const AIR_RULE = { block: 'für Gleitschirme gesperrt (ohne Bewilligung)', warn: 'Gefahrengebiet: Aktivzeiten im DABS prüfen', wild: 'Wildschutz: nicht tief überfliegen, Abstand halten' };
-const airOn = kind => store.get('ov', {})[kind === 'wild' ? 'wild' : 'air'] !== false;
+const airOn = kind => !!store.get('ov', {})[kind === 'wild' ? 'wild' : 'air'];   // standardmässig aus, damit die Karte übersichtlich bleibt
+const AIR_MAX_LO = 3000;   // höher beginnende Lufträume (CTA, obere TMA) nur antippen, nicht zeichnen
 async function airData() {
   if (AIR.list) return AIR.list;
   AIR.req ??= fetch('/api/airspace').then(r => (r.status === 200 ? r.json() : null)).then(j => {
@@ -691,14 +692,17 @@ async function updateAir() {
   const n = ++AIR.n;
   const list = airOn('air') || airOn('wild') ? await airData() : null;
   if (n !== AIR.n) return;
+  const btn = $('[data-act="airtoggle"]'); if (btn) btn.setAttribute('aria-pressed', String(airOn('air') || airOn('wild')));
   if (AIR.layer) { M.map.removeLayer(AIR.layer); AIR.layer = null; }
   if (!list) return;
   if (!M.map.getPane('air')) { const pn = M.map.createPane('air'); pn.style.zIndex = 430; pn.style.pointerEvents = 'none'; }
   const g = L.layerGroup();
   for (const a of list) {
     if (!AIR_STYLE[a.kind] || !airOn(a.kind)) continue;
-    if (a.lo.ref === 'MSL' && a.lo.m > 4500) continue;   // weit über Gleitschirmhöhe
-    L.polygon(a.poly, { pane: 'air', interactive: false, ...AIR_STYLE[a.kind] }).addTo(g);
+    if (a.lo.ref === 'MSL' && a.lo.m >= AIR_MAX_LO) continue;
+    // nur Lufträume ab Boden flächig, die übrigen als Umriss
+    const ground = a.lo.ref === 'AGL' && a.lo.m === 0;
+    L.polygon(a.poly, { pane: 'air', interactive: false, ...AIR_STYLE[a.kind], fillOpacity: ground ? AIR_STYLE[a.kind].fillOpacity : 0, weight: ground ? AIR_STYLE[a.kind].weight : 1.2 }).addTo(g);
   }
   AIR.layer = g.addTo(M.map);
 }
@@ -708,7 +712,7 @@ function airHere(lat, lon) {
   const g = T.grid, ground = g ? g.elev[Math.round((lat - g.la0) / g.dla) * g.nx + Math.round((lon - g.lo0) / g.dlo)] || 0 : 0;
   const here = window.AFCAir.airspaceAt(AIR.list, lat, lon, ground).filter(a => AIR_STYLE[a.kind] && airOn(a.kind));
   if (!here.length) return '';
-  return `<h3 class="why-h">Luftraum hier</h3><ul class="air-list">${here.map(a => `<li style="--c:${AIR_STYLE[a.kind].color}"><b>${esc(a.name)}</b>${a.type || a.cls ? ` <span class="fine">(${esc(a.type || a.cls)})</span>` : ''}<br><span class="fine">${esc(a.lo.text)} bis ${esc(a.hi.text)} · ${AIR_RULE[a.kind]}${a.freq ? ' · ' + esc(a.freq) : ''}</span></li>`).join('')}</ul>`;
+  return `<h3 class="why-h">Luftraum hier</h3><ul class="air-list">${here.map(a => `<li style="--c:${AIR_STYLE[a.kind].color}"><b>${esc(a.name)}</b>${a.type || a.cls ? ` <span class="fine">(${esc(a.type || a.cls)})</span>` : ''}<br><span class="fine">${esc(a.lo.text)} bis ${esc(a.hi.text)} · ${AIR_RULE[a.kind]}${/\bHX\b/.test(a.name) ? ' · nur zeitweise aktiv (HX), Zeiten im DABS' : ''}${a.freq ? ' · ' + esc(a.freq) : ''}</span></li>`).join('')}</ul>`;
 }
 /** Raster der gesperrten Lufträume für den Routenplaner (gleiches Raster wie das Routenfeld). */
 async function airRaster(F) {
@@ -1301,6 +1305,7 @@ document.addEventListener('click', async e => {
     case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
     case 'intro': showIntro(); break;
+    case 'airtoggle': { const on = !(airOn('air') || airOn('wild')); store.set('ov', { ...store.get('ov', {}), air: on, wild: on }); syncLayerPanel(); updateAir(); if (on) { mapMsg('Lufträume: rot gesperrt, orange Gefahrengebiet, grün Wildschutz. Antippen für Details.'); setTimeout(() => mapMsg(''), 5000); } else $('#mapSheet').hidden = true; break; }
     case 'update': applyUpdate(); break;
     case 'updskip': store.set('updSkip', ST.data?.update?.latest?.date); renderUpdBanner(); break;
     case 'updcheck': {
