@@ -48,6 +48,8 @@ Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, 
 
 `node tools/backtest.js --days 90` (oder Doppelklick auf `tools/AFC Rückblick-Test.command`) rechnet AFC mit archivierten Prognosen von Open-Meteo für vergangene Tage durch und vergleicht das Urteil je Gebiet mit den Messungen der MeteoSchweiz (Föhn, Starkwind, Regen). Ergebnis in `data/backtest-<datum>.txt` und `.csv`. Getestet wird die Bewertungslogik mit kurzfristigen Prognosen; die Messung stammt von Talstationen.
 
+
+Bergstationen (ab 1500 m, höchstens 20 km und 700 m Höhe vom Startplatz): Misst eine am Morgen mehr Wind als prognostiziert, hebt AFC für den Rest des Tages die Böen an diesen Startplätzen an (klingt über etwa 8 Stunden ab). Den Grundwind nicht, sonst sähe Soaring besser aus. Rückblick-Test 2026: im Frühling der letzte gefährliche Fall weg (Haslital 22.04.), im Winter weniger «zu mild» (15 → 11), Böenfehler am Berg etwa halbiert. Option `--ohne-berg` rechnet ohne diese Korrektur.
 ## Deployment
 
 * **Render**: `render.yaml` (Disk auf `/app/data`).

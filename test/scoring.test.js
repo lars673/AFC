@@ -371,3 +371,9 @@ test('Föhnregel: Druck Lugano minus Zürich', async () => {
   assert.ok(a.score <= 74, 'Score ' + a.score);
   assert.ok(a.reasons.some(r => /Lugano–Zürich \+5\.4 hPa/.test(r)), a.reasons.join(' | '));
 });
+
+test('Bergstation misst mehr Wind: Grund wird genannt', () => {
+  const r = assessHour(site, good({ gust: 32, mtnGust: { name: 'Grimsel Hospiz', add: 10 } }));
+  assert.ok(r.reasons.some(x => /Grimsel Hospiz misst mehr Wind als prognostiziert: Böen um 10 km\/h angehoben/.test(x)), r.reasons.join(' | '));
+  assert.ok(r.score < assessHour(site, good()).score);
+});

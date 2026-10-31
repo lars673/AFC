@@ -183,7 +183,13 @@ for (let d = from; d <= to; d += DAY) {
   // Wie in der App am Morgen: Prognose plus die Messwerte von dann (Föhn am Alpenkamm, Bise, Talwind)
   const nowMs = d + 5 * 3600000, obsNow = obsAt(nowMs);
   const regional = Object.keys(obsNow).length ? regionalFromObs(obsNow, {}) : null;
-  const model = new PlanModel({ now: nowMs, raw, obs: {}, stationMeta: {}, regional, trend: null, sites, fetchedAt: d });
+  // Bergstationen am Morgen: wie live korrigieren sie die Windprognose für Startplätze in der Nähe
+  const mObs = {}, mMeta = {};
+  if (!process.argv.includes('--ohne-berg')) for (const m of Object.values(mountain)) {
+    const o = m.rows.get(nowMs);
+    if (o && isNum(o.wind)) { mObs[m.code] = { time: new Date(nowMs).toISOString(), wind: o.wind, gust: o.gust, dir: o.dir }; mMeta[m.code] = { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }; }
+  }
+  const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: mMeta, regional, trend: null, sites, fetchedAt: d });
   if (!model.ok) continue;
   const plan = model.planPayload('normal');
   const di = plan.dates.indexOf(date);
@@ -232,7 +238,8 @@ for (let d = from; d <= to; d += DAY) {
         const mw = Math.max(...near.map(o => o.wind)), mg = Math.max(...near.map(o => o.gust ?? o.wind));
         // nur zählen, wenn Wind oder Böen den Score wirklich gedrückt haben (K.-o. oder deutlicher Abzug)
         const windKo = /Wind|Böen/.test(ko) || /deutliche Böen|kräftiger Wind|stärkerer Wind/.test(reasons);
-        const mv = afc === 'Start' && (mg >= 40 || mw >= 28) ? 'GEFÄHRLICH' : afc === 'Nein' && windKo && mg < 25 ? 'zu streng' : 'passt';
+        const strong = mg >= 40 || mw >= 28;
+        const mv = afc === 'Start' && strong ? 'GEFÄHRLICH' : afc === 'Prüfen' && strong ? 'zu mild' : afc === 'Nein' && windKo && mg < 25 ? 'zu streng' : 'passt';
         mRows.push({ date, area: a.name, site: site.name, station: mst.code, stationName: mst.name, best, afc, fcWind: fc.wind, fcGust: fc.gust, obsWind: Math.round(mw), obsGust: Math.round(mg), verdict: mv });
       }
     }
@@ -303,6 +310,7 @@ function mountainReport() {
     `Verglichene Gebietstage: ${mRows.length}`,
     `  passt:       ${c('passt')} (${Math.round(c('passt') / mRows.length * 100)} %)`,
     `  GEFÄHRLICH:  ${c('GEFÄHRLICH')}  AFC sagte «Start», oben gemessen Böen ab 40 oder Wind ab 28 km/h`,
+    `  zu mild:     ${c('zu mild')}  AFC sagte «Prüfen», oben gemessen Böen ab 40 oder Wind ab 28 km/h`,
     `  zu streng:   ${c('zu streng')}  AFC sagte «Nein» wegen Wind/Böen, oben gemessen Böen unter 25 km/h`,
     `Prognose minus Messung, alle: Wind ${f(err(mRows, 'Wind'))}, Böen ${f(err(mRows, 'Gust'))}`,
     '(Plus = AFC rechnet mit mehr Wind als gemessen, Minus = AFC unterschätzt den Wind.)',
