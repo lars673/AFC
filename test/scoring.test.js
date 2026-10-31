@@ -193,11 +193,16 @@ test('Thermikprofil: labile Luft trägt hoch, Inversion deckelt', async () => {
   assert.equal(thermalProfile(std, 18, 1000, 0).top, 1000, 'ohne Sonne keine Thermik');
 });
 
-test('Ruhiger Tag ohne Thermik ist höchstens «Prüfen», nicht «Starten»', () => {
+test('Ruhiger Tag ohne Thermik: schöner Abgleiter, «Prüfen» statt «Abwarten»', () => {
+  // Lars, 31.10.2026: ruhige Abgleiter (vor allem im Winter) sind gute Flugtage, nichts Negatives
   const stable = { top: 1550, inversion: 1500, wstar: 0.4 };
   const r = assessHour(site, good({ speed: 4, gust: 6, thermik: stable }));
   assert.equal(r.hard.length, 0);
-  assert.ok(r.score <= 74 && r.score >= 60, 'Score ' + r.score);
+  assert.ok(r.score >= 70 && r.score <= 76, 'Score ' + r.score);
+  assert.ok(r.reasons.includes('ruhige Luft: schöner Abgleiter'));
+  assert.ok(!r.reasons.some(x => /eher Abgleiter/.test(x)));
+  // Böig und ohne Thermik bleibt es tiefer
+  assert.ok(assessHour(site, good({ speed: 14, gust: 26, thermik: stable })).score < 70);
   const unstable = { top: 3400, inversion: null, wstar: 2.2 };
   assert.ok(assessHour(site, good({ speed: 4, gust: 6, thermik: unstable })).score >= 80);
 });
@@ -210,7 +215,7 @@ test('Abendliche Abkühlung ist kein Frontsignal', () => {
   assert.ok(s.every(x => x.level === 'ok'), s.map(x => x.level).join(','));
 });
 
-test('Ruhiger Herbsttag mit mässiger Thermik bleibt unter «Startbereit»', () => {
+test('Ruhiger Herbsttag mit mässiger Thermik: ruhiger Abgleiter, nicht «Starten»', () => {
   // echte Werte Kuonisbergli 30.10.2026, 12 Uhr: kaum Wind, Sonne 500 W/m², trockene Luft
   const r = assessHour({ ...site, alt: 1700, aspects: [90] }, good({ ms: Date.UTC(2026, 9, 30, 11), speed: 4, gust: 11, dir: 81, cloudBase: 2700, cloudCover: 0, cloudCoverLow: 0, sun: 500, cape: 0 }));
   assert.ok(r.score < 80 && r.score >= 65, 'Score ' + r.score);

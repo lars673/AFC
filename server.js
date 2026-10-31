@@ -9,12 +9,13 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 
-import { toIsoTime, isNum, circularMean, windDiff, mean } from './lib/util.js';
+import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts } from './lib/util.js';
+import { spawn } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
 import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
-import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from './lib/plan.js';
+import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LEARN_DAYS, LEARN_MIN_N } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
@@ -277,6 +278,29 @@ function qualitySummary() {
   return state.quality;
 }
 
+/**
+ * Selbst nachkalibrieren: Böen- und Windfehler der Bergstationen (Prognose 3 h voraus gegen Messung,
+ * letzte 14 Tage, 9–17 Uhr). Plus = gemessen mehr als prognostiziert. Das Modell hebt damit die Böen an.
+ */
+function learnedBias() {
+  if (state.learned && Date.now() - state.learnedAt < 3600000) return state.learned;
+  const since = new Date(Date.now() - LEARN_DAYS * 86400000).toISOString();
+  const rows = dbAll('SELECT p.code, p.target, p.wind pw, p.gust pg, o.wind ow, o.gust og FROM fc_pred p JOIN observations o ON o.code=p.code AND o.time=p.target WHERE p.target>=?', [since]);
+  const by = {};
+  for (const r of rows) {
+    const m = state.stationList[r.code];
+    if (!m || !(m.alt >= MOUNTAIN_ALT) || !isNum(r.og) || !isNum(r.pg)) continue;
+    const h = zurichParts(Date.parse(r.target)).hour;
+    if (h < 9 || h > 17) continue;
+    const b = (by[r.code] ??= { gust: [], wind: [] });
+    b.gust.push(r.og - r.pg);
+    if (isNum(r.ow) && isNum(r.pw)) b.wind.push(r.ow - r.pw);
+  }
+  state.learned = Object.fromEntries(Object.entries(by).map(([c, b]) => [c, { n: b.gust.length, gust: Math.round(mean(b.gust) * 10) / 10, wind: b.wind.length ? Math.round(mean(b.wind) * 10) / 10 : null }]));
+  state.learnedAt = Date.now();
+  return state.learned;
+}
+
 /* ------------------------------------------------------------------ Modell & Antwort-Cache */
 function invalidate() { state.version++; state.payloads.clear(); }
 
@@ -285,7 +309,7 @@ function currentModel() {
   if (!state.raw) return null;
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
-      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend,
+      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedBias(),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
     state.model.ver = state.version;
@@ -509,7 +533,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) } });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList() });
+      }
+      if (req.method === 'POST' && p === '/api/backtest') {
+        if (!isLocal(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
+        return sendJson(req, res, 200, { ok: true, started: maybeBacktest(true), ...backtestStatus() });
       }
       if (req.method === 'POST' && p === '/api/update') {
         if (!isLocal(req) || !AUTOSTART) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
@@ -661,7 +689,40 @@ async function start() {
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
+  if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
   updater.start();
+}
+
+/* --------------------------------------------------- Rückblick-Test automatisch */
+// Einmal pro Woche nachts die letzten 14 Tage durchrechnen; das Ergebnis erscheint unter Profil.
+const BACKTEST_AUTO = process.env.AFC_BACKTEST_AUTO ? process.env.AFC_BACKTEST_AUTO === '1' : AUTOSTART;
+const backtestJob = { running: false, error: null };
+function backtestHistory() {
+  try { const h = JSON.parse(fsc.readFileSync(path.join(DATA, 'backtest-history.json'), 'utf8')); return Array.isArray(h) ? h : []; } catch { return []; }
+}
+function maybeBacktest(force = false) {
+  if (backtestJob.running) return false;
+  const last = backtestHistory().filter(x => x.auto).at(-1);
+  const hour = zurichParts(Date.now()).hour;
+  if (!force && ((last && Date.now() - Date.parse(last.at) < 6.5 * 86400000) || hour < 2 || hour > 5)) return false;
+  backtestJob.running = true; backtestJob.error = null;
+  const child = spawn(process.execPath, [path.join(ROOT, 'tools', 'backtest.js'), '--days', '14', '--auto'], { cwd: ROOT, env: { ...process.env, AFC_DATA_DIR: DATA }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', d => { err = (err + d).slice(-400); });
+  child.on('exit', code => {
+    backtestJob.running = false;
+    backtestJob.error = code ? (err.trim().split('\n').pop() || `Abbruch (${code})`) : null;
+    console.log(code ? `Rückblick-Test fehlgeschlagen: ${backtestJob.error}` : 'Rückblick-Test fertig');
+  });
+  return true;
+}
+function learnedList() {
+  return Object.entries(learnedBias()).map(([code, l]) => ({ code, name: state.stationList[code]?.name || code, ...l, used: l.n >= LEARN_MIN_N }))
+    .sort((a, b) => b.n - a.n);
+}
+function backtestStatus() {
+  const h = backtestHistory();
+  return { auto: BACKTEST_AUTO, running: backtestJob.running, error: backtestJob.error, last: h.at(-1) || null, prev: h.at(-2) || null };
 }
 
 function shutdown(sig) {

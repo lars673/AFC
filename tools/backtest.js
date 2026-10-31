@@ -177,6 +177,32 @@ const obsAt = ms => Object.fromEntries(Object.entries(obs).map(([c, m]) => [c, m
 /** Nächste Kernstation mit Messwerten zu einem Gebiet. */
 const nearestStation = a => Object.entries(CORE_STATIONS).filter(([c]) => obs[c]).map(([c, s]) => ({ c, d: haversineKm(a.lat, a.lon, s.lat, s.lon) })).sort((x, y) => x.d - y.d)[0];
 
+// Selbst nachkalibrieren wie live: Böenfehler je Bergstation aus den 14 Tagen vor dem Testtag (9–17 Uhr).
+// Live wird mit der Prognose am Stationsort verglichen; das Archiv hat nur Startplätze, darum der nächste Startplatz.
+const allMeta = Object.fromEntries(Object.values(mountain).map(m => [m.code, { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }]));
+const proxy = Object.fromEntries(Object.values(mountain).map(m => {
+  const s = ranked.map(x => ({ x, d: haversineKm(x.lat, x.lon, m.lat, m.lon), dz: Math.abs((x.alt ?? 0) - m.alt) })).filter(o => o.d <= 20 && o.dz <= 700).sort((a, b) => a.d - b.d)[0]?.x;
+  const fc = s ? raw.sites[s.id] : null;
+  return [m.code, fc?.wind_gusts_10m ? { fc, idx: new Map(fc.t.map((t, i) => [t, i])) } : null];
+}));
+function learnedAt(d) {
+  if (process.argv.includes('--ohne-lernen')) return null;
+  const out = {};
+  for (const m of Object.values(mountain)) {
+    const p = proxy[m.code];
+    if (!p) continue;
+    const diffs = [];
+    for (let ms = d - 14 * DAY; ms < d; ms += 3600000) {
+      const h = zurichParts(ms).hour;
+      if (h < 9 || h > 17) continue;
+      const o = m.rows.get(ms), i = p.idx.get(ms);
+      if (o && isNum(o.gust) && i !== undefined && isNum(p.fc.wind_gusts_10m[i])) diffs.push(o.gust - p.fc.wind_gusts_10m[i]);
+    }
+    if (diffs.length) out[m.code] = { n: diffs.length, gust: diffs.reduce((a, b) => a + b, 0) / diffs.length };
+  }
+  return out;
+}
+
 const rows = [], dayLines = [], foehnDays = [];
 for (let d = from; d <= to; d += DAY) {
   const date = ymd(d);
@@ -189,7 +215,7 @@ for (let d = from; d <= to; d += DAY) {
     const o = m.rows.get(nowMs);
     if (o && isNum(o.wind)) { mObs[m.code] = { time: new Date(nowMs).toISOString(), wind: o.wind, gust: o.gust, dir: o.dir }; mMeta[m.code] = { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }; }
   }
-  const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: mMeta, regional, trend: null, sites, fetchedAt: d });
+  const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: { ...allMeta, ...mMeta }, learned: learnedAt(d), regional, trend: null, sites, fetchedAt: d });
   if (!model.ok) continue;
   const plan = model.planPayload('normal');
   const di = plan.dates.indexOf(date);
@@ -328,3 +354,21 @@ const head = Object.keys(rows[0] || { date: 0 });
 await fs.writeFile(path.join(OUT, `backtest-${stamp}.csv`), [head.join(';'), ...rows.map(r => head.map(k => String(r[k] ?? '').replace(/;/g, ',')).join(';'))].join('\n') + '\n');
 if (mRows.length) { const mh = Object.keys(mRows[0]); await fs.writeFile(path.join(OUT, `backtest-${stamp}-berg.csv`), [mh.join(';'), ...mRows.map(r => mh.map(k => String(r[k] ?? '').replace(/;/g, ',')).join(';'))].join('\n') + '\n'); }
 console.log(`\nGespeichert: ${path.join(OUT, `backtest-${stamp}.txt`)} und .csv`);
+
+// Kurzfassung für die App (Profil > Verbrauch und Updates): Verlauf der letzten 52 Läufe
+const mc = v => mRows.filter(r => r.verdict === v).length;
+const gustErr = mRows.filter(r => isNum(r.fcGust) && isNum(r.obsGust)).map(r => r.fcGust - r.obsGust);
+const summary = {
+  at: new Date().toISOString(), from: ymd(from), to: ymd(to), auto: process.argv.includes('--auto'),
+  n, passt: cnt('passt'), gefaehrlich: cnt('GEFÄHRLICH'), zuStreng: cnt('zu streng'),
+  berg: mRows.length ? { n: mRows.length, gefaehrlich: mc('GEFÄHRLICH'), zuMild: mc('zu mild'), zuStreng: mc('zu streng'), gustBias: gustErr.length ? Math.round(gustErr.reduce((a, b) => a + b, 0) / gustErr.length * 10) / 10 : null } : null,
+  faelle: rows.filter(r => r.verdict === 'GEFÄHRLICH').slice(0, 10).map(r => `${r.date} ${r.area}: Score ${r.best}, gemessen ${r.why}`),
+  datei: `backtest-${stamp}.txt`
+};
+const histFile = path.join(OUT, 'backtest-history.json');
+let hist = [];
+try { hist = JSON.parse(await fs.readFile(histFile, 'utf8')); if (!Array.isArray(hist)) hist = []; } catch { /* erster Lauf */ }
+hist.push(summary);
+await fs.writeFile(histFile, JSON.stringify(hist.slice(-52), null, 1));
+// automatischer Lauf: Zwischenspeicher wieder löschen (10–15 MB)
+if (process.argv.includes('--auto')) await fs.rm(cacheFile, { force: true });

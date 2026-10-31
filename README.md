@@ -50,6 +50,12 @@ Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, 
 
 
 Bergstationen (ab 1500 m, höchstens 20 km und 700 m Höhe vom Startplatz): Misst eine am Morgen mehr Wind als prognostiziert, hebt AFC für den Rest des Tages die Böen an diesen Startplätzen an (klingt über etwa 8 Stunden ab). Den Grundwind nicht, sonst sähe Soaring besser aus. Rückblick-Test 2026: im Frühling der letzte gefährliche Fall weg (Haslital 22.04.), im Winter weniger «zu mild» (15 → 11), Böenfehler am Berg etwa halbiert. Option `--ohne-berg` rechnet ohne diese Korrektur.
+
+Selbst nachkalibrieren: Der Server vergleicht laufend die Prognose (3 h voraus) mit den Messungen der Bergstationen. Lagen die Böen in den letzten 14 Tagen (9–17 Uhr, mindestens 30 Stunden) im Schnitt über der Prognose, hebt AFC die Böen an Startplätzen in der Nähe um 60 % davon an (höchstens 10 km/h). Anzeige unter Profil > Verbrauch und Updates > «Selbst gelernt». Im Rückblick-Test nachgebildet (`--ohne-lernen` schaltet es ab).
+
+Automatisch: Mit Autostart rechnet der Server jede Woche nachts (2–5 Uhr) die letzten 14 Tage durch (`--auto`, Zwischenspeicher wird danach gelöscht). Verlauf in `data/backtest-history.json`, Ergebnis unter Profil; dort auch «Jetzt prüfen». `AFC_BACKTEST_AUTO=0` schaltet es ab.
+
+Ruhige Abgleiter: Ohne Thermik, aber mit ruhiger Luft (Böen bis 15, Wind bis 12 km/h) wertet AFC den Tag als schönen Abgleiter, höchstens «Prüfen» (76).
 ## Deployment
 
 * **Render**: `render.yaml` (Disk auf `/app/data`).

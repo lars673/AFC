@@ -402,6 +402,32 @@ async function applyUpdate() {
     throw new Error('AFC antwortet nicht. Auf dem Mac «AFC neu starten» doppelklicken.');
   } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + err.message); }
 }
+/** Was AFC an den Bergstationen selbst gelernt hat (Böenfehler der letzten 14 Tage). */
+function learnedHtml(list) {
+  if (!list) return '';
+  const used = list.filter(x => x.used);
+  return `<div style="margin-top:12px"><b>Selbst gelernt</b> <span class="fine">Bergstationen, letzte 14 Tage: wie stark waren die Böen im Vergleich zur Prognose?</span>
+    ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li>${esc(x.name)}: Böen ${x.gust > 0 ? '+' : ''}${x.gust} km/h${x.gust > 0 ? ' (AFC hebt die Böen an Startplätzen in der Nähe an)' : ''} · ${x.n} Stunden</li>`).join('')}</ul>`
+      : `<p class="fine" style="margin:4px 0 0">Sammelt noch Daten (${list.length ? Math.max(...list.map(x => x.n)) : 0} von 30 Stunden). Wird mit jedem Tag genauer.</p>`}</div>`;
+}
+
+/** Ergebnis des automatischen Rückblick-Tests (wöchentlich nachts, letzte 14 Tage). */
+function backtestHtml(b) {
+  if (!b) return '';
+  const L = b.last, P = b.prev;
+  const pc = x => (x?.n ? Math.round(x.passt / x.n * 100) : null);
+  const dd = d => d.split('-').reverse().join('.');
+  const trend = L && P && pc(P) !== null ? ` <span class="fine">(vorher ${pc(P)} %, ${P.gefaehrlich} gefährlich)</span>` : '';
+  const body = L ? `<b>${dd(L.from)} bis ${dd(L.to)}: ${pc(L)} % passt · ${L.gefaehrlich} gefährlich · ${L.zuStreng} zu streng</b>${trend}
+      ${L.berg ? `<p class="fine" style="margin:4px 0 0">Am Berg: ${L.berg.gefaehrlich} gefährlich, ${L.berg.zuMild} zu mild, ${L.berg.zuStreng} zu streng${num(L.berg.gustBias) ? ` · Böen-Prognose im Schnitt ${L.berg.gustBias > 0 ? '+' : ''}${L.berg.gustBias} km/h` : ''}</p>` : ''}
+      ${L.faelle?.length ? `<p class="fine" style="margin:4px 0 0"><b>Gefährliche Fälle:</b> ${L.faelle.map(esc).join(' · ')}</p>` : ''}
+      <p class="fine" style="margin:4px 0 0">Gerechnet am ${new Date(L.at).toLocaleDateString('de-CH')}. Details in data/${esc(L.datei || '')}.</p>`
+    : '<p class="fine" style="margin:0">Noch kein Lauf.</p>';
+  return `<div style="margin-top:12px"><b>Rückblick-Test</b> <span class="fine">${b.auto ? 'läuft jede Woche nachts automatisch (letzte 14 Tage)' : 'automatischer Lauf aus'}</span>
+    <div style="margin-top:4px">${b.running ? '<p class="fine" style="margin:0">Läuft gerade …</p>' : body}${b.error ? `<p class="fine" style="margin:4px 0 0">Letzter Versuch: ${esc(b.error)}</p>` : ''}</div>
+    ${b.running ? '' : '<div class="btn-row" style="justify-content:flex-start;margin-top:6px"><button class="btn sec" type="button" data-act="btrun">Jetzt prüfen</button></div>'}</div>`;
+}
+
 function statusHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
@@ -414,7 +440,9 @@ function statusHtml() {
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
     <div style="margin-top:12px"><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
-      <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>`;
+      <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>
+    ${learnedHtml(d.learned)}
+    ${backtestHtml(d.backtest)}`;
 }
 function renderProfile() {
   const el = $('#v-profile');
@@ -1582,6 +1610,14 @@ document.addEventListener('click', async e => {
       b.disabled = true; b.textContent = 'Suche …';
       try { const r = await fetch('/api/update/check', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (ST.data && j.update) ST.data.update = j.update; } catch {}
       store.del('updSkip'); renderUpdBanner(); const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml();
+      break;
+    }
+    case 'btrun': {
+      b.disabled = true;
+      try { const r = await fetch('/api/backtest', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (!r.ok) throw new Error(j.error); if (ST.data) ST.data.backtest = j; toast('Rückblick-Test läuft, dauert einige Minuten'); }
+      catch (err) { toast('Nicht gestartet: ' + err.message); }
+      const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml();
+      setTimeout(loadStatus, 180000);
       break;
     }
     case 'routeoff': RT.active = false; RT.a = RT.b = RT.res = null; RT.req++; clearRoute(); mapMsg(''); $('#mapSheet').hidden = true; break;

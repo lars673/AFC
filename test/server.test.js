@@ -146,7 +146,7 @@ test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', as
   const mock = await startMock('good');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-bt-'));
   try {
-    const code = await new Promise(r => spawn(process.execPath, ['tools/backtest.js', '--days', '15'], {
+    const code = await new Promise(r => spawn(process.execPath, ['tools/backtest.js', '--days', '15', '--auto'], {
       cwd: path.resolve(import.meta.dirname, '..'), stdio: 'ignore',
       env: { ...process.env, AFC_HISTORY_URL: mock.url, AFC_SMN_URL: mock.url, AFC_DATA_DIR: dir }
     }).on('exit', r));
@@ -157,6 +157,11 @@ test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', as
     // Weil der Test wie die App die Morgenmessung mitnimmt, darf AFC diese Tage selbst erkennen (dann kein GEFÄHRLICH).
     assert.match(txt, /schlecht \d+/);
     assert.match(txt, /GEFÄHRLICH: +\d+/);
+    // Kurzfassung für die App, Zwischenspeicher nach automatischem Lauf gelöscht
+    const hist = JSON.parse(fs.readFileSync(path.join(dir, 'backtest-history.json'), 'utf8'));
+    assert.equal(hist.length, 1);
+    assert.ok(hist[0].auto && hist[0].n > 0 && hist[0].passt + hist[0].gefaehrlich + hist[0].zuStreng <= hist[0].n);
+    assert.ok(!fs.readdirSync(dir).some(f => f.startsWith('backtest-cache-')));
   } finally { await mock.close(); }
 });
 
@@ -214,5 +219,15 @@ test('Flugbuch-API: speichern, lesen, löschen, nur mit Gerätekennung', async (
     assert.equal((await fetch(s.base + '/api/logbook/flight/f2', { method: 'DELETE', headers: H })).status, 200);
     j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
     assert.equal(j.flights.length, 1);
+  } finally { await s.stop(); }
+});
+
+test('Rückblick-Test: Status zeigt den letzten Lauf aus dem Verlauf', async () => {
+  const s = await boot('good', 18792);
+  try {
+    let j = await (await fetch(s.base + '/api/status')).json();
+    assert.equal(j.backtest.auto, false);
+    assert.equal(j.backtest.last, null);
+    assert.equal((await fetch(s.base + '/api/backtest', { method: 'POST' })).status, 403);
   } finally { await s.stop(); }
 });
