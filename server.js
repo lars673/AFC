@@ -19,7 +19,7 @@ import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LE
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
-import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv } from './lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedback } from './lib/logbook.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -310,6 +310,7 @@ function currentModel() {
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
       now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedBias(),
+      feedback: siteFeedback(dbAll("SELECT data FROM logbook WHERE kind='flight'").map(r => JSON.parse(r.data))),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
     state.model.ver = state.version;
@@ -741,6 +742,7 @@ async function backupLogbook() {
 }
 let lbBackupT = null;
 function backupLogbookSoon() {
+  invalidate();   // Rückmeldungen nach Flügen fliessen in die Bewertung
   clearTimeout(lbBackupT);
   lbBackupT = setTimeout(() => backupLogbook().catch(e => console.warn('Flugbuch-Sicherung', errMsg(e))), Number(process.env.AFC_LB_BACKUP_DELAY_MS ?? 120000));
   lbBackupT.unref?.();

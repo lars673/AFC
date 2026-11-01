@@ -382,3 +382,17 @@ test('Bergstation misst mehr Wind: Grund wird genannt', () => {
   assert.ok(r.reasons.some(x => /Grimsel Hospiz misst mehr Wind als prognostiziert: Böen um 10 km\/h angehoben/.test(x)), r.reasons.join(' | '));
   assert.ok(r.score < assessHour(site, good()).score);
 });
+
+test('Rückmeldungen nach Flügen: kleine Anpassung mit Begründung, K.-o.-Deckel bleiben', () => {
+  const base = assessHour(site, good({ gust: 24 }));
+  const mild = assessHour(site, good({ gust: 24, feedback: { n: 4, richtig: 2, streng: 0, mild: 2, adj: -8 } }));
+  assert.ok(mild.score < base.score, `${mild.score} < ${base.score}`);
+  assert.ok(mild.reasons.some(r => /2 von 4 Flügen «zu mild», AFC wertet 8 Punkte vorsichtiger/.test(r)));
+  const streng = assessHour(site, good({ gust: 24, feedback: { n: 3, richtig: 0, streng: 3, mild: 0, adj: 4 } }));
+  assert.ok(streng.score >= base.score && streng.score <= base.score + 4);
+  // Gewitter-Deckel wird nicht überschritten
+  const ko = assessHour(site, good({ cape: 2500, pop: 80, precip: 3 }));
+  const ko2 = assessHour(site, good({ cape: 2500, pop: 80, precip: 3, feedback: { n: 5, richtig: 0, streng: 5, mild: 0, adj: 4 } }));
+  assert.ok(ko.cap !== null);
+  assert.ok(ko2.score <= ko.cap);
+});

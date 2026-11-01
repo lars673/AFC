@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanFlight, cleanGear, cleanSettings, logStats, gearStatus, profileFromLog, fmtDur, cleanBackup, flightsCsv } from '../lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, logStats, gearStatus, profileFromLog, fmtDur, cleanBackup, flightsCsv, siteFeedback } from '../lib/logbook.js';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 
@@ -72,4 +72,16 @@ test('Tabelle: älteste zuerst, Dezimalkomma, Ausrüstung mit Namen', () => {
   const l = csv.slice(1).trim().split('\r\n');
   assert.match(l[1], /^1;01\.08\.2026;10:00;1:01;61;/);
   assert.match(l[2], /^2;02\.08\.2026;;0:30;30;;;;Ozone Rush;;;1,5;/);
+});
+
+test('Rückmeldungen je Startplatz: ab 3, «zu mild» zählt doppelt, begrenzt', () => {
+  const f = (siteId, afcVerdict, date = '2026-09-01') => ({ siteId, afcVerdict, date });
+  const r = siteFeedback([f('a', 'streng'), f('a', 'streng'), f('a', 'streng'), f('b', 'mild'), f('b', 'richtig'), f('b', 'richtig'), f('c', 'streng'), f('c', 'streng'), f('d', 'streng', '2023-01-01'), f('e', 'mild'), f('e', 'mild'), f('e', 'mild')], NOW);
+  assert.equal(r.a.adj, 4);
+  assert.equal(r.b.adj, -5);
+  assert.equal(r.c.adj, 0);   // erst 2 Rückmeldungen
+  assert.equal(r.d, undefined);   // zu alt
+  assert.equal(r.e.adj, -8);
+  assert.equal(cleanFlight({ date: '2026-09-01', afcVerdict: 'falsch' }).afcVerdict, '');
+  assert.equal(cleanFlight({ date: '2026-09-01', afcVerdict: 'mild' }).afcVerdict, 'mild');
 });

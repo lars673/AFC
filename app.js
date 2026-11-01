@@ -267,6 +267,7 @@ function renderDecide() {
   const areas = [...p.areas].sort((a, b) => (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
   el.innerHTML = `
+    ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
     ${levelLine()}
@@ -542,6 +543,31 @@ function lbSyncProfile() {
 }
 const ddmm = d => d.slice(8, 10) + '.' + d.slice(5, 7) + '.';
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+/** AFC-Wert eines Startplatzes an einem Tag zur Startzeit (oder bestes Fenster), solange der Plan den Tag kennt. */
+function afcScoreAt(siteId, date, start) {
+  const p = S.plan, d = p?.dates?.indexOf(date) ?? -1, site = siteId && p?.sites?.find(x => x.id === siteId);
+  if (!site || d < 0) return null;
+  const day = site.days?.[d], h = start ? Number(start.slice(0, 2)) : NaN;
+  const at = Number.isFinite(h) ? day?.scores?.[h - (p.h0 ?? 6)] : null;
+  return num(at) ? at : day?.best?.score ?? null;
+}
+/** Neuester Flug der letzten 14 Tage an einem bekannten Startplatz ohne Rückmeldung. */
+function feedbackDue() {
+  const d = LB.data;
+  if (!d) return null;
+  const from = new Date(Date.now() - 14 * 86400000).toLocaleDateString('sv-SE'), skip = store.get('fbSkip', []);
+  return d.flights.find(f => f.siteId && f.date >= from && !f.afcVerdict && !skip.includes(f.id)) || null;
+}
+const rerender = () => { if (S.tab === 'book') renderBook(); else if (S.tab === 'decide') renderDecide(); };
+function feedbackHtml() {
+  const f = feedbackDue(), L = LG();
+  if (!f || !L) return '';
+  const when = f.date === todayKey() ? 'heute' : f.date === new Date(Date.now() - 86400000).toLocaleDateString('sv-SE') ? 'gestern' : 'am ' + ddmm(f.date);
+  return `<div class="lb-ask" role="region" aria-label="Rückmeldung zum Flug">
+    <div><b>Wie lag AFC bei deinem Flug?</b> <span class="fine">${esc(f.siteName || '')}, ${when}${f.start ? ' ' + f.start : ''}${num(f.afcScore) ? ` · AFC sagte ${f.afcScore}` : ''}</span></div>
+    <div class="lb-ask-btns">${Object.entries(L.VERDICTS).map(([k, n]) => `<button type="button" class="btn sec" data-act="fb" data-id="${esc(f.id)}" data-v="${k}">${n}</button>`).join('')}</div>
+    <button type="button" class="linkbtn fine" data-act="fbskip" data-id="${esc(f.id)}">Diesen Flug nicht bewerten</button></div>`;
+}
 const stars = n => (num(n) ? '★'.repeat(n) + '<span class="lb-off">' + '★'.repeat(5 - n) + '</span>' : '');
 /** Fällige Checks und Packtermine (für Flugbuch und Entscheid). */
 function gearAlerts() {
@@ -571,11 +597,12 @@ function renderBook() {
     const m = f.date.slice(0, 7), head = m !== lastMonth ? `<div class="lb-month">${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}</div>` : '';
     lastMonth = m;
     const route = [f.siteName || 'Start ?', f.landingName].filter(Boolean).join(' → ');
-    const sub = [f.kind && L.FLIGHT_KINDS[f.kind], gearById[f.gliderId] && L.gearName(gearById[f.gliderId]), num(f.km) ? f.km + ' km' : '', f.track ? 'IGC' : ''].filter(Boolean).join(' · ');
+    const sub = [f.kind && L.FLIGHT_KINDS[f.kind], gearById[f.gliderId] && L.gearName(gearById[f.gliderId]), num(f.km) ? f.km + ' km' : '', f.track ? 'IGC' : '', f.afcVerdict && f.afcVerdict !== 'richtig' ? 'AFC ' + L.VERDICTS[f.afcVerdict].toLowerCase() : ''].filter(Boolean).join(' · ');
     return `${head}<button type="button" class="lb-row" data-act="lbflight" data-id="${esc(f.id)}"><span class="lb-date">${ddmm(f.date)}${f.start ? `<small>${f.start}</small>` : ''}</span><span class="lb-main"><b>${esc(route)}</b><small>${esc(sub)}${f.rating ? ' ' + stars(f.rating) : ''}</small></span><span class="lb-dur">${f.durMin ? L.fmtDur(f.durMin) : '–'}</span></button>`;
   }).join('');
   const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
   el.innerHTML = `
+    ${feedbackHtml()}
     ${gearAlertHtml()}
     <div class="panel">
       <div class="lb-head"><h3>Flugbuch</h3><span class="btn-row"><label class="btn sec lb-file" title="IGC-Dateien vom Vario oder Handy (auch mehrere, oder hierher ziehen)">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label><button class="btn" type="button" data-act="lbflight">+ Flug</button></span></div>
@@ -704,7 +731,7 @@ async function importIgc(files) {
       gliderId: def.glider || null, harnessId: def.harness || null, reserveId: def.reserve || null,
       track: { ...a.track, takeoff: a.takeoff, landing: a.landing }
     };
-    if (site && a.date === todayKey()) item.afcScore = site.days?.[0]?.best?.score ?? null;
+    item.afcScore = afcScoreAt(item.siteId, a.date, a.start);
     try { lastId = (await lbSave('flight', item, true)).id; added++; } catch { bad++; }
   }
   if (S.tab === 'book') renderBook();
@@ -752,6 +779,7 @@ function flightForm(id) {
       <label class="fld"><span>Schirm</span><select name="gliderId">${opts('glider', v.gliderId)}</select></label>
       <label class="fld"><span>Gurtzeug</span><select name="harnessId">${opts('harness', v.harnessId)}</select></label>
       <label class="fld"><span>Retter</span><select name="reserveId">${opts('reserve', v.reserveId)}</select></label>
+      <div class="fld lb-wide"><span id="lbVerdL">AFC-Bewertung${num(v.afcScore) ? ` (AFC sagte ${v.afcScore})` : ''}</span><div class="stars lb-verd" role="radiogroup" aria-labelledby="lbVerdL">${Object.entries(L.VERDICTS).map(([k, n]) => `<label><input type="radio" name="afcVerdict" value="${k}" ${v.afcVerdict === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
       <div class="fld lb-wide"><span id="lbRateL">Bewertung</span><div class="stars" role="radiogroup" aria-labelledby="lbRateL">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" ${v.rating === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
       ${v.track ? trackHtml(v.track) : ''}
       <label class="fld lb-wide"><span>Notiz (Bedingungen, Lernpunkte)</span><textarea name="note" maxlength="500" rows="3">${esc(v.note || '')}</textarea></label>
@@ -765,9 +793,9 @@ function flightForm(id) {
     e.preventDefault();
     const x = Object.fromEntries(new FormData(form));
     const site = (S.plan?.sites || []).find(s => s.name === x.siteName), land = (S.plan?.landings || []).find(s => s.name === x.landingName);
-    const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, note: x.note };
-    // AFC-Score des Startplatzes festhalten, wenn der Flug heute war (zum späteren Abgleich)
-    if (!f && site && x.date === todayKey()) item.afcScore = site.days?.[0]?.best?.score ?? null;
+    const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, afcVerdict: x.afcVerdict || '', note: x.note };
+    // AFC-Score des Startplatzes zur Startzeit festhalten (zum späteren Abgleich), solange der Plan diesen Tag noch kennt
+    if (!num(item.afcScore) || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcScore = afcScoreAt(item.siteId, item.date, item.start) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcScore : null);
     try { await lbSave('flight', item); closeDlg($('#msgDlg')); toast('Flug gespeichert'); renderBook(); }
     catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
   });
@@ -1691,6 +1719,18 @@ document.addEventListener('click', async e => {
     case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(err.message)); break;
     case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(err.message)); break;
     case 'lbyear': LB.year = b.dataset.v; renderBook(); break;
+    case 'fb': {
+      const f = LB.data?.flights.find(x => x.id === id);
+      if (!f) break;
+      try {
+        await lbSave('flight', { ...f, afcVerdict: b.dataset.v }, true);
+        const fb = LG().siteFeedback(LB.data.flights)[f.siteId];
+        toast(b.dataset.v === 'richtig' ? 'Danke! Gut zu wissen.' : fb?.adj ? `Danke! AFC passt die Bewertung für ${f.siteName} an (${fb.adj > 0 ? '+' : ''}${fb.adj}).` : `Danke! Ab ${LG().FEEDBACK_MIN_N} Rückmeldungen passt AFC die Bewertung für ${f.siteName} an.`);
+        rerender(); if (b.dataset.v !== 'richtig') loadPlan();
+      } catch (err) { toast('Nicht gespeichert: ' + err.message); }
+      break;
+    }
+    case 'fbskip': store.set('fbSkip', [...store.get('fbSkip', []), id].slice(-50)); rerender(); break;
     case 'lbcsv': lbExport('csv'); break;
     case 'lbjson': lbExport('json'); break;
     case 'lbprint': lbLoad().then(lbPrint).catch(err => toast(err.message)); break;
