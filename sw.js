@@ -1,9 +1,9 @@
 // AFC Service Worker 8.0
 // - App-Dateien: Netzwerk zuerst (immer aktuelle Version), Zwischenspeicher nur als Offline-Rückfall.
 // - /api/ wird nie zwischengespeichert; die App hält den letzten Plan selbst vor und kennzeichnet ihn als alt.
-// - Leaflet (cdnjs) wird zwischengespeichert, damit die Karte nach dem ersten Besuch schneller startet.
-const CACHE = 'afc-8.0';
-const CORE = ['/', '/app.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+// - Leaflet liegt im Projekt (/vendor/leaflet) und gehört zu den App-Dateien.
+const CACHE = 'afc-8.1';
+const CORE = ['/', '/app.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', e => e.waitUntil((async () => {
   const c = await caches.open(CACHE);
@@ -23,26 +23,20 @@ self.addEventListener('fetch', e => {
   const u = new URL(req.url);
   if (u.origin === self.location.origin && u.pathname.startsWith('/api/')) return;
 
-  if (u.hostname === 'cdnjs.cloudflare.com' && /leaflet/.test(u.pathname)) {
-    e.respondWith((async () => {
-      const hit = await caches.match(req);
-      if (hit) return hit;
-      const res = await fetch(req);
-      if (res.ok || res.type === 'opaque') (await caches.open(CACHE)).put(req, res.clone());
-      return res;
-    })());
-    return;
-  }
   if (u.origin !== self.location.origin) return;
 
   e.respondWith((async () => {
+    // Schlechter Empfang am Startplatz: nach 4 s die gespeicherte Version zeigen, im Hintergrund weiter laden
+    const net = fetch(req, { cache: 'no-cache' }).then(async res => { if (res.ok) await (await caches.open(CACHE)).put(req, res.clone()); return res; });
+    net.catch(() => {});
+    const cached = () => caches.match(req).then(hit => hit || (req.mode === 'navigate' ? caches.match('/') : null));
+    const slow = new Promise(r => setTimeout(r, 4000)).then(cached);
     try {
-      const res = await fetch(req, { cache: 'no-cache' });
-      if (res.ok) (await caches.open(CACHE)).put(req, res.clone());
-      return res;
+      const first = await Promise.race([net, slow]);
+      if (first) return first;
+      return await net;
     } catch {
-      return (await caches.match(req)) || (req.mode === 'navigate' && (await caches.match('/'))) ||
-        new Response('AFC offline', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      return (await cached()) || new Response('AFC offline', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     }
   })());
 });

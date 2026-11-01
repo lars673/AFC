@@ -53,8 +53,14 @@ let loadTimer = null;
 async function loadPlan(manual) {
   clearTimeout(loadTimer);
   $('.icon-btn[data-act="reload"]')?.classList.add('spin');
+  // Beim Öffnen sofort den letzten Stand zeigen (schlechter Empfang am Startplatz), deutlich als alt markiert
+  if (!S.plan) {
+    const c = store.get('plan');
+    if (c?.plan && c.level === S.level) { S.plan = c.plan; S.cachedAt = c.at; S.refreshing = true; S.day = Math.max(0, c.plan.dates.indexOf(todayKey())); render(); }
+  }
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 15000);
   try {
-    const r = await fetch(`/api/plan?level=${S.level}`, { cache: 'no-cache' });
+    const r = await fetch(`/api/plan?level=${S.level}`, { cache: 'no-cache', signal: ctl.signal }).catch(e => { throw e.name === 'AbortError' ? new Error('keine Antwort nach 15 s, schlechter Empfang?') : e; });
     if (r.status === 202) {
       S.warming = true;
       loadTimer = setTimeout(() => loadPlan(), 4000);
@@ -63,7 +69,7 @@ async function loadPlan(manual) {
     } else {
       const p = await r.json();
       if (!p.ok) throw new Error('Keine Prognosedaten');
-      S.plan = p; S.warming = false; S.offline = false; S.err = null; S.loadedAt = Date.now();
+      S.plan = p; S.warming = false; S.offline = false; S.err = null; S.loadedAt = Date.now(); S.cachedAt = null;
       store.set('plan', { level: S.level, at: Date.now(), plan: p });
       if (manual) toast('Aktualisiert');
     }
@@ -74,6 +80,7 @@ async function loadPlan(manual) {
       if (c?.plan && c.level === S.level) { S.plan = c.plan; S.cachedAt = c.at; }
     }
   } finally {
+    clearTimeout(to); S.refreshing = false;
     $('.icon-btn[data-act="reload"]')?.classList.remove('spin');
     if (S.plan) S.day = Math.min(S.day, S.plan.dates.length - 1);
     render();
@@ -95,7 +102,9 @@ async function loadDetail(id) {
 const siteById = id => S.plan.sites.find(s => s.id === id);
 const areaById = id => S.plan.areas.find(a => a.id === id);
 function dayName(i) {
-  if (i === 0) return 'Heute'; if (i === 1) return 'Morgen';
+  // nach dem Datum, nicht nach der Position: ein gespeicherter Plan von gestern beginnt mit «Gestern»
+  const diff = Math.round((Date.parse(S.plan.dates[i] + 'T12:00:00Z') - Date.parse(todayKey() + 'T12:00:00Z')) / 86400000);
+  if (diff === 0) return 'Heute'; if (diff === 1) return 'Morgen'; if (diff === -1) return 'Gestern';
   return new Date(S.plan.dates[i] + 'T12:00:00').toLocaleDateString('de-CH', { weekday: 'short' }).replace('.', '');
 }
 const dayDate = i => S.plan.dates[i].slice(8) + '.' + S.plan.dates[i].slice(5, 7) + '.';
@@ -120,7 +129,8 @@ function ribbon(scores, best, o = {}) {
   if (o.axis) out += `<div class="ribbon-ax" aria-hidden="true">${Array.from({ length: 16 }, (_, i) => `<span>${h0 + i}</span>`).join('')}</div>`;
   return out;
 }
-const nowHourToday = () => (S.day === 0 ? Number(new Date().toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Europe/Zurich' })) : null);
+const isToday = () => S.plan?.dates[S.day] === todayKey();
+const nowHourToday = () => (isToday() ? Number(new Date().toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Europe/Zurich' })) : null);
 
 function pill(score, small = true) {
   const c = cls(score);
@@ -167,9 +177,11 @@ function renderStamp() {
 function renderBanner() {
   const b = $('#banner');
   let msg = '', bad = false;
-  if (S.offline && S.plan) {
-    const at = S.plan.fetchedAt || (S.cachedAt && new Date(S.cachedAt).toISOString());
-    msg = `Keine Verbindung (${S.err}). Letzter Stand von ${at ? timeOf(at) + ' Uhr' : 'früher'} – nicht für den Startentscheid verwenden.`; bad = true;
+  const at = S.plan && (S.plan.fetchedAt || (S.cachedAt && new Date(S.cachedAt).toISOString()));
+  const when = at ? (new Date(at).toDateString() === new Date().toDateString() ? `${timeOf(at)} Uhr` : `${new Date(at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit' })} ${timeOf(at)} Uhr`) : 'früher';
+  if (S.refreshing && S.plan) msg = `Zeige letzten Stand von ${when}, neue Daten werden geladen …`;
+  else if (S.offline && S.plan) {
+    msg = `Keine Verbindung (${S.err}). Letzter Stand von ${when} – nicht für den Startentscheid verwenden.`; bad = true;
   } else if (S.offline) { msg = `Daten nicht erreichbar: ${S.err}`; bad = true; }
   else if (S.plan) {
     const s = S.plan.sources || {};
@@ -228,7 +240,7 @@ function areaCard(a) {
   const nowH = nowHourToday();
   const head = d
     ? `<div class="card-top"><div><div class="card-name">${esc(a.name)}${hasFav ? ' ★' : ''}</div><div class="card-sub">${esc(best.name)} · ${best.alt} m · ${esc(aspectText(best))} · ${winText(d.best)}</div></div>${pill(d.best.score)}</div>${ribbon(best.days[S.day].scores, d.best, { now: nowH })}`
-    : `<div class="card-top"><div><div class="card-name">${esc(a.name)}</div><div class="card-sub">${S.day === 0 ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster'}</div></div>${pill(null, false)}</div>`;
+    : `<div class="card-top"><div><div class="card-name">${esc(a.name)}</div><div class="card-sub">${isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster'}</div></div>${pill(null, false)}</div>`;
   const rows = [...sites].sort((x, y) => (y.days[S.day].best?.score ?? -1) - (x.days[S.day].best?.score ?? -1)).map(s => {
     const b = s.days[S.day].best;
     return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
@@ -262,7 +274,7 @@ function renderDecide() {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
-    <h2 class="sec-h">Gebiete ${S.day === 0 ? 'heute' : 'am ' + dayName(S.day)}</h2>
+    <h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
     <div class="cards">${areas.map(areaCard).join('')}</div>
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
@@ -308,7 +320,7 @@ function renderLage() {
   const nowS = p.region.now;
   el.innerHTML = `
     <div class="headline ${p.days[S.day].regionStatus === 'danger' ? 'danger' : p.days[S.day].regionStatus === 'warn' ? 'warn' : 'ok'}">
-      <h2>Lage ${S.day === 0 ? 'heute' : 'am ' + dayName(S.day)}</h2>
+      <h2>Lage ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <p>${esc(regionSummary(S.day))}</p>
     </div>
     <div class="gridwrap" tabindex="0" role="region" aria-label="Briefing-Raster, seitlich scrollbar"><table class="brief">
@@ -317,7 +329,7 @@ function renderLage() {
     </table></div>
     <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
     ${whyAll.length ? `<div class="panel" style="margin-top:12px"><h3>Warum die Frontwarnung?</h3><ul class="why">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p></div>` : ''}
-    ${S.day === 0 && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
+    ${isToday() && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
       <div><b>${nowS.foehnScore}</b><span>Föhn-Signal${nowS.foehn !== 'ok' ? ' (' + LVL_TXT[nowS.foehn] + ')' : ''}</span></div>
       <div><b>${nowS.bise}</b><span>Bise im Vorland</span></div>
       <div><b>${nowS.talwind}</b><span>Talwind Richtung Alpen</span></div></div>
@@ -512,13 +524,20 @@ async function lbDelete(kind, id) {
 function lbSyncProfile() {
   const d = LB.data, p = d && LG()?.profileFromLog(d.flights, d.settings);
   if (!p) return;
-  const pr = { ...store.get('pilot', {}), ...p };
+  // Ein noch unvollständiges Flugbuch darf die Erfahrung nicht senken (3 importierte Flüge ≠ 3 Flüge im Jahr)
+  const prev = store.get('pilot', {});
+  const pr = { ...prev, ...p, flights: Math.max(p.flights, prev.flights || 0), hours12: Math.max(p.hours12, prev.hours12 || 0) };
+  if (prev.lastFlight && (!p.lastFlight || prev.lastFlight > p.lastFlight)) pr.lastFlight = prev.lastFlight;
   const g = d.gear.find(x => x.id === d.settings.defaults?.glider);
   const cls = g?.cert?.toUpperCase().match(/\b(?:EN[- ]?)?([A-D])\b|CCC/);
   if (cls) pr.glider = cls[1] || 'D';
   store.set('pilot', pr);
   const pl = P()?.pilotLevel(pr);
-  if (pl && !store.get('levelManual') && pl.level !== S.level) { S.level = pl.level; store.set('level', S.level); S.detail.clear(); loadPlan(); }
+  if (pl && !store.get('levelManual') && pl.level !== S.level) {
+    S.level = pl.level; store.set('level', S.level); S.detail.clear(); loadPlan();
+    // nicht still umstellen: sagen, warum (änderbar unter Profil)
+    toast(`Erfahrung jetzt «${LEVEL_INFO[S.level][0]}»: ${pl.why.at(-1)}. Änderbar unter Profil.`);
+  }
 }
 const ddmm = d => d.slice(8, 10) + '.' + d.slice(5, 7) + '.';
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
@@ -558,7 +577,7 @@ function renderBook() {
   el.innerHTML = `
     ${gearAlertHtml()}
     <div class="panel">
-      <div class="lb-head"><h3>Flugbuch</h3><span class="btn-row"><label class="btn sec lb-file" title="IGC-Dateien vom Vario oder Handy (auch mehrere, oder hierher ziehen)">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC" multiple></label><button class="btn" type="button" data-act="lbflight">+ Flug</button></span></div>
+      <div class="lb-head"><h3>Flugbuch</h3><span class="btn-row"><label class="btn sec lb-file" title="IGC-Dateien vom Vario oder Handy (auch mehrere, oder hierher ziehen)">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label><button class="btn" type="button" data-act="lbflight">+ Flug</button></span></div>
       <div class="kv lb-kv">
         <div><b>${st.total}</b><span>Flüge total</span></div>
         <div><b>${L.fmtDur(st.totalMin)} h</b><span>Flugzeit total</span></div>
@@ -613,9 +632,9 @@ async function importIgc(files) {
     if (site && a.date === todayKey()) item.afcScore = site.days?.[0]?.best?.score ?? null;
     try { lastId = (await lbSave('flight', item, true)).id; added++; } catch { bad++; }
   }
-  lbSyncProfile();
   if (S.tab === 'book') renderBook();
   toast([added && `${added} ${added === 1 ? 'Flug' : 'Flüge'} importiert`, dup && `${dup} schon im Flugbuch`, bad && `${bad} nicht lesbar`].filter(Boolean).join(', ') || 'Nichts importiert');
+  setTimeout(lbSyncProfile, 2500);   // nach der Import-Meldung, damit eine geänderte Erfahrungsstufe lesbar bleibt
   if (added === 1 && files.length === 1) flightForm(lastId);   // gleich ergänzen: Bewertung, Notiz
 }
 
@@ -815,7 +834,7 @@ function showIntro(i = 0) {
 let toastT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 3200);
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, Math.max(3200, msg.length * 70));
 }
 
 /* ---- Startplatz-Ansicht */

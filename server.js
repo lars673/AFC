@@ -382,8 +382,8 @@ setInterval(() => { const n = Date.now(); for (const [k, v] of buckets) if (n - 
 
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' https://cdnjs.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
   "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org https://thermal.kk7.ch",
   "connect-src 'self'", "worker-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"
@@ -438,7 +438,11 @@ const STATIC = new Map([
   ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
   ['/igc.js', ['lib/igc.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
-  ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
+  ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']],
+  // Leaflet liegt im Projekt: Karte lädt vom eigenen Rechner, auch ohne cdnjs (Handy über Tailscale)
+  ['/vendor/leaflet/leaflet.js', ['vendor/leaflet/leaflet.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/leaflet/leaflet.css', ['vendor/leaflet/leaflet.css', 'text/css; charset=utf-8']],
+  ...['layers', 'layers-2x', 'marker-icon', 'marker-icon-2x', 'marker-shadow'].map(n => [`/vendor/leaflet/images/${n}.png`, [`vendor/leaflet/images/${n}.png`, 'image/png']])
 ]);
 const fileCache = new Map();
 async function serveStatic(req, res, route) {

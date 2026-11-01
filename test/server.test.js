@@ -231,3 +231,12 @@ test('Rückblick-Test: Status zeigt den letzten Lauf aus dem Verlauf', async () 
     assert.equal((await fetch(s.base + '/api/backtest', { method: 'POST' })).status, 403);
   } finally { await s.stop(); }
 });
+
+test('Handy: Karte kommt vom eigenen Server, nichts von cdnjs', async () => {
+  const s = await boot('good', 18793);
+  try {
+    const html = await (await fetch(s.base + '/')).text();
+    assert.ok(!/cdnjs/.test(html));
+    for (const f of ['/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/leaflet/images/marker-icon.png', '/igc.js', '/sw.js']) assert.equal((await fetch(s.base + f)).status, 200, f);
+  } finally { await s.stop(); }
+});

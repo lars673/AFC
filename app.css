@@ -166,8 +166,8 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .kv span { font-size: 13px; color: var(--muted); }
 
 /* Karte */
-.mapbox { position: relative; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; height: min(72dvh, 680px); min-height: 420px; background: var(--none); }
-#map { position: absolute; inset: 0; }
+.mapbox { position: relative; isolation: isolate; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; height: min(72dvh, 680px); min-height: 420px; background: var(--none); }
+#map { position: absolute; inset: 0; z-index: 0; }   /* eigener Stapel: Leaflet-Bedienelemente (z-index 800+) liegen sonst über den Reitern */
 .map-tools { position: absolute; top: 10px; right: 10px; z-index: 500; display: flex; flex-direction: column; gap: 8px; }
 .map-btn { min-height: 44px; min-width: 44px; padding: 0 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.25); font-weight: 600; }
 .layer-panel { position: absolute; top: 10px; right: 100px; z-index: 500; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; box-shadow: 0 2px 8px rgba(0,0,0,.3); max-width: calc(100% - 120px); }
