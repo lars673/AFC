@@ -354,3 +354,24 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .lb-map .st { fill: var(--go); }
 .lb-map .ld { fill: var(--ink); }
 .lb-prof { display: block; width: 100%; height: 50px; margin-top: 4px; border-top: 1px solid var(--line); }
+.lb-exp { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.lb-exp .btn { width: 100%; justify-content: center; text-align: center; }
+.fine .lb-warn { color: var(--ink); font-weight: 600; }
+/* Druckansicht des Flugbuchs (Drucken / PDF) */
+#printArea { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 12mm; }
+  body > :not(#printArea) { display: none !important; }
+  html, body { background: #fff !important; color: #000 !important; }
+  #printArea { display: block; font: 10pt/1.35 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #000; }
+  #printArea h1 { font-size: 18pt; margin: 0 0 4pt; }
+  #printArea h2 { font-size: 12pt; margin: 14pt 0 4pt; }
+  #printArea table { width: 100%; border-collapse: collapse; }
+  #printArea th, #printArea td { border-bottom: .5pt solid #999; padding: 3pt 4pt; text-align: left; vertical-align: top; }
+  #printArea th { border-bottom: 1pt solid #000; font-weight: 600; }
+  #printArea thead { display: table-header-group; }
+  #printArea tr { break-inside: avoid; }
+  #printArea td.n { text-align: right; white-space: nowrap; }
+  #printArea ul { margin: 0; padding-left: 14pt; }
+  #printArea .foot { margin-top: 12pt; font-size: 8pt; color: #555; }
+}

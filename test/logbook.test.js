@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanFlight, cleanGear, cleanSettings, logStats, gearStatus, profileFromLog, fmtDur } from '../lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, logStats, gearStatus, profileFromLog, fmtDur, cleanBackup, flightsCsv } from '../lib/logbook.js';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 
@@ -55,4 +55,21 @@ test('Flugbuch: Schirm-Check nach Zeit und Stunden, Retter packen', () => {
   assert.match(res.items[0].text, /Retter packen seit \d+ Tagen fällig/);
   const soon = gearStatus({ id: 'r2', type: 'reserve', packedLast: '2026-05-15', packMonths: 6 }, [], NOW);
   assert.equal(soon.level, 'warn');
+});
+
+test('Sicherung: nur echte Flugbuch-Dateien, Einträge werden geprüft', () => {
+  assert.equal(cleanBackup(null), null);
+  assert.equal(cleanBackup({ flights: 'x', gear: [] }), null);
+  const b = cleanBackup({ flights: [{ id: 'a', date: '2026-07-01', durMin: 99999 }, { id: 'b' }], gear: [{ type: 'glider' }, { type: 'boot' }], settings: { flightsBefore: -5 } });
+  assert.equal(b.flights.length, 1);
+  assert.equal(b.flights[0].durMin, 1440);
+  assert.equal(b.gear.length, 1);
+  assert.equal(b.settings.flightsBefore, 0);
+});
+
+test('Tabelle: älteste zuerst, Dezimalkomma, Ausrüstung mit Namen', () => {
+  const csv = flightsCsv([{ date: '2026-08-02', start: '', durMin: 30, km: 1.5, gliderId: 'g' }, { date: '2026-08-01', start: '10:00', durMin: 61 }], [{ id: 'g', type: 'glider', brand: 'Ozone', model: 'Rush' }]);
+  const l = csv.slice(1).trim().split('\r\n');
+  assert.match(l[1], /^1;01\.08\.2026;10:00;1:01;61;/);
+  assert.match(l[2], /^2;02\.08\.2026;;0:30;30;;;;Ozone Rush;;;1,5;/);
 });

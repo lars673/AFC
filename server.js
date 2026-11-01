@@ -19,7 +19,7 @@ import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LE
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
-import { cleanFlight, cleanGear, cleanSettings } from './lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv } from './lib/logbook.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -586,21 +586,48 @@ const server = http.createServer(async (req, res) => {
       // Flugbuch (persönlich, bleibt auf diesem Rechner): Flüge, Ausrüstung, Einstellungen
       if (p === '/api/logbook' || p.startsWith('/api/logbook/')) {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
-        if (req.method === 'GET' && p === '/api/logbook') {
-          // Flüge haben selbst ein Feld «kind» (Thermik, Soaring …), darum nach der Tabellenspalte trennen
-          const pick = k => dbAll('SELECT data FROM logbook WHERE kind=?', [k]).map(r => JSON.parse(r.data));
-          return sendJson(req, res, 200, { ok: true, flights: pick('flight').sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), gear: pick('gear'), settings: cleanSettings(pick('settings')[0] || {}) });
+        if (req.method === 'GET' && p === '/api/logbook') return sendJson(req, res, 200, { ok: true, ...logbookData(), backup: lbBackupStatus() });
+        if (req.method === 'GET' && (p === '/api/logbook/export.json' || p === '/api/logbook/export.csv')) {
+          const file = logbookFile(), csv = p.endsWith('.csv');
+          const day = file.exportedAt.slice(0, 10);
+          res.writeHead(200, { 'Content-Type': csv ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="AFC-Flugbuch-${day}.${csv ? 'csv' : 'json'}"`, 'Cache-Control': 'no-store', ...SEC, ...corsHeaders(req) });
+          return res.end(csv ? flightsCsv(file.flights, file.gear) : JSON.stringify(file, null, 1));
+        }
+        if (req.method === 'POST' && p === '/api/logbook/backup') {
+          if (limited(req, 'post', 20)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+          await backupLogbook();
+          return sendJson(req, res, 200, { ok: true, backup: lbBackupStatus() });
+        }
+        if (req.method === 'POST' && p === '/api/logbook/import') {
+          // Sicherung einspielen: Flüge und Ausrüstung nach id zusammenführen, nichts wird gelöscht
+          if (limited(req, 'post', 20)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+          const b = cleanBackup(await readBody(req, 30 * 1024 * 1024));
+          if (!b) return sendJson(req, res, 400, { error: 'Das ist keine AFC-Flugbuch-Sicherung' });
+          await backup(db, path.join(backupsDir, `afc-vor-import-${nowIso().replace(/[:.]/g, '-')}.sqlite`));
+          const has = new Set(dbAll("SELECT kind||'/'||id k FROM logbook").map(r => r.k));
+          const n = { added: 0, updated: 0, gear: 0 };
+          const put = (kind, id, item) => dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, id, JSON.stringify(item), nowIso()]);
+          db.exec('BEGIN');
+          try {
+            for (const f of b.flights) { n[has.has('flight/' + f.id) ? 'updated' : 'added']++; put('flight', f.id, f); }
+            for (const g of b.gear) { n.gear++; put('gear', g.id, g); }
+            if (b.settings && !has.has('settings/main')) put('settings', 'main', b.settings);
+            db.exec('COMMIT');
+          } catch (e) { db.exec('ROLLBACK'); throw e; }
+          backupLogbookSoon();
+          return sendJson(req, res, 200, { ok: true, ...n });
         }
         const lm = p.match(/^\/api\/logbook\/(flight|gear|settings)\/([\w-]{1,40})$/);
         if (!lm) return sendJson(req, res, 404, { error: 'unbekannt' });
         if (limited(req, 'post', 120)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
         const [, kind, lid] = lm;
-        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); return sendJson(req, res, 200, { ok: true }); }
+        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); backupLogbookSoon(); return sendJson(req, res, 200, { ok: true }); }
         if (req.method === 'PUT') {
           const body = await readBody(req, 64 * 1024);   // Flug mit vereinfachter IGC-Spur
           const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
           if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
           dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
+          backupLogbookSoon();
           return sendJson(req, res, 200, { ok: true, item });
         }
         return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
@@ -658,6 +685,68 @@ async function tick(kind, fn) {
   try { await fn(); } catch (e) { console.error(kind, errMsg(e)); } finally { busy[kind] = false; }
 }
 
+/* ------------------------------------------------------------------ Flugbuch-Sicherung */
+// Täglich (und kurz nach jeder Änderung) eine Kopie des Flugbuchs als JSON (zum Einspielen) und CSV (Tabelle):
+// immer in data/backups/flugbuch, zusätzlich in iCloud Drive (Ordner «AFC-Sicherung»), wenn es auf dem Mac eingerichtet ist.
+const ICLOUD = path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs');
+function cloudBackupDir() {
+  if (process.env.AFC_BACKUP_DIR !== undefined) return process.env.AFC_BACKUP_DIR ? path.resolve(process.env.AFC_BACKUP_DIR) : null;
+  return fsc.existsSync(ICLOUD) ? path.join(ICLOUD, 'AFC-Sicherung') : null;
+}
+const LB_KEEP = 30;
+const lbBackup = { at: null, flights: 0, local: null, cloud: null, cloudDir: cloudBackupDir(), cloudError: null };
+// Stand der letzten Sicherung nach einem Neustart aus den Dateien lesen
+function lastBackupFile(dir) {
+  try {
+    const f = fsc.readdirSync(dir).filter(x => /^flugbuch-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort().at(-1);
+    return f ? path.join(dir, f) : null;
+  } catch { return null; }
+}
+try {
+  const f = lastBackupFile(path.join(backupsDir, 'flugbuch'));
+  if (f) Object.assign(lbBackup, { at: fsc.statSync(f).mtime.toISOString(), flights: JSON.parse(fsc.readFileSync(f, 'utf8')).flights.length });
+  const c = lbBackup.cloudDir && lastBackupFile(lbBackup.cloudDir);
+  if (c) lbBackup.cloud = fsc.statSync(c).mtime.toISOString();
+} catch { /* ohne Vorgeschichte weiter */ }
+function logbookData() {
+  const pick = k => dbAll('SELECT data FROM logbook WHERE kind=?', [k]).map(r => JSON.parse(r.data));
+  return { flights: pick('flight').sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), gear: pick('gear'), settings: cleanSettings(pick('settings')[0] || {}) };
+}
+const logbookFile = () => ({ app: 'AFC', type: 'flugbuch', version: 1, exportedAt: nowIso(), ...logbookData() });
+async function writeAtomic(file, text) {
+  const tmp = file + '.tmp';
+  await fs.writeFile(tmp, text);
+  await fs.rename(tmp, file);
+}
+async function writeBackupSet(dir, day, file, csv) {
+  await fs.mkdir(dir, { recursive: true });
+  await writeAtomic(path.join(dir, `flugbuch-${day}.json`), JSON.stringify(file, null, 1));
+  await writeAtomic(path.join(dir, 'flugbuch-tabelle.csv'), csv);
+  const old = (await fs.readdir(dir)).filter(f => /^flugbuch-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
+  for (const f of old.slice(0, -LB_KEEP)) await fs.rm(path.join(dir, f), { force: true });
+}
+async function backupLogbook() {
+  const file = logbookFile();
+  if (!file.flights.length && !file.gear.length) return lbBackup;   // leeres Flugbuch: nichts zu sichern
+  const day = zurichParts(Date.now()).date;
+  const csv = flightsCsv(file.flights, file.gear);
+  const local = path.join(backupsDir, 'flugbuch');
+  await writeBackupSet(local, day, file, csv);
+  Object.assign(lbBackup, { at: nowIso(), flights: file.flights.length, local, cloudDir: cloudBackupDir() });
+  if (lbBackup.cloudDir) {
+    try { await writeBackupSet(lbBackup.cloudDir, day, file, csv); lbBackup.cloud = nowIso(); lbBackup.cloudError = null; }
+    catch (e) { lbBackup.cloudError = e.code === 'EPERM' || e.code === 'EACCES' ? 'kein Zugriff (macOS-Berechtigung)' : String(e.code || e.message); console.warn('Flugbuch-Sicherung iCloud', errMsg(e)); }
+  }
+  return lbBackup;
+}
+let lbBackupT = null;
+function backupLogbookSoon() {
+  clearTimeout(lbBackupT);
+  lbBackupT = setTimeout(() => backupLogbook().catch(e => console.warn('Flugbuch-Sicherung', errMsg(e))), Number(process.env.AFC_LB_BACKUP_DELAY_MS ?? 120000));
+  lbBackupT.unref?.();
+}
+const lbBackupStatus = () => ({ at: lbBackup.at, flights: lbBackup.flights, cloud: lbBackup.cloud, cloudDir: lbBackup.cloudDir ? lbBackup.cloudDir.replace(ICLOUD, 'iCloud Drive').replace(os.homedir(), '~') : null, cloudError: lbBackup.cloudError });
+
 async function maintenance() {
   try {
     const cut = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -668,6 +757,7 @@ async function maintenance() {
     const files = (await fs.readdir(backupsDir)).filter(f => f.endsWith('.sqlite')).sort();
     for (const f of files.slice(0, -14)) await fs.rm(path.join(backupsDir, f), { force: true });
   } catch (e) { console.warn('Wartung', errMsg(e)); }
+  await backupLogbook().catch(e => console.warn('Flugbuch-Sicherung', errMsg(e)));
 }
 
 const timers = [];

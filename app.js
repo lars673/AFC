@@ -602,8 +602,82 @@ function renderBook() {
         <label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" value="${d.settings.hoursBefore || ''}"></label>
         <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="submit">Speichern</button></div>
       </form>
-      <p class="fine">Das Flugbuch liegt nur auf diesem Rechner (data/afc.sqlite, täglich gesichert). Es füllt dein Pilotenprofil automatisch.</p>
+      <p class="fine">Das Flugbuch liegt auf deinem Mac und füllt dein Pilotenprofil automatisch.</p>
+    </div>
+    <div class="panel">
+      <div class="lb-head"><h3>Sichern und exportieren</h3><button class="btn sec" type="button" data-act="lbbackup">Jetzt sichern</button></div>
+      ${lbBackupHtml(d.backup)}
+      <div class="btn-row lb-exp">
+        <button class="btn sec" type="button" data-act="lbcsv">Tabelle (Excel)</button>
+        <button class="btn sec" type="button" data-act="lbprint">Drucken / PDF</button>
+        <button class="btn sec" type="button" data-act="lbjson">Sicherungsdatei</button>
+        <label class="btn sec lb-file">Sicherung laden<input type="file" id="lbRestore" accept=".json,application/json"></label>
+      </div>
+      <p class="fine">«Drucken / PDF» nimmt die Flüge der gewählten Jahres-Ansicht; im Druckfenster «Als PDF sichern» wählen. «Sicherung laden» ergänzt und aktualisiert Flüge, löscht aber nichts.</p>
     </div>`;
+}
+
+/* ---- Sicherung und Export */
+const dayKey = v => new Date(v).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' });
+function lbBackupHtml(b) {
+  if (!b) return '';
+  const parts = [];
+  if (b.at) parts.push(`<b>Letzte Sicherung:</b> ${dayKey(b.at) === todayKey() ? 'heute' : 'am ' + ddmm(dayKey(b.at))} ${timeOf(b.at)} Uhr, ${b.flights} ${b.flights === 1 ? 'Flug' : 'Flüge'}.`);
+  else parts.push('<b>Noch keine Sicherung.</b> Sie läuft täglich und kurz nach jeder Änderung.');
+  if (b.cloudError) parts.push(`<span class="lb-warn">Die Kopie in ${esc(b.cloudDir || 'iCloud Drive')} hat nicht geklappt (${esc(b.cloudError)}).</span> Die Sicherung auf dem Mac (AFC/data/backups/flugbuch) läuft trotzdem.`);
+  else if (b.cloudDir) parts.push(`Kopie in <b>${esc(b.cloudDir)}</b>${b.cloud ? '' : ' (ab der nächsten Sicherung)'}, also auch auf dem iPhone in der Dateien-App.`);
+  else parts.push('iCloud Drive ist auf diesem Mac nicht eingeschaltet, die Sicherung liegt nur auf dem Mac (AFC/data/backups/flugbuch).');
+  return `<p class="fine" style="margin:0 0 12px">${parts.join(' ')}</p>`;
+}
+/** Datei speichern: auf dem Handy über «Teilen» (In Dateien sichern), sonst als Download. */
+async function saveFile(name, blob) {
+  const file = new File([blob], name, { type: blob.type });
+  if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+async function lbExport(kind) {
+  try {
+    const r = await lbFetch('/api/logbook/export.' + kind);
+    if (!r.ok) throw new Error('Fehler ' + r.status);
+    await saveFile(`AFC-Flugbuch-${todayKey()}.${kind}`, await r.blob());
+  } catch (err) { toast('Export fehlgeschlagen: ' + err.message); }
+}
+async function lbRestore(file) {
+  if (!file) return;
+  let b;
+  try { b = JSON.parse(await file.text()); } catch { toast('Die Datei ist keine AFC-Sicherung.'); return; }
+  if (b?.type !== 'flugbuch' || !Array.isArray(b.flights)) { toast('Die Datei ist keine AFC-Flugbuch-Sicherung.'); return; }
+  const stand = b.exportedAt ? ` vom ${new Date(b.exportedAt).toLocaleDateString('de-CH')}` : '';
+  if (!(await ask({ title: 'Sicherung einspielen?', text: `Die Sicherung${stand} enthält ${b.flights.length} Flüge und ${b.gear?.length || 0} Ausrüstungsteile. Gleiche Flüge werden durch den Stand aus der Sicherung ersetzt, fehlende kommen dazu, nichts wird gelöscht. Vorher macht AFC eine Sicherheitskopie.`, ok: 'Einspielen' }))) return;
+  try {
+    const r = await lbFetch('/api/logbook/import', { method: 'POST', body: JSON.stringify(b) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+    await lbLoad(true);
+    toast(`Eingespielt: ${j.added} neue und ${j.updated} aktualisierte Flüge, ${j.gear} Ausrüstungsteile`);
+    renderBook(); setTimeout(lbSyncProfile, 2500);
+  } catch (err) { toast('Einspielen fehlgeschlagen: ' + err.message); }
+}
+/** Druckansicht (auch für «Als PDF sichern»): Zusammenfassung, Flugliste, Ausrüstung. */
+function lbPrint() {
+  const L = LG(), d = LB.data;
+  const flights = (LB.year === 'all' ? d.flights : d.flights.filter(f => f.date.startsWith(LB.year))).slice().sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+  const st = L.logStats(d.flights, d.settings), gn = Object.fromEntries(d.gear.map(g => [g.id, L.gearName(g)]));
+  const sum = flights.reduce((m, f) => m + (f.durMin || 0), 0);
+  const rows = flights.map((f, i) => `<tr><td class="n">${i + 1}</td><td>${f.date.split('-').reverse().join('.')}</td><td>${f.start || ''}</td><td class="n">${f.durMin ? L.fmtDur(f.durMin) : ''}</td><td>${esc([f.siteName, f.landingName].filter(Boolean).join(' → '))}</td><td>${esc(L.FLIGHT_KINDS[f.kind] || '')}</td><td>${esc(gn[f.gliderId] || '')}</td><td class="n">${num(f.km) ? f.km : ''}</td><td class="n">${num(f.maxAlt) ? f.maxAlt : ''}</td><td>${esc(f.note || '')}</td></tr>`).join('');
+  const gear = d.gear.filter(g => !g.retired).map(g => { const s = L.gearStatus(g, d.flights); return `<li><b>${esc(L.GEAR_TYPES[g.type])}:</b> ${esc(L.gearName(g))}${g.cert ? ' (' + esc(g.cert) + ')' : ''}${g.serial ? ', Nr. ' + esc(g.serial) : ''}${g.type === 'reserve' ? '' : `, ${s.hours} h, ${s.flights} Flüge`}${s.items.map(x => ' · ' + esc(x.text)).join('')}</li>`; }).join('');
+  let el = $('#printArea');
+  if (!el) { el = document.createElement('div'); el.id = 'printArea'; document.body.append(el); }
+  el.innerHTML = `<h1>Flugbuch</h1>
+    <p>${LB.year === 'all' ? 'Alle erfassten Flüge' : 'Jahr ' + esc(LB.year)}: ${flights.length} ${flights.length === 1 ? 'Flug' : 'Flüge'}, ${L.fmtDur(sum)} h. Total inklusive Flüge vor dem Flugbuch: ${st.total} Flüge, ${L.fmtDur(st.totalMin)} h.</p>
+    <table><thead><tr><th>Nr.</th><th>Datum</th><th>Start</th><th>Dauer</th><th>Startplatz → Landeplatz</th><th>Art</th><th>Schirm</th><th>km</th><th>max. m</th><th>Notiz</th></tr></thead><tbody>${rows || '<tr><td colspan="10">Keine Flüge</td></tr>'}</tbody></table>
+    ${gear ? `<h2>Ausrüstung</h2><ul>${gear}</ul>` : ''}
+    <p class="foot">Erstellt mit AFC am ${new Date().toLocaleDateString('de-CH')}</p>`;
+  setTimeout(() => window.print(), 50);
 }
 
 /* ---- IGC-Import (lib/igc.js): Spur lesen, Start- und Landeplatz zuordnen, als Flug speichern */
@@ -1616,6 +1690,19 @@ document.addEventListener('click', async e => {
     case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(err.message)); break;
     case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(err.message)); break;
     case 'lbyear': LB.year = b.dataset.v; renderBook(); break;
+    case 'lbcsv': lbExport('csv'); break;
+    case 'lbjson': lbExport('json'); break;
+    case 'lbprint': lbLoad().then(lbPrint).catch(err => toast(err.message)); break;
+    case 'lbbackup': {
+      try {
+        const r = await lbFetch('/api/logbook/backup', { method: 'POST' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+        LB.data.backup = j.backup; renderBook();
+        toast(!j.backup.at ? 'Das Flugbuch ist noch leer' : j.backup.cloudError ? 'Auf dem Mac gesichert, iCloud hat nicht geklappt' : 'Flugbuch gesichert');
+      } catch (err) { toast('Sicherung fehlgeschlagen: ' + err.message); }
+      break;
+    }
     case 'lbdelflight': case 'lbdelgear': {
       const fid = b.closest('form')?.dataset.id, kind = a === 'lbdelflight' ? 'flight' : 'gear';
       if (!fid || !(await ask({ title: kind === 'flight' ? 'Flug löschen?' : 'Ausrüstung löschen?', text: kind === 'flight' ? 'Der Flug wird aus dem Flugbuch entfernt.' : 'Flüge mit diesem Teil bleiben erhalten. Tipp: «Ausgemustert» behält die Stunden.', ok: 'Löschen', danger: true }))) break;
@@ -1653,7 +1740,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'wipe': {
-      if (!(await ask({ title: 'Daten löschen?', text: 'Gemeldete Flüge auf dem Server und dein lokales Flugbuch werden gelöscht. Favoriten und Einstellungen bleiben.', ok: 'Löschen', danger: true }))) break;
+      if (!(await ask({ title: 'Daten löschen?', text: 'Gemeldete Flüge («Flug melden») werden gelöscht. Dein Flugbuch, Favoriten und Einstellungen bleiben.', ok: 'Löschen', danger: true }))) break;
       try {
         const r = await fetch('/api/privacy/delete', { method: 'DELETE', headers: { 'X-AFC-Client': clientId } });
         if (!r.ok) throw new Error('Fehler ' + r.status);
@@ -1675,6 +1762,7 @@ document.addEventListener('submit', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
+  if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
 });

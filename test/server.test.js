@@ -6,12 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { startMock } from './mock-upstream.js';
 
-async function boot(scenario, port) {
+async function boot(scenario, port, extraEnv = {}) {
   const mock = await startMock(scenario);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_BACKUP_DIR: '', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -220,6 +220,50 @@ test('Flugbuch-API: speichern, lesen, löschen, nur mit Gerätekennung', async (
     j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
     assert.equal(j.flights.length, 1);
   } finally { await s.stop(); }
+});
+
+test('Flugbuch: Export als Tabelle und Datei, Sicherung in einen zweiten Ordner, Einspielen', async () => {
+  const cloud = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-cloud-'));
+  const s = await boot('good', 18793, { AFC_BACKUP_DIR: cloud, AFC_LB_BACKUP_DELAY_MS: '300' });
+  try {
+    const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
+    const put = (kind, id, b) => fetch(`${s.base}/api/logbook/${kind}/${id}`, { method: 'PUT', headers: H, body: JSON.stringify(b) });
+    await put('gear', 'g1', { type: 'glider', brand: 'Advance', model: 'Iota' });
+    await put('flight', 'f1', { date: '2026-07-01', start: '11:05', durMin: 75, gliderId: 'g1', siteName: 'Niesen', km: 4.5, note: 'Thermik; gut' });
+    await put('flight', 'f2', { date: '2026-08-01', durMin: 20, siteName: '=HYPERLINK("x")' });
+    assert.equal((await fetch(s.base + '/api/logbook/export.csv')).status, 400);   // ohne Gerätekennung nicht
+    const raw = Buffer.from(await (await fetch(s.base + '/api/logbook/export.csv', { headers: H })).arrayBuffer());
+    assert.deepEqual([...raw.subarray(0, 3)], [0xef, 0xbb, 0xbf]);   // BOM, damit Excel die Umlaute richtig liest
+    const csv = raw.toString('utf8').slice(1);
+    const lines = csv.trim().split('\r\n');
+    assert.equal(lines.length, 3);
+    assert.ok(lines[0].startsWith('Nr.;Datum'));
+    assert.match(lines[1], /^1;01\.07\.2026;11:05;1:15;75;Niesen;;;Advance Iota;;;4,5;/);
+    assert.match(lines[1], /"Thermik; gut"$/);
+    assert.match(lines[2], /;"'=HYPERLINK\(""x""\)";/);   // keine Formel in Excel
+    const file = await (await fetch(s.base + '/api/logbook/export.json', { headers: H })).json();
+    assert.equal(file.type, 'flugbuch');
+    assert.equal(file.flights.length, 2);
+    // Sicherung kurz nach der Änderung, lokal und im zweiten Ordner
+    let ok = false;
+    for (let i = 0; i < 40 && !ok; i++) { await new Promise(r => setTimeout(r, 150)); ok = fs.readdirSync(cloud).some(f => /^flugbuch-\d{4}-\d{2}-\d{2}\.json$/.test(f)); }
+    assert.ok(ok, 'keine Sicherung im Ordner: ' + s.log());
+    assert.ok(fs.existsSync(path.join(cloud, 'flugbuch-tabelle.csv')));
+    const st = (await (await fetch(s.base + '/api/logbook', { headers: H })).json()).backup;
+    assert.equal(st.flights, 2);
+    assert.ok(st.cloud && !st.cloudError);
+    // Einspielen: f1 geändert, f9 neu, nichts gelöscht; fremde Dateien abgelehnt
+    file.flights[0].note = 'geändert';
+    file.flights.push({ id: 'f9', date: '2025-05-05', durMin: 30 });
+    const imp = r => fetch(s.base + '/api/logbook/import', { method: 'POST', headers: H, body: JSON.stringify(r) });
+    assert.equal((await imp({ hallo: 1 })).status, 400);
+    await fetch(s.base + '/api/logbook/flight/f2', { method: 'DELETE', headers: H });
+    const n = await (await imp(file)).json();
+    assert.deepEqual([n.added, n.updated, n.gear], [2, 1, 1]);
+    const j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
+    assert.deepEqual(j.flights.map(f => f.id).sort(), ['f1', 'f2', 'f9']);
+    assert.ok(j.flights.some(f => f.note === 'geändert'));
+  } finally { await s.stop(); fs.rmSync(cloud, { recursive: true, force: true }); }
 });
 
 test('Rückblick-Test: Status zeigt den letzten Lauf aus dem Verlauf', async () => {

@@ -44,6 +44,8 @@ Der Server lädt einmal täglich die offiziellen Luftraumdateien des SHV/FSVL (h
 
 Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, Art, Strecke, Höhe, Schirm, Gurtzeug, Retter, Bewertung und Notiz. Dazu die Ausrüstung mit Fristen: AFC zählt die Stunden je Schirm und meldet fällige Schirm-Checks (nach Monaten oder Stunden) und Retter-Packtermine 30 Tage bzw. 10 Stunden im Voraus, auch oben im Reiter «Entscheid». Flüge vor dem Flugbuch lassen sich als Total nachtragen. Das Flugbuch füllt das Pilotenprofil (Flüge, Stunden der letzten 12 Monate, Schirmklasse des Standardschirms). Mit «IGC laden» (oder Dateien aufs Flugbuch ziehen) werden IGC-Dateien vom Vario oder Handy übernommen: Datum, Startzeit, Dauer, max. Höhe, Strecke, Start- und Landeplatz (nächster bekannter Platz im Umkreis von 800 m bzw. 1 km), Thermiken (Ort, Basis, Obergrenze, Steigen) und eine vereinfachte Spur mit Höhenprofil (`lib/igc.js`). Doppelte Flüge werden übersprungen. Es liegt nur auf diesem Rechner in `data/afc.sqlite` (`lib/logbook.js`).
 
+**Sichern und exportieren:** AFC sichert das Flugbuch täglich und zwei Minuten nach jeder Änderung als `flugbuch-JJJJ-MM-TT.json` (zum Einspielen, die letzten 30 Tage) und `flugbuch-tabelle.csv` nach `data/backups/flugbuch` und, wenn iCloud Drive auf dem Mac eingeschaltet ist, zusätzlich nach `iCloud Drive/AFC-Sicherung` (anderer Ordner mit `AFC_BACKUP_DIR`, leer = keine Zweitkopie). Im Flugbuch: «Tabelle (Excel)» (CSV mit Semikolon), «Drucken / PDF» (Druckansicht der gewählten Jahres-Ansicht), «Sicherungsdatei» und «Sicherung laden» (führt nach Kennung zusammen, löscht nichts, macht vorher eine Kopie der Datenbank).
+
 ## Auf dem Handy (Tailscale)
 
 AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, privat, HTTPS, nur Geräte im eigenen Tailscale-Konto). Tailscale auf Mac und Handy installieren und mit demselben Konto anmelden, dann `tools/AFC aufs Handy.command` doppelklicken (`tailscale serve --bg 8787`). Die Adresse `https://<mac>.<tailnet>.ts.net` in Safari öffnen, «Zum Home-Bildschirm». Der Server bleibt an 127.0.0.1 gebunden. Schläft der Mac, zeigt die App den letzten Stand mit Warnung; bei schlechtem Empfang erscheint nach 4 s die gespeicherte Version. Leaflet liegt unter `vendor/leaflet` (BSD-2), damit die Karte nicht von cdnjs abhängt. Beenden: `tools/AFC Handy-Zugang beenden.command`.
@@ -97,6 +99,7 @@ Für Tests überschreibbar: `AFC_AIRSPACE_URL`, `AFC_OPENMETEO_URL`, `AFC_SMN_UR
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |
 | `GET /api/logbook`, `PUT`/`DELETE /api/logbook/(flight\|gear\|settings)/:id` | Persönliches Flugbuch (Header `X-AFC-Client`) |
+| `GET /api/logbook/export.(csv\|json)`, `POST /api/logbook/backup`, `POST /api/logbook/import` | Flugbuch exportieren, jetzt sichern, Sicherung einspielen |
 | `GET /api/airspace` | Lufträume und Wildschutzgebiete (SHV/FSVL) im Gebiet |
 | `GET /api/status` | Open-Meteo-Verbrauch heute und Update-Stand |
 | `POST /api/update/check`, `POST /api/update` | Nach Update suchen / Update einspielen und neu starten (nur localhost, Update nur mit Autostart) |
