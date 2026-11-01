@@ -9,12 +9,19 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 
-import { toIsoTime, isNum, circularMean, windDiff, mean } from './lib/util.js';
+import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts } from './lib/util.js';
+import { spawn } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
 import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
-import { PlanModel, areasOf, isRanked, REF_POINT } from './lib/plan.js';
+import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LEARN_DAYS, LEARN_MIN_N } from './lib/plan.js';
+import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
+import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
+import { createUpdater } from './lib/updater.js';
+import { cleanFlight, cleanGear, cleanSettings } from './lib/logbook.js';
+import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
+import { httpGet } from './lib/http.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -24,7 +31,8 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '';          // leer = nur gleich
 const PUBLIC_APP = process.env.PUBLIC_APP_URL || '';
 const TRUSTED_HOPS = Math.max(0, Number(process.env.AFC_TRUSTED_PROXY_HOPS ?? 1));
 const OBS_EVERY_MS = Number(process.env.AFC_OBS_MIN || 10) * 60000;
-const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 30) * 60000;
+const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 60) * 60000;
+const WIND_EVERY_MS = Number(process.env.AFC_WINDGRID_MIN || 180) * 60000;
 const MAX_BODY = 16 * 1024;
 const DATA = process.env.AFC_DATA_DIR ? path.resolve(process.env.AFC_DATA_DIR) : path.join(ROOT, 'data');
 
@@ -51,11 +59,21 @@ catch (e) {
   Object.assign(storageProblem, { degraded: true, reason: String(e.code || e.message), actual: fallback });
 }
 const backupsDir = path.join(dataDir, 'backups');
+// Open-Meteo-Verbrauch über einen Neustart hinweg mitzählen
+const usageFile = path.join(dataDir, 'openmeteo-usage.json');
+let usageSaveT = null;
+initOpenMeteoUsage((() => { try { return JSON.parse(fsc.readFileSync(usageFile, 'utf8')); } catch { return null; } })(),
+  u => { clearTimeout(usageSaveT); usageSaveT = setTimeout(() => fs.writeFile(usageFile, JSON.stringify(u)).catch(() => {}), 2000); usageSaveT.unref?.(); });
+// Update über die App: nur im Autostart (launchd startet nach dem Beenden neu) und nur vom eigenen Mac aus
+const AUTOSTART = process.env.XPC_SERVICE_NAME === 'ch.afc.server' || process.env.AFC_AUTOSTART === '1';
+const updater = createUpdater(ROOT, { enabled: process.env.AFC_UPDATE_CHECK !== '0' });
+const isLocal = req => /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
 const db = new DatabaseSync(path.join(dataDir, 'afc.sqlite'));
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
 CREATE TABLE IF NOT EXISTS flight_reports (id INTEGER PRIMARY KEY, client_hash TEXT, reported_at TEXT, site_id TEXT, site_name TEXT, group_name TEXT, launch_time TEXT, launched INTEGER, quality INTEGER, afc_score REAL, afc_decision TEXT, afc_best_time TEXT, learning_features TEXT, note TEXT, site_revision TEXT);
 CREATE TABLE IF NOT EXISTS clients (client_hash TEXT PRIMARY KEY, created_at TEXT, last_seen TEXT);
+CREATE TABLE IF NOT EXISTS logbook (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS fc_pred (id INTEGER PRIMARY KEY, code TEXT NOT NULL, target TEXT NOT NULL, issued TEXT NOT NULL, lead REAL, wind REAL, gust REAL, dir REAL, temp REAL, UNIQUE(code,target));
 CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
 CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(time);
@@ -72,10 +90,12 @@ const ingest = {
   pressure: { ok: false, at: null, error: null },
   ecmwf: { ok: false, at: null, error: null },
   foehn: { ok: false, at: null, error: null },
-  stations: { ok: false, at: null, error: null, note: null }
+  stations: { ok: false, at: null, error: null, note: null },
+  windgrid: { ok: false, at: null, error: null },
+  airspace: { ok: false, at: null, error: null, count: 0 }
 };
 const state = {
-  raw: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
+  raw: null, windgrid: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
   stationMeta: {}, stationList: {}, version: 0, model: null, modelAt: 0, payloads: new Map(), quality: null, qualityAt: 0
 };
 
@@ -137,12 +157,14 @@ async function collectForecast() {
     fetchForecast(sitePoints()), fetchForecast(areaPoints()), fetchPressureLevels(areaPoints()),
     fetchSecondModel(areaPoints().filter(p => p.id !== 'REF').concat([REF_POINT])), fetchForecast(stationPoints(), { days: 2 })
   ]);
+  // Föhnregel: Druck Lugano und Zürich-Kloten (2 Orte, kaum Verbrauch)
+  const gradR = await fetchForecast(FOEHN_POINTS).catch(() => ({ byId: {} }));
   const at = nowIso();
   if (!areaR.byId.REF) {
     ingest.forecast = { ...ingest.forecast, ok: false, at, error: areaR.errors.slice(-3).join(' | ') || 'keine Referenzdaten' };
     return;
   }
-  const raw = { fetchedAt: Date.now(), model: areaR.used?.model, sites: sitesR.byId, areas: {}, ref: { sea: areaR.byId.REF, pl: plR.byId.REF || null }, stations: stR.byId };
+  const raw = { fetchedAt: Date.now(), model: areaR.used?.model, sites: sitesR.byId, areas: {}, ref: { sea: areaR.byId.REF, pl: plR.byId.REF || null }, stations: stR.byId, grad: gradR.byId };
   for (const a of AREAS) raw.areas[a.id] = { sea: areaR.byId[a.id] || null, pl: plR.byId[a.id] || null, ecmwf: ecR.byId[a.id] || null };
   state.raw = raw;
   const partial = Object.keys(sitesR.byId).length < RANKED.length;
@@ -152,6 +174,71 @@ async function collectForecast() {
   storePredictions(raw);
   invalidate();
   fs.writeFile(path.join(dataDir, 'raw.json.tmp'), JSON.stringify(raw)).then(() => fs.rename(path.join(dataDir, 'raw.json.tmp'), path.join(dataDir, 'raw.json'))).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ Windkarte */
+/* ---- Lufträume (SHV/FSVL, OpenAir, Meter) einmal täglich; bei Fehlern die letzte gespeicherte Datei */
+const AIR_BASE = () => (process.env.AFC_AIRSPACE_URL || 'https://airspace.shv-fsvl.ch').replace(/\/$/, '');
+const AIR_FILES = [['air', '/downloads/switzerland-airspace-metric.txt'], ['wild', '/downloads/switzerland-wildlife-meters.txt']];
+const AIR_BOX = [46.0, 6.6, 47.2, 8.9];   // Berner Oberland mit Rand
+const decodeText = buf => { const t = new TextDecoder('utf-8').decode(buf); return t.includes('\uFFFD') ? new TextDecoder('latin1').decode(buf) : t; };
+async function collectAirspace() {
+  const items = [], errors = [];
+  for (const [kind, file] of AIR_FILES) {
+    const local = path.join(dataDir, 'airspace-' + kind + '.txt');
+    let text = null;
+    try {
+      text = decodeText(new Uint8Array(await (await httpGet(AIR_BASE() + file, { timeoutMs: 30000 })).arrayBuffer()));
+      if (!/^\s*AC\s/m.test(text)) throw new Error('keine OpenAir-Datei');
+      await fs.writeFile(local, text);
+    } catch (e) {
+      errors.push(errMsg(e));
+      text = await fs.readFile(local, 'utf8').catch(() => null);
+    }
+    if (!text) continue;
+    for (const a of clipToBox(parseOpenAir(text), AIR_BOX)) items.push({ ...a, kind: kind === 'wild' ? 'wild' : a.kind });
+  }
+  if (items.length) {
+    const round = v => Math.round(v * 1e5) / 1e5;
+    state.airspace = packJson({ ok: true, at: nowIso(), source: 'SHV/FSVL airspace.shv-fsvl.ch', items: items.map(a => ({ n: a.name, c: a.cls, t: a.type || undefined, k: a.kind, f: a.freq, lo: a.lo, hi: a.hi, b: bboxOf(a.poly).map(round), p: a.poly.map(([la, lo]) => [round(la), round(lo)]) })) });
+    const by = items.reduce((m, a) => ((m[a.kind] = (m[a.kind] || 0) + 1), m), {});
+    console.log(`Lufträume: ${items.length} (${Object.entries(by).map(([k, v]) => k + ' ' + v).join(', ')})${errors.length ? ', aus Zwischenspeicher: ' + errors.join('; ') : ''}`);
+  }
+  ingest.airspace = { ok: items.length > 0, at: nowIso(), error: errors.length ? errors.join('; ') : null, count: items.length };
+}
+
+async function collectWindGrid() {
+  try {
+    const wg = await fetchWindGrid();
+    state.windgrid = wg;
+    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:') || k.startsWith('thermal:')) state.payloads.delete(k);
+    ingest.windgrid = { ok: true, at: nowIso(), error: null };
+    fs.writeFile(path.join(dataDir, 'windgrid.json.tmp'), JSON.stringify(wg)).then(() => fs.rename(path.join(dataDir, 'windgrid.json.tmp'), path.join(dataDir, 'windgrid.json'))).catch(() => {});
+  } catch (e) {
+    ingest.windgrid = { ...ingest.windgrid, ok: !!state.windgrid, at: nowIso(), error: errMsg(e) };
+  }
+}
+function windResponse(ms, level) {
+  const hourMs = Math.round(ms / 3600000) * 3600000;
+  const key = `wind:${level}:${hourMs}`;
+  let p = state.payloads.get(key);
+  if (p) return p;
+  const sl = windSlice(state.windgrid, hourMs, level);
+  if (!sl) return null;
+  p = packJson(sl);
+  state.payloads.set(key, p);
+  return p;
+}
+function thermalResponse(ms) {
+  const hourMs = Math.round(ms / 3600000) * 3600000;
+  const key = `thermal:${hourMs}`;
+  let p = state.payloads.get(key);
+  if (p) return p;
+  const sl = thermalSlice(state.windgrid, hourMs);
+  if (!sl) return null;
+  p = packJson(sl);
+  state.payloads.set(key, p);
+  return p;
 }
 
 /** Prognose für jetzt+3 h je Station festhalten; später mit der Messung verglichen. */
@@ -191,6 +278,29 @@ function qualitySummary() {
   return state.quality;
 }
 
+/**
+ * Selbst nachkalibrieren: Böen- und Windfehler der Bergstationen (Prognose 3 h voraus gegen Messung,
+ * letzte 14 Tage, 9–17 Uhr). Plus = gemessen mehr als prognostiziert. Das Modell hebt damit die Böen an.
+ */
+function learnedBias() {
+  if (state.learned && Date.now() - state.learnedAt < 3600000) return state.learned;
+  const since = new Date(Date.now() - LEARN_DAYS * 86400000).toISOString();
+  const rows = dbAll('SELECT p.code, p.target, p.wind pw, p.gust pg, o.wind ow, o.gust og FROM fc_pred p JOIN observations o ON o.code=p.code AND o.time=p.target WHERE p.target>=?', [since]);
+  const by = {};
+  for (const r of rows) {
+    const m = state.stationList[r.code];
+    if (!m || !(m.alt >= MOUNTAIN_ALT) || !isNum(r.og) || !isNum(r.pg)) continue;
+    const h = zurichParts(Date.parse(r.target)).hour;
+    if (h < 9 || h > 17) continue;
+    const b = (by[r.code] ??= { gust: [], wind: [] });
+    b.gust.push(r.og - r.pg);
+    if (isNum(r.ow) && isNum(r.pw)) b.wind.push(r.ow - r.pw);
+  }
+  state.learned = Object.fromEntries(Object.entries(by).map(([c, b]) => [c, { n: b.gust.length, gust: Math.round(mean(b.gust) * 10) / 10, wind: b.wind.length ? Math.round(mean(b.wind) * 10) / 10 : null }]));
+  state.learnedAt = Date.now();
+  return state.learned;
+}
+
 /* ------------------------------------------------------------------ Modell & Antwort-Cache */
 function invalidate() { state.version++; state.payloads.clear(); }
 
@@ -199,7 +309,7 @@ function currentModel() {
   if (!state.raw) return null;
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
-      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend,
+      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedBias(),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
     state.model.ver = state.version;
@@ -272,10 +382,10 @@ setInterval(() => { const n = Date.now(); for (const [k, v] of buckets) if (n - 
 
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' https://cdnjs.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org",
+  "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org https://thermal.kk7.ch",
   "connect-src 'self'", "worker-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"
 ].join('; ');
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN', 'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()' };
@@ -301,9 +411,9 @@ function sendPacked(req, res, p, code = 200) {
   res.writeHead(code, h);
   res.end(b);
 }
-async function readBody(req) {
+async function readBody(req, max = MAX_BODY) {
   let s = '';
-  for await (const c of req) { s += c; if (Buffer.byteLength(s) > MAX_BODY) throw Object.assign(new Error('payload too large'), { code: 413 }); }
+  for await (const c of req) { s += c; if (Buffer.byteLength(s) > max) throw Object.assign(new Error('payload too large'), { code: 413 }); }
   if (!s) return {};
   try { const j = JSON.parse(s); if (!j || typeof j !== 'object' || Array.isArray(j)) throw 0; return j; }
   catch { throw Object.assign(new Error('invalid json'), { code: 400 }); }
@@ -322,17 +432,27 @@ const STATIC = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8', true]], ['/sw_7.2.js', ['sw.js', 'text/javascript; charset=utf-8', true]],
   ['/manifest.json', ['manifest.json', 'application/manifest+json; charset=utf-8']],
   ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
-  ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']]
+  ['/pilot.js', ['lib/pilot.js', 'text/javascript; charset=utf-8']],
+  ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
+  ['/airspace.js', ['lib/airspace.js', 'text/javascript; charset=utf-8']],
+  ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
+  ['/igc.js', ['lib/igc.js', 'text/javascript; charset=utf-8']],
+  ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
+  ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']],
+  // Leaflet liegt im Projekt: Karte lädt vom eigenen Rechner, auch ohne cdnjs (Handy über Tailscale)
+  ['/vendor/leaflet/leaflet.js', ['vendor/leaflet/leaflet.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/leaflet/leaflet.css', ['vendor/leaflet/leaflet.css', 'text/css; charset=utf-8']],
+  ...['layers', 'layers-2x', 'marker-icon', 'marker-icon-2x', 'marker-shadow'].map(n => [`/vendor/leaflet/images/${n}.png`, [`vendor/leaflet/images/${n}.png`, 'image/png']])
 ]);
 const fileCache = new Map();
 async function serveStatic(req, res, route) {
   const [file, type, isSw] = route;
   try {
-    const st = await fs.stat(path.join(ROOT, file));
+    const st = await fs.stat(path.resolve(ROOT, file));
     let c = fileCache.get(file);
     if (!c || c.mtime !== st.mtimeMs) {
-      const buf = await fs.readFile(path.join(ROOT, file));
-      const text = /^(text|application\/(manifest|json))/.test(type);
+      const buf = await fs.readFile(path.resolve(ROOT, file));
+      const text = /^(text|application\/(manifest|json|octet-stream))/.test(type);   // Geländeraster komprimiert sich gut
       c = { mtime: st.mtimeMs, buf, gz: text ? zlib.gzipSync(buf) : null, etag: '"' + crypto.createHash('sha1').update(buf).digest('base64url').slice(0, 20) + '"' };
       fileCache.set(file, c);
     }
@@ -360,7 +480,7 @@ const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://localhost');
     const p = u.pathname;
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { ...corsHeaders(req), 'Access-Control-Allow-Headers': 'content-type,x-afc-client', 'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS', 'Access-Control-Max-Age': '86400' });
+      res.writeHead(204, { ...corsHeaders(req), 'Access-Control-Allow-Headers': 'content-type,x-afc-client', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Max-Age': '86400' });
       return res.end();
     }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
@@ -383,6 +503,26 @@ const server = http.createServer(async (req, res) => {
         if (!pk) return sendJson(req, res, 202, { warming: true });
         return sendPacked(req, res, pk);
       }
+      if (req.method === 'GET' && p === '/api/wind') {
+        const level = u.searchParams.get('level') || '10m';
+        const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
+        if (!WIND_LEVELS[level]) return sendJson(req, res, 400, { error: 'level muss 10m, 800 oder 700 sein' });
+        if (!state.windgrid) return sendJson(req, res, 202, { warming: true });
+        const pk = windResponse(t, level);
+        if (!pk) return sendJson(req, res, 404, { error: 'keine Winddaten für diese Zeit' });
+        return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/thermal') {
+        const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
+        if (!state.windgrid?.thermal) return sendJson(req, res, 202, { warming: true });
+        const pk = thermalResponse(t);
+        if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
+        return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/airspace') {
+        if (!state.airspace) return sendJson(req, res, 202, { warming: true, error: ingest.airspace.error });
+        return sendPacked(req, res, state.airspace);
+      }
       if (req.method === 'GET' && p === '/api/health') {
         const row = dbGet('SELECT MAX(time) t FROM observations');
         const obsAge = row?.t ? Math.round((Date.now() - Date.parse(row.t)) / 60000) : null;
@@ -394,6 +534,28 @@ const server = http.createServer(async (req, res) => {
           storageNote: storageProblem.degraded ? `Volume ${storageProblem.requested} nicht beschreibbar (${storageProblem.reason}); Daten gehen beim Neustart verloren` : null,
           backupCount: (await fs.readdir(backupsDir).catch(() => [])).filter(x => x.endsWith('.sqlite')).length
         });
+      }
+      if (req.method === 'GET' && p === '/api/status') {
+        // Verbrauch und Update-Stand für die Anzeige unter Profil
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList() });
+      }
+      if (req.method === 'POST' && p === '/api/backtest') {
+        if (!isLocal(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
+        return sendJson(req, res, 200, { ok: true, started: maybeBacktest(true), ...backtestStatus() });
+      }
+      if (req.method === 'POST' && p === '/api/update') {
+        if (!isLocal(req) || !AUTOSTART) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
+        if (req.headers['x-afc-client'] === undefined) return sendJson(req, res, 400, { error: 'Kopfzeile fehlt' });
+        const r = await updater.apply();
+        if (!r.ok) return sendJson(req, res, 500, { error: r.error });
+        sendJson(req, res, 200, { ok: true, restarting: true });
+        // launchd startet den Dienst nach dem Beenden mit der neuen Version wieder
+        setTimeout(() => shutdown('Update'), 300);
+        return;
+      }
+      if (req.method === 'POST' && p === '/api/update/check') {
+        if (!isLocal(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
+        return sendJson(req, res, 200, { ok: true, update: { ...(await updater.check()), canApply: AUTOSTART } });
       }
       if (req.method === 'GET' && p === '/api/meta') {
         return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, publicApp: PUBLIC_APP || null, sites: RANKED.length, areas: AREAS.length, sitesChecked: SITES_FILE.meta?.checked });
@@ -421,6 +583,28 @@ const server = http.createServer(async (req, res) => {
           [h, at, site.id, site.name, site.area, launch, b.launched ? 1 : 0, quality, score >= 0 && score <= 100 ? Math.round(score) : null, cleanText(b.afcDecision, 40), null, null, cleanText(b.note, 280), SITES_FILE.meta?.checked || null]);
         return sendJson(req, res, 200, { ok: true });
       }
+      // Flugbuch (persönlich, bleibt auf diesem Rechner): Flüge, Ausrüstung, Einstellungen
+      if (p === '/api/logbook' || p.startsWith('/api/logbook/')) {
+        if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
+        if (req.method === 'GET' && p === '/api/logbook') {
+          // Flüge haben selbst ein Feld «kind» (Thermik, Soaring …), darum nach der Tabellenspalte trennen
+          const pick = k => dbAll('SELECT data FROM logbook WHERE kind=?', [k]).map(r => JSON.parse(r.data));
+          return sendJson(req, res, 200, { ok: true, flights: pick('flight').sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), gear: pick('gear'), settings: cleanSettings(pick('settings')[0] || {}) });
+        }
+        const lm = p.match(/^\/api\/logbook\/(flight|gear|settings)\/([\w-]{1,40})$/);
+        if (!lm) return sendJson(req, res, 404, { error: 'unbekannt' });
+        if (limited(req, 'post', 120)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+        const [, kind, lid] = lm;
+        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); return sendJson(req, res, 200, { ok: true }); }
+        if (req.method === 'PUT') {
+          const body = await readBody(req, 64 * 1024);   // Flug mit vereinfachter IGC-Spur
+          const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
+          if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
+          dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
+          return sendJson(req, res, 200, { ok: true, item });
+        }
+        return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
+      }
       if (req.method === 'GET' && p === '/api/privacy/export') {
         const cid = clientId(req);
         if (!cid) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
@@ -438,6 +622,11 @@ const server = http.createServer(async (req, res) => {
       return sendJson(req, res, 404, { error: 'not found' });
     }
 
+    if (p === '/kk7-grid.bin' && (req.method === 'GET' || req.method === 'HEAD')) {
+      // Thermik aus Flügen (kk7, CC BY-NC-SA): wird lokal von tools/calibrate-kk7.js erzeugt, nicht im Repository
+      if (!fsc.existsSync(path.join(dataDir, 'kk7-grid.bin'))) return sendJson(req, res, 404, { error: 'kein kk7-Abgleich vorhanden' });
+      return serveStatic(req, res, [path.join(dataDir, 'kk7-grid.bin'), 'application/octet-stream']);
+    }
     const route = STATIC.get(p);
     if (route && (req.method === 'GET' || req.method === 'HEAD')) return serveStatic(req, res, route);
     return sendJson(req, res, 404, { error: 'not found' });
@@ -456,9 +645,13 @@ async function loadSnapshot() {
     const raw = JSON.parse(await fs.readFile(path.join(dataDir, 'raw.json'), 'utf8'));
     if (Date.now() - raw.fetchedAt < 3 * 3600000 && raw.ref?.sea) { state.raw = raw; ingest.forecast = { ...ingest.forecast, ok: true, at: new Date(raw.fetchedAt).toISOString(), model: raw.model, error: 'aus Zwischenspeicher, wird aktualisiert' }; }
   } catch { /* kein Zwischenspeicher */ }
+  try {
+    const wg = JSON.parse(await fs.readFile(path.join(dataDir, 'windgrid.json'), 'utf8'));
+    if (Date.now() - wg.fetchedAt < 8 * 3600000 && wg.levels) { state.windgrid = wg; ingest.windgrid = { ok: true, at: new Date(wg.fetchedAt).toISOString(), error: 'aus Zwischenspeicher, wird aktualisiert' }; }
+  } catch { /* kein Zwischenspeicher */ }
 }
 
-let busy = { obs: false, fc: false };
+let busy = { obs: false, fc: false, wind: false };
 async function tick(kind, fn) {
   if (busy[kind]) return;
   busy[kind] = true;
@@ -491,11 +684,49 @@ async function start() {
     ingest.stations = { ok: true, at: nowIso(), error: null, note };
     await tick('obs', collectObservations);
     await tick('fc', collectForecast);
+    await tick('wind', collectWindGrid);
+    await tick('air', collectAirspace);
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));
+  timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
+  timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
+  if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
+  updater.start();
+}
+
+/* --------------------------------------------------- Rückblick-Test automatisch */
+// Einmal pro Woche nachts die letzten 14 Tage durchrechnen; das Ergebnis erscheint unter Profil.
+const BACKTEST_AUTO = process.env.AFC_BACKTEST_AUTO ? process.env.AFC_BACKTEST_AUTO === '1' : AUTOSTART;
+const backtestJob = { running: false, error: null };
+function backtestHistory() {
+  try { const h = JSON.parse(fsc.readFileSync(path.join(DATA, 'backtest-history.json'), 'utf8')); return Array.isArray(h) ? h : []; } catch { return []; }
+}
+function maybeBacktest(force = false) {
+  if (backtestJob.running) return false;
+  const last = backtestHistory().filter(x => x.auto).at(-1);
+  const hour = zurichParts(Date.now()).hour;
+  if (!force && ((last && Date.now() - Date.parse(last.at) < 6.5 * 86400000) || hour < 2 || hour > 5)) return false;
+  backtestJob.running = true; backtestJob.error = null;
+  const child = spawn(process.execPath, [path.join(ROOT, 'tools', 'backtest.js'), '--days', '14', '--auto'], { cwd: ROOT, env: { ...process.env, AFC_DATA_DIR: DATA }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', d => { err = (err + d).slice(-400); });
+  child.on('exit', code => {
+    backtestJob.running = false;
+    backtestJob.error = code ? (err.trim().split('\n').pop() || `Abbruch (${code})`) : null;
+    console.log(code ? `Rückblick-Test fehlgeschlagen: ${backtestJob.error}` : 'Rückblick-Test fertig');
+  });
+  return true;
+}
+function learnedList() {
+  return Object.entries(learnedBias()).map(([code, l]) => ({ code, name: state.stationList[code]?.name || code, ...l, used: l.n >= LEARN_MIN_N }))
+    .sort((a, b) => b.n - a.n);
+}
+function backtestStatus() {
+  const h = backtestHistory();
+  return { auto: BACKTEST_AUTO, running: backtestJob.running, error: backtestJob.error, last: h.at(-1) || null, prev: h.at(-2) || null };
 }
 
 function shutdown(sig) {

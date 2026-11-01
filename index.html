@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -37,12 +37,14 @@
 </header>
 
 <div id="banner" class="banner" role="status" hidden></div>
+<div id="updBanner" class="banner upd" role="status" hidden></div>
 
 <nav class="tabs" role="tablist" aria-label="Bereiche">
   <button role="tab" data-tab="decide" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-9 4 6 3-4 4 7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Entscheid</span></button>
   <button role="tab" data-tab="map" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Karte</span></button>
   <button role="tab" data-tab="lage" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18M8 3v4M15 10v4M10 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Lage</span></button>
   <button role="tab" data-tab="day" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4 10-10M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Flugtag</span></button>
+  <button role="tab" data-tab="book" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 013 3v13H8a3 3 0 01-3-3zM5 17a3 3 0 013-3h11M9 8h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Flugbuch</span></button>
   <button role="tab" data-tab="profile" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Profil</span></button>
 </nav>
 
@@ -55,6 +57,8 @@
       <div class="map-tools">
         <button class="map-btn" data-act="layers" aria-expanded="false" aria-controls="layerPanel">Ebenen</button>
         <button class="map-btn" data-act="locate">Standort</button>
+        <button class="map-btn" data-act="route">Route</button>
+        <button class="map-btn" data-act="airtoggle" aria-pressed="false">Luftraum</button>
       </div>
       <div id="layerPanel" class="layer-panel" hidden>
         <fieldset><legend>Grundkarte</legend>
@@ -64,11 +68,42 @@
           <label><input type="radio" name="base" value="osm"> OpenStreetMap</label>
         </fieldset>
         <fieldset><legend>Auflagen</legend>
+          <label><input type="checkbox" name="ov" value="air"> Lufträume (SHV)</label>
+          <label><input type="checkbox" name="ov" value="wild"> Wildschutzgebiete</label>
           <label><input type="checkbox" name="ov" value="slope"> Hangneigung über 30°</label>
           <label><input type="checkbox" name="ov" value="obst"> Hindernisse und Kabel</label>
+          <label><input type="checkbox" name="ov" value="kk7thermal"> Thermik aus 3,8 Mio. Flügen (kk7)</label>
+          <label><input type="checkbox" name="ov" value="kk7sky"> Skyways aus Flügen (kk7)</label>
           <label><input type="checkbox" name="ov" value="stations" checked> Messstationen</label>
           <label><input type="checkbox" name="ov" value="landings" checked> Landeplätze</label>
         </fieldset>
+      </div>
+      <div id="windBar" class="wind-bar">
+        <button type="button" class="bar-fold" data-act="barfold" aria-expanded="true" aria-controls="barBody"><span id="barSum">Wind und Aufwind</span><span class="bar-chev" aria-hidden="true">▾</span></button>
+        <div id="barBody" class="bar-body">
+        <div class="wind-row" role="group" aria-label="Windkarte">
+          <span class="wind-t">Wind</span>
+          <button type="button" class="wseg" data-act="wind" data-lvl="off" aria-pressed="true">Aus</button>
+          <button type="button" class="wseg" data-act="wind" data-lvl="10m" aria-pressed="false">Boden</button>
+          <button type="button" class="wseg" data-act="wind" data-lvl="800" aria-pressed="false">2000 m</button>
+          <button type="button" class="wseg" data-act="wind" data-lvl="700" aria-pressed="false">3000 m</button>
+        </div>
+        <div class="wind-row" role="group" aria-label="Aufwindkarte: Thermik oder Soaring">
+          <span class="wind-t">Aufwind</span>
+          <button type="button" class="wseg tseg" data-act="thermal" data-mode="off" aria-pressed="true">Aus</button>
+          <button type="button" class="wseg tseg" data-act="thermal" data-mode="thermal" aria-pressed="false">Thermik</button>
+          <button type="button" class="wseg tseg" data-act="thermal" data-mode="soar" aria-pressed="false">Soaring</button>
+        </div>
+        </div>
+        <div class="wind-row wind-time" hidden>
+          <label for="windHour" class="wind-h"><b id="windHourT">12 Uhr</b></label>
+          <input id="windHour" type="range" min="6" max="20" step="1" value="12" aria-label="Uhrzeit der Wind- und Thermikkarte">
+        </div>
+        <div class="bar-body bar-legends">
+        <div class="wind-legend" hidden aria-label="Farben: Windstärke in km/h"><i style="--c:#2a7fd4"></i>&lt;10<i style="--c:#2fa84f"></i>10–20<i style="--c:#d9b300"></i>20–30<i style="--c:#ef8a1f"></i>30–40<i style="--c:#d93a32"></i>40+ km/h</div>
+        <div class="thermal-legend" hidden><span class="tgrad" aria-hidden="true"></span><span>schwach</span><span>stark</span><span class="fine">Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Antippen zeigt warum.</span></div>
+        <div class="thermal-legend soar-legend" hidden><span class="tgrad sgrad" aria-hidden="true"></span><span>schwach</span><span>gut <i class="sstrong"></i> zu stark</span><span class="fine">Wo der Wind frontal auf einen steilen Hang trifft, auch ohne Thermik. Antippen zeigt warum.</span></div>
+        </div>
       </div>
       <div id="mapMsg" class="map-msg" hidden></div>
       <div id="mapSheet" class="sheet" hidden></div>
@@ -77,6 +112,7 @@
   </section>
   <section id="v-lage" class="view" role="tabpanel" hidden></section>
   <section id="v-day" class="view" role="tabpanel" hidden></section>
+  <section id="v-book" class="view" role="tabpanel" hidden></section>
   <section id="v-profile" class="view" role="tabpanel" hidden></section>
 </main>
 
@@ -84,7 +120,12 @@
 <dialog id="msgDlg" class="dlg" aria-labelledby="msgDlgT"></dialog>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js" defer></script>
+<script src="/vendor/leaflet/leaflet.js" defer></script>
+<script type="module" src="/pilot.js"></script>
+<script type="module" src="/route.js"></script>
+<script type="module" src="/airspace.js"></script>
+<script type="module" src="/logbook.js"></script>
+<script type="module" src="/igc.js"></script>
 <script src="/app.js" defer></script>
 <noscript><p style="padding:16px">AFC benötigt JavaScript.</p></noscript>
 </body>

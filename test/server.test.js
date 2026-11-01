@@ -11,7 +11,7 @@ async function boot(scenario, port) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1' },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -56,6 +56,30 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.equal(h.ingest.observations.ok, true);
     assert.equal(h.ingest.forecast.ok, true);
     assert.equal(h.ingest.pressure.ok, true);
+    // Windkarte
+    let wr;
+    for (let i = 0; i < 40; i++) { wr = await fetch(s.base + '/api/wind?level=800'); if (wr.status === 200) break; await new Promise(r => setTimeout(r, 250)); }
+    assert.equal(wr.status, 200, s.log());
+    const wg = await wr.json();
+    assert.equal(wg.u.length, wg.grid.nx * wg.grid.ny);
+    assert.ok(wg.u.every(Number.isFinite) && wg.v.every(Number.isFinite));
+    // Wind aus Süden (ca. 205°) strömt nach Norden: v > 0
+    assert.ok(wg.v[0] > 0, 'v ' + wg.v[0]);
+    assert.equal((await fetch(s.base + '/api/wind?level=500')).status, 400);
+    // Thermikkarte: Wetterwerte je Rasterpunkt und Geländeraster
+    const noon = new Date(); noon.setUTCHours(11, 0, 0, 0);
+    const tr = await fetch(s.base + '/api/thermal?t=' + noon.toISOString());
+    assert.equal(tr.status, 200);
+    const th = await tr.json();
+    assert.equal(th.sun.length, th.grid.nx * th.grid.ny);
+    assert.ok(th.sunPos.elev > 20, 'Sonnenhöhe ' + th.sunPos.elev);
+    assert.ok(th.top.every(x => x === null || x > 1000) && th.top.some(x => x > 1500), 'Thermikhöhe ' + th.top.slice(0, 3));
+    assert.equal(th.wind['800'].u.length, th.grid.nx * th.grid.ny);
+    assert.equal((await fetch(s.base + '/kk7-grid.bin')).status, 404);   // nur nach lokalem kk7-Abgleich vorhanden
+    const gr = await fetch(s.base + '/terrain-grid.bin');
+    assert.equal(gr.status, 200);
+    const buf = Buffer.from(await gr.arrayBuffer()), hl = buf.readUInt32LE(0), meta = JSON.parse(buf.subarray(4, 4 + hl));
+    assert.equal(buf.length, 4 + hl + ((4 + hl) % 2) + meta.nx * meta.ny * 5);
   } finally { await s.stop(); }
 });
 
@@ -63,7 +87,8 @@ test('Frontlage: heute K.-o., Vorsicht-Kopfzeile', async () => {
   const s = await boot('front', 18782);
   try {
     const p = await (await fetch(s.base + '/api/plan')).json();
-    const today = p.region.days[0].hours;
+    // Mock-Front gilt für den UTC-Tag: kurz vor Mitternacht ist das in Zürich schon «gestern»
+    const today = p.region.days.slice(0, 2).flatMap(d => d.hours);
     assert.ok(today.some(h => h.front === 'danger' || h.front === 'warn'), JSON.stringify(today.map(h => h.front)));
     const t = p.days[0].top;
     if (t) assert.ok(t.best.score < 60, 'Score trotz Front ' + t.best.score);
@@ -114,5 +139,104 @@ test('Rate-Limit nach X-Forwarded-For', async () => {
     assert.ok(limited > 0);
     const other = await fetch(s.base + '/api/meta', { headers: { 'X-Forwarded-For': '203.0.113.99' } });
     assert.equal(other.status, 200);
+  } finally { await s.stop(); }
+});
+
+test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', async () => {
+  const mock = await startMock('good');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-bt-'));
+  try {
+    const code = await new Promise(r => spawn(process.execPath, ['tools/backtest.js', '--days', '15', '--auto'], {
+      cwd: path.resolve(import.meta.dirname, '..'), stdio: 'ignore',
+      env: { ...process.env, AFC_HISTORY_URL: mock.url, AFC_SMN_URL: mock.url, AFC_DATA_DIR: dir }
+    }).on('exit', r));
+    assert.equal(code, 0);
+    const txt = fs.readFileSync(path.join(dir, fs.readdirSync(dir).find(f => f.endsWith('.txt'))), 'utf8');
+    assert.match(txt, /Bewertete Gebietstage: \d+/);
+    // Im Mock ist die Prognose immer gut, gemessen wird jeden 7. Tag Sturm: die Messung muss als «schlecht» auffallen.
+    // Weil der Test wie die App die Morgenmessung mitnimmt, darf AFC diese Tage selbst erkennen (dann kein GEFÄHRLICH).
+    assert.match(txt, /schlecht \d+/);
+    assert.match(txt, /GEFÄHRLICH: +\d+/);
+    // Kurzfassung für die App, Zwischenspeicher nach automatischem Lauf gelöscht
+    const hist = JSON.parse(fs.readFileSync(path.join(dir, 'backtest-history.json'), 'utf8'));
+    assert.equal(hist.length, 1);
+    assert.ok(hist[0].auto && hist[0].n > 0 && hist[0].passt + hist[0].gefaehrlich + hist[0].zuStreng <= hist[0].n);
+    assert.ok(!fs.readdirSync(dir).some(f => f.startsWith('backtest-cache-')));
+  } finally { await mock.close(); }
+});
+
+test('Status zeigt Open-Meteo-Verbrauch, Update nur mit Autostart', async () => {
+  const s = await boot('good', 18789);
+  try {
+    const j = await (await fetch(s.base + '/api/status')).json();
+    assert.equal(j.ok, true);
+    assert.ok(j.openMeteo.calls > 0 && j.openMeteo.requests > 0, JSON.stringify(j.openMeteo));
+    assert.equal(j.openMeteo.limitDay, 10000);
+    assert.equal(j.update.enabled, false);
+    assert.equal(j.update.canApply, false);
+    assert.equal((await fetch(s.base + '/api/update', { method: 'POST', headers: { 'X-AFC-Client': 'x' } })).status, 403);
+  } finally { await s.stop(); }
+});
+
+test('Open-Meteo-Gewichtung: Orte x angefangene 10 Variablen', async () => {
+  const { openMeteoWeight } = await import('../lib/http.js');
+  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2,3&longitude=1,2,3&hourly=a,b,c&forecast_days=5'), 3);
+  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2&longitude=1,2&hourly=' + 'v,'.repeat(14) + 'v&forecast_days=7'), 4);
+  assert.equal(openMeteoWeight('https://data.geo.admin.ch/x.csv'), 0);
+});
+
+test('Lufträume: Server liefert SHV-Lufträume und Wildschutz, Klasse E ausserhalb des Gebiets fehlt', async () => {
+  const s = await boot('good', 18790);
+  try {
+    let r;
+    for (let i = 0; i < 40; i++) { r = await fetch(s.base + '/api/airspace'); if (r.status === 200) break; await new Promise(res => setTimeout(res, 250)); }
+    assert.equal(r.status, 200, s.log());
+    const j = await r.json();
+    assert.deepEqual(j.items.map(a => a.k).sort(), ['block', 'block', 'warn', 'wild']);
+    assert.ok(j.items.every(a => a.p.length >= 3 && a.b.length === 4 && a.lo && a.hi));
+    assert.match(s.log(), /Lufträume: 4/);
+  } finally { await s.stop(); }
+});
+
+test('Flugbuch-API: speichern, lesen, löschen, nur mit Gerätekennung', async () => {
+  const s = await boot('good', 18791);
+  try {
+    const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
+    assert.equal((await fetch(s.base + '/api/logbook')).status, 400);
+    const put = (kind, id, b) => fetch(`${s.base}/api/logbook/${kind}/${id}`, { method: 'PUT', headers: H, body: JSON.stringify(b) });
+    assert.equal((await put('flight', 'f1', { note: 'ohne Datum' })).status, 400);
+    assert.equal((await put('gear', 'g1', { type: 'glider', brand: 'Advance', model: 'Iota' })).status, 200);
+    assert.equal((await put('flight', 'f1', { date: '2026-07-01', durMin: 75, gliderId: 'g1', siteName: 'Niesen' })).status, 200);
+    assert.equal((await put('flight', 'f2', { date: '2026-08-01', durMin: 20 })).status, 200);
+    assert.equal((await put('settings', 'main', { flightsBefore: 40 })).status, 200);
+    let j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
+    assert.deepEqual(j.flights.map(f => f.id), ['f2', 'f1']);
+    assert.equal((await put('flight', 'f3', { date: '2026-08-02', kind: 'thermik' })).status, 200);
+    assert.equal((await (await fetch(s.base + '/api/logbook', { headers: H })).json()).flights[0].kind, 'thermik');
+    await fetch(s.base + '/api/logbook/flight/f3', { method: 'DELETE', headers: H });
+    assert.equal(j.gear[0].model, 'Iota');
+    assert.equal(j.settings.flightsBefore, 40);
+    assert.equal((await fetch(s.base + '/api/logbook/flight/f2', { method: 'DELETE', headers: H })).status, 200);
+    j = await (await fetch(s.base + '/api/logbook', { headers: H })).json();
+    assert.equal(j.flights.length, 1);
+  } finally { await s.stop(); }
+});
+
+test('Rückblick-Test: Status zeigt den letzten Lauf aus dem Verlauf', async () => {
+  const s = await boot('good', 18792);
+  try {
+    let j = await (await fetch(s.base + '/api/status')).json();
+    assert.equal(j.backtest.auto, false);
+    assert.equal(j.backtest.last, null);
+    assert.equal((await fetch(s.base + '/api/backtest', { method: 'POST' })).status, 403);
+  } finally { await s.stop(); }
+});
+
+test('Handy: Karte kommt vom eigenen Server, nichts von cdnjs', async () => {
+  const s = await boot('good', 18793);
+  try {
+    const html = await (await fetch(s.base + '/')).text();
+    assert.ok(!/cdnjs/.test(html));
+    for (const f of ['/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/leaflet/images/marker-icon.png', '/igc.js', '/sw.js']) assert.equal((await fetch(s.base + f)).status, 200, f);
   } finally { await s.stop(); }
 });
