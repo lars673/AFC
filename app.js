@@ -446,7 +446,8 @@ function statusHtml() {
   const o = d.openMeteo, pct = Math.min(100, Math.round(o.calls / o.limitDay * 100)), u = d.update;
   const upd = !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
     : u.error ? `Letzte Prüfung fehlgeschlagen (${esc(u.error)}).`
-    : u.available ? `Neue Version verfügbar. ${esc(updText(u))}`
+    : u.available ? `Neue Version verfügbar, automatische Tests bestanden. ${esc(updText(u))}`
+    : u.waiting ? `${esc(updText(u))}. ${esc(u.waiting)}`
     : u.checkedAt ? `Aktuell (geprüft ${timeOf(u.checkedAt)} Uhr).` : 'Noch nicht geprüft.';
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>

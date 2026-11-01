@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/scoring.test.js test/logbook.test.js test/igc.test.js test/server.test.js"
+    "test": "node --test test/scoring.test.js test/logbook.test.js test/igc.test.js test/updater.test.js test/server.test.js"
   },
   "engines": {
     "node": ">=22.13"
