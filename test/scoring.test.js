@@ -422,3 +422,35 @@ test('Druckdifferenzen: Föhn Lugano–Kloten, Bise Kloten–Genf, nur frische W
   // alte Werte zählen nicht
   assert.equal(pressureDiffs({ ...q, GVE: { qff: 1010, time: '2026-11-01T07:00:00Z' } }, now).bise, null);
 });
+
+test('Bise: Stufe aus Druck, Höhenwind und Messung; Lee-Hang am Thunersee ist K.-o.', async () => {
+  const { biseLevel } = await import('../lib/scoring.js');
+  assert.equal(biseLevel(1.0, { speed: 15, dir: 50 }).level, 'ok');
+  assert.equal(biseLevel(3.0, null).level, 'warn');
+  assert.equal(biseLevel(4.6, null).level, 'danger');
+  assert.equal(biseLevel(2.2, { speed: 42, dir: 60 }).level, 'danger');
+  assert.equal(biseLevel(0, { speed: 30, dir: 230 }).level, 'ok');      // Südwest ist keine Bise
+  assert.equal(biseLevel(null, null, 75).level, 'danger');
+  // Amisbühl (Süd) bei starker Bise: K.-o.; ein Nordost-Hang nur gedeckelt
+  const bise = { level: 'danger', why: ['Bisedruck Zürich–Genf +4.8 hPa (stark)'] };
+  const south = assessHour(site, good({ bise, biseExposure: 'full' }));
+  assert.ok(south.hard.some(h => /Bise: Startplatz im Lee/.test(h)), south.hard.join(' | '));
+  const neSite = { ...site, aspects: [45] };
+  const ne = assessHour(neSite, good({ dir: 45, bise, biseExposure: 'full' }));
+  assert.ok(!ne.hard.some(h => /Bise/.test(h)));
+  assert.ok(ne.score <= 70, 'NE ' + ne.score);
+  const calm = assessHour(site, good());
+  assert.ok(calm.score > south.score + 25, `${calm.score} gegen ${south.score}`);
+  // tiefes Tal (halb ausgesetzt) bei Vorsicht: nur ein Hinweis
+  const valley = assessHour(site, good({ bise: { level: 'warn', why: ['Bisedruck Zürich–Genf +2.8 hPa'] }, biseExposure: 'half' }));
+  assert.ok(valley.reasons.some(r => /Bise in der Region/.test(r)));
+  assert.ok(valley.score >= calm.score - 2);
+});
+
+test('Bise: Mitteilung am Vorabend', async () => {
+  const { biseNotice } = await import('../lib/notify.js');
+  const hours = [8, 9, 10, 11, 12].map(h => ({ h, bise: h >= 10 ? 'danger' : 'warn' }));
+  const n = biseNotice({ dates: ['2026-11-01', '2026-11-02'], region: { days: [{ hours: [] }, { hours }] } }, 1);
+  assert.match(n.title, /Starke Bise morgen/);
+  assert.match(n.body, /Lee/);
+});

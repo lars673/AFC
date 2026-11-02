@@ -271,7 +271,7 @@ function headlineFor(d) {
   const title = sc >= 80 ? `${dayName(d)} sieht gut aus` : sc >= 55 ? `${dayName(d)} nur mit Vorsicht` : `${dayName(d)} besser am Boden bleiben`;
   let text = sc >= 55 ? `Bester Start: ${site.name}${site.name.startsWith(area.name) ? '' : ' (' + area.name + ')'}, ${winText(t.best)}, Score ${sc}.` : `Der beste Startplatz (${site.name}) erreicht nur ${sc} von 100.`;
   const dd = p.days[d];
-  if (dd.regionStatus && dd.regionStatus !== 'ok') text += ` Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}.`;
+  if (dd.regionStatus && dd.regionStatus !== 'ok') text += ` Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', bise: 'Bise', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}.`;
   if (d > 2) text += ' Je weiter in der Zukunft, desto unsicherer.';
   return { tone, title, text };
 }
@@ -424,13 +424,13 @@ function regionSummary(d) {
   const hours = S.plan.region.days[d]?.hours || [];
   const day = hours.filter(h => h.h >= 8 && h.h <= 18);
   const parts = [];
-  for (const [k, name] of [['front', 'Kaltfront'], ['storm', 'Gewitterrisiko'], ['foehn', 'Föhn']]) {
+  for (const [k, name] of [['front', 'Kaltfront'], ['storm', 'Gewitterrisiko'], ['foehn', 'Föhn'], ['bise', 'Bise']]) {
     const hit = day.find(h => h[k] === 'danger') || day.find(h => h[k] === 'warn');
-    if (hit) parts.push(`${name} ab ${hit.h} Uhr (${hit[k] === 'danger' ? 'K.-o.' : 'Vorsicht'})`);
+    if (hit) parts.push(k === 'bise' ? `Bise ab ${hit.h} Uhr (${hit.bise === 'danger' ? 'stark: Lee-Hänge am Thuner- und Brienzersee meiden' : 'Vorsicht'})` : `${name} ab ${hit.h} Uhr (${hit[k] === 'danger' ? 'K.-o.' : 'Vorsicht'})`);
   }
   const up = day.filter(h => h.up800 && h.up800[0] >= 40);
   if (up.length) parts.push(`Höhenwind bis ${Math.max(...up.map(h => h.up800[0]))} km/h auf 2000 m`);
-  if (!parts.length) return 'Keine K.-o.-Faktoren in der Region. Kaltfront, Gewitter und Föhn sind unauffällig.';
+  if (!parts.length) return 'Keine K.-o.-Faktoren in der Region. Kaltfront, Gewitter, Föhn und Bise sind unauffällig.';
   return parts.join('. ') + '.';
 }
 const LVL_SYM = { ok: '✓', warn: '!', danger: '✕' };
@@ -450,6 +450,7 @@ function renderLage() {
     ['Kaltfront', h => lc(h.front, h.frontWhy?.[0])],
     ['Gewitter', h => lc(h.storm, `CAPE ${h.cape} J/kg, Regen ${h.pop} %`)],
     ['Föhn', h => lc(h.foehn)],
+    ['Bise', h => lc(h.bise || 'ok', h.biseWhy?.[0])],
     [phone ? 'Föhn hPa' : 'Föhndruck hPa', h => (num(h.dp) ? `<div class="bc ${h.dp >= 8 ? 'danger' : h.dp >= 4 ? 'warn' : 'mut'}" aria-label="Druck Lugano minus Zürich ${h.dp} hPa">${h.dp > 0 ? '+' : ''}${h.dp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
     [phone ? 'Bise hPa' : 'Bisedruck hPa', h => (num(h.bdp) ? `<div class="bc ${h.bdp >= 4 ? 'danger' : h.bdp >= 2 ? 'warn' : 'mut'}" aria-label="Druck Zürich minus Genf ${h.bdp} hPa">${h.bdp > 0 ? '+' : ''}${h.bdp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
     [phone ? 'Wind 2000' : 'Wind 2000 m', h => wc(h.up800, 40)],
@@ -471,7 +472,7 @@ function renderLage() {
       <thead><tr><th class="rl" scope="col">Uhr</th>${hrs.map(h => `<th scope="col">${h.h === nowH ? 'jetzt' : h.h}</th>`).join('')}</tr></thead>
       <tbody>${rows.map(([name, f]) => `<tr><th class="rl" scope="row">${name}</th>${hrs.map(h => `<td>${f(h)}</td>`).join('')}</tr>`).join('')}</tbody>
     </table></div>
-    <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
+    <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn; starke Bise an Lee-Hängen)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
     <p class="fine" style="margin:4px 0 0">Föhndruck = Luftdruck Lugano minus Zürich (Prognose): ab +4 hPa Föhn möglich, ab +8 hPa Föhn. Bisedruck = Zürich minus Genf: ab +2 hPa Bise, ab +4 hPa starke Bise.</p>
     ${whyAll.length ? `<div class="panel" style="margin-top:12px"><h3>Warum die Frontwarnung?</h3><ul class="why">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p></div>` : ''}
     ${isToday() && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
@@ -973,7 +974,7 @@ function pushHtml() {
       const p = pushPrefs();
       return `<form id="pushForm" class="push-form">
         <label class="chk"><input type="checkbox" name="good" ${p.good ? 'checked' : ''}><span>Guter Flugtag morgen, ab <select name="threshold" aria-label="ab welchem AFC-Wert">${[65, 70, 75, 80, 85].map(v => `<option ${v === p.threshold ? 'selected' : ''}>${v}</option>`).join('')}</select></span></label>
-        <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhnwarnung</span></label>
+        <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhn- und Bisewarnung</span></label>
         <label class="chk"><input type="checkbox" name="gear" ${p.gear ? 'checked' : ''}><span>Retter packen und Schirm-Check fällig</span></label>
         <label class="chk"><input type="checkbox" name="review" ${p.review ? 'checked' : ''}><span>Abends: Rückblick auf deinen Flug von heute</span></label>
         <label class="chk"><input type="checkbox" name="health" ${p.health ? 'checked' : ''}><span>Störungen von AFC (Wetterdaten veraltet, Sicherung fehlgeschlagen)</span></label>
