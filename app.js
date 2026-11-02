@@ -786,6 +786,7 @@ function renderBook() {
       <div class="lb-list">${rows || '<p class="fine" style="margin:8px 0 0">Noch keine Flüge. Tippe auf «+ Flug».</p>'}</div>
       ${st.longest?.durMin ? `<p class="fine">Längster Flug: ${L.fmtDur(st.longest.durMin)} h am ${ddmm(st.longest.date)}${st.longest.date.slice(0, 4)} (${esc(st.longest.siteName || '–')})${st.farthest ? ` · weitester: ${st.farthest.km} km` : ''}</p>` : ''}
     </div>
+    ${lbStatsHtml(d.flights)}
     <div class="panel">
       <div class="lb-head"><h3>Ausrüstung</h3><button class="btn sec" type="button" data-act="lbgear">+ Ausrüstung</button></div>
       ${gear.length ? `<div class="lb-gear">${gear.map(g => {
@@ -813,6 +814,38 @@ function renderBook() {
       </div>
       <p class="fine">«Drucken / PDF» nimmt die Flüge der gewählten Jahres-Ansicht; im Druckfenster «Als PDF sichern» wählen. «Sicherung laden» ergänzt und aktualisiert Flüge, löscht aber nichts.</p>
     </div>`;
+}
+
+/* ---- Flugbuch-Statistik: Flugstunden je Monat, Flugarten, meine Plätze */
+function lbStatsHtml(flights) {
+  const L = LG();
+  if (!flights.length) return '';
+  // Monate: gewähltes Jahr, sonst die letzten 12 Monate
+  const months = [];
+  if (LB.year === 'all') { const d = new Date(); d.setDate(1); for (let i = 11; i >= 0; i--) { const x = new Date(d.getFullYear(), d.getMonth() - i, 1); months.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`); } }
+  else for (let m = 1; m <= 12; m++) months.push(`${LB.year}-${String(m).padStart(2, '0')}`);
+  const per = months.map(m => { const l = flights.filter(f => f.date.startsWith(m)); return { m, n: l.length, min: l.reduce((t, f) => t + (f.durMin || 0), 0) }; });
+  const maxMin = Math.max(60, ...per.map(x => x.min)), top = per.reduce((a, b) => (b.min > a.min ? b : a), per[0]);
+  const pool = LB.year === 'all' ? flights.filter(f => f.date >= months[0]) : flights.filter(f => f.date.startsWith(LB.year));
+  const sumMin = pool.reduce((t, f) => t + (f.durMin || 0), 0);
+  const bars = per.map(x => `<div class="st-col" title="${MONTHS[Number(x.m.slice(5)) - 1]} ${x.m.slice(0, 4)}: ${x.n} Flüge, ${L.fmtDur(x.min)} h" role="listitem" aria-label="${MONTHS[Number(x.m.slice(5)) - 1]}: ${x.n} Flüge, ${L.fmtDur(x.min)} Stunden">
+      <span class="st-v">${x === top && x.min ? L.fmtDur(x.min) : ''}</span>
+      <span class="st-bar" style="height:${x.min ? Math.max(4, Math.round(x.min / maxMin * 100)) : 0}%"></span>
+      <span class="st-m">${MONTHS[Number(x.m.slice(5)) - 1].slice(0, 1)}</span></div>`).join('');
+  const kinds = Object.entries(pool.reduce((m, f) => { const k = f.kind || 'andere'; m[k] = (m[k] || 0) + 1; return m; }, {})).sort((a, b) => b[1] - a[1]);
+  const sites = Object.values(pool.reduce((m, f) => {
+    const k = f.siteId || f.siteName || '–';
+    (m[k] ||= { id: f.siteId, name: f.siteName || '–', n: 0, min: 0, rs: [] });
+    m[k].n++; m[k].min += f.durMin || 0; if (f.rating) m[k].rs.push(f.rating);
+    return m;
+  }, {})).sort((a, b) => b.n - a.n || b.min - a.min).slice(0, 6);
+  const maxN = Math.max(1, ...sites.map(x => x.n));
+  return `<div class="panel"><h3>Statistik ${LB.year === 'all' ? 'letzte 12 Monate' : LB.year}</h3>
+    <p class="fine" style="margin:0 0 6px">${pool.length} Flüge · ${L.fmtDur(sumMin)} h${pool.length ? ' · im Schnitt ' + L.fmtDur(Math.round(sumMin / pool.length)) + ' h pro Flug' : ''}. Flugstunden je Monat:</p>
+    <div class="st-chart" role="list" aria-label="Flugstunden je Monat">${bars}</div>
+    ${kinds.length ? `<div class="st-kinds">${kinds.map(([k, n]) => `<span class="st-chip">${esc(L.FLIGHT_KINDS[k] || 'Andere')} <b>${n}</b></span>`).join('')}</div>` : ''}
+    ${sites.length ? `<h3 class="st-h">Meine Plätze</h3><div class="st-sites">${sites.map(x => `<${x.id && S.plan && siteById(x.id) ? `button type="button" data-act="site" data-id="${esc(x.id)}"` : 'div'} class="st-site"><span class="st-sn">${esc(x.name)}</span><span class="st-track"><i style="width:${Math.round(x.n / maxN * 100)}%"></i></span><span class="st-sv">${x.n}× · ${L.fmtDur(x.min)} h${x.rs.length ? ' · ' + (x.rs.reduce((a, b) => a + b, 0) / x.rs.length).toFixed(1) + '★' : ''}</span></${x.id && S.plan && siteById(x.id) ? 'button' : 'div'}>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 /* ---- Benachrichtigungen (Web Push über den eigenen Mac, gratis) */
