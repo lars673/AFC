@@ -52,6 +52,10 @@ Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, 
 
 AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, privat, HTTPS, nur Geräte im eigenen Tailscale-Konto). Tailscale auf Mac und Handy installieren und mit demselben Konto anmelden, dann `tools/AFC aufs Handy.command` doppelklicken (`tailscale serve --bg 8787`). Die Adresse `https://<mac>.<tailnet>.ts.net` in Safari öffnen, «Zum Home-Bildschirm». Der Server bleibt an 127.0.0.1 gebunden. Schläft der Mac, zeigt die App den letzten Stand mit Warnung; bei schlechtem Empfang erscheint nach 4 s die gespeicherte Version. Leaflet liegt unter `vendor/leaflet` (BSD-2), damit die Karte nicht von cdnjs abhängt. Beenden: `tools/AFC Handy-Zugang beenden.command`.
 
+## Webcams
+
+In der Startplatz-Ansicht steht unter dem Namen «Webcam»: ein Link auf die Windfinder-Seite des Gebiets (alle Webcams im Umkreis mit Entfernung und Zeit der letzten Aufnahme). Mit «eigene festlegen» lässt sich je Startplatz die eigene Lieblings-Webcam hinterlegen (nur https). Sie liegt im Flugbuch (Einstellungen) und gilt damit auf Mac und iPhone und ist in der Sicherung enthalten. Ramslauen (Kiental) hat noch keine Vorgabe.
+
 ## Benachrichtigungen (iPhone)
 
 Profil > «Benachrichtigungen» > «Einschalten». Auf dem iPhone (ab iOS 16.4) geht das nur, wenn AFC vom Home-Bildschirm geöffnet ist (über den Tailscale-Zugang). Gratis und ohne fremden Dienst: Der Mac schickt die Meldungen per Web Push (`lib/webpush.js`, VAPID-Schlüssel in `data/vapid.json`) über den Push-Dienst von Apple ans iPhone, verschlüsselt. Abends um 19 Uhr: guter Flugtag morgen (bester Favorit, sonst bester Platz, ab einstellbarem Wert) und Föhn morgen. Morgens um 7 Uhr: Föhn heute, Retter packen und Schirm-Check fällig (14 Tage bzw. 5 Stunden vorher und am Stichtag). Jede Meldung kommt je Gerät nur einmal (`lib/notify.js`). Der Mac muss wach sein. `AFC_PUSH=0` schaltet es ab.

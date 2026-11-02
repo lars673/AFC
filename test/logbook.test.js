@@ -18,7 +18,8 @@ test('Flugbuch: Flug und Ausrüstung werden geprüft und begrenzt', () => {
   const g = cleanGear({ type: 'glider', brand: 'Advance', model: 'Iota', checkLast: 'gestern', checkMonths: '24' });
   assert.equal(g.checkLast, null);
   assert.equal(g.checkMonths, 24);
-  assert.deepEqual(cleanSettings({ flightsBefore: -3, defaults: { glider: 'a1' } }), { flightsBefore: 0, hoursBefore: 0, defaults: { glider: 'a1', harness: null, reserve: null } });
+  assert.deepEqual(cleanSettings({ flightsBefore: -3, defaults: { glider: 'a1' } }), { flightsBefore: 0, hoursBefore: 0, defaults: { glider: 'a1', harness: null, reserve: null }, cams: {} });
+  assert.deepEqual(cleanSettings({ cams: { niesen: 'https://example.org/cam', stockhorn: 'http://x.org', 'bad id': 'https://a.b', amis: 'javascript:alert(1)' } }).cams, { niesen: 'https://example.org/cam' });
 });
 
 test('Flugbuch: Statistik zählt Flüge vor dem Flugbuch mit', () => {

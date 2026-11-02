@@ -1053,6 +1053,35 @@ function profileHtml(prof) {
   const max = Math.max(40, ...prof.map(p => p[1]));
   return `<div class="profile" role="table" aria-label="Windprofil">${[...prof].reverse().map(p => `<div class="pr" role="row"><span>+${p[0]} m</span><span class="bar"><i class="${p[1] >= 40 ? 'hi' : ''}" style="width:${Math.round(p[1] / max * 100)}%"></i></span><b>${p[1]} ${arrow(p[2])} ${dirLabel(p[2])}</b></div>`).join('')}</div>`;
 }
+/* ---- Webcams je Startplatz: Windfinder listet alle Webcams im Umkreis mit Entfernung und letzter Aufnahme */
+const WF = slug => 'https://www.windfinder.com/webcams/' + slug;
+const WEBCAMS = {
+  area: {
+    amisbuhl: ['Beatenberg', 'beatenberg_bern_switzerland'], niederhorn: ['Niederhorn', 'niederhorn_1920'], luegibruggli: ['Luegibrüggli', 'luegibrueggli'],
+    'schynige-platte': ['Schynige Platte', 'schynige_platte_kamel_interlaken'], 'grindelwald-first': ['Grindelwald First', 'grindelwald_first'],
+    grindelwald: ['Grindelwald First', 'grindelwald_first'], mannlichen: ['Wengernalp', 'wengernalp'], schilthorn: ['Schilthorn', 'schilthorn_2940_muerren'],
+    niesen: ['Niesen', 'niesen_2280'], stockhorn: ['Stockhorn', 'stockhorn'], kandersteg: ['Allmenalp', 'allmenalp_kandersteg'],
+    adelboden: ['Tschentenalp', 'tschentenalp'], frutigen: ['Frutigen', 'frutigen'], haslital: ['Planplatten', 'meiringen_planplatten_2240'],
+    gstaad: ['Wispile', 'wispile_1900_saanen_gstaad']
+  },
+  site: { 'engstligen-1': ['Engstligenalp', 'engstligenalp'], 'engstligen-2': ['Engstligenalp', 'engstligenalp'], kuonisbergli: ['Adelboden', 'adelboden_boden'] }
+};
+function webcamHtml(s) {
+  const w = WEBCAMS.site[s.id] || WEBCAMS.area[s.area], mine = LB.data?.settings?.cams?.[s.id];
+  const links = [mine && `<a href="${esc(mine)}" target="_blank" rel="noopener">Meine Webcam</a>`, w && `<a href="${WF(w[1])}" target="_blank" rel="noopener">Webcams ${esc(w[0])}</a>`].filter(Boolean);
+  return `<p class="cam-row"><b>Webcam:</b> ${links.length ? links.join(' · ') : '<span class="fine">noch keine hinterlegt</span>'} <button type="button" class="linkbtn fine" data-act="camset" data-id="${esc(s.id)}">${mine ? 'ändern' : 'eigene festlegen'}</button></p>`;
+}
+async function camSet(id) {
+  const d = await lbLoad().catch(err => { toast(err.message); return null; });
+  if (!d) return;
+  const cur = d.settings.cams?.[id] || '';
+  const v = prompt('Adresse deiner Webcam für diesen Startplatz (beginnt mit https://). Leer lassen zum Entfernen.', cur);
+  if (v === null) return;
+  const cams = { ...(d.settings.cams || {}) };
+  if (v.trim()) { const u = LG().httpsUrl(v); if (!u) { toast('Bitte eine Adresse mit https:// eingeben.'); return; } cams[id] = u; } else delete cams[id];
+  try { await lbSave('settings', { ...d.settings, cams }); toast(v.trim() ? 'Webcam gespeichert' : 'Webcam entfernt'); if (S.detailData?.site?.id === id) renderSite(); }
+  catch (err) { toast('Nicht gespeichert: ' + err.message); }
+}
 function renderSite() {
   const d = S.detailData, day = d.days[S.day];
   const s = d.site, hrs = day?.hours || [];
@@ -1089,6 +1118,7 @@ function renderSite() {
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     <div class="btn-row" style="justify-content:flex-start">${starBtn(s.id).replace('class="star"', 'class="star" style="border:1px solid var(--line);border-radius:8px"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+    ${webcamHtml(s)}
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
@@ -1821,6 +1851,7 @@ document.addEventListener('click', async e => {
       } catch (err) { toast('Nicht gespeichert: ' + err.message); }
       break;
     }
+    case 'camset': camSet(id); break;
     case 'pushon': pushEnable(); break;
     case 'pushoff': pushDisable(); break;
     case 'pushtest': pushTest(); break;
