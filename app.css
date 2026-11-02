@@ -551,3 +551,14 @@ button.st-site .st-sn { color: var(--accent); text-decoration: underline; }
 .rv-i { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--go); color: var(--on-go); }
 .rv-more .rv-i { background: var(--accent); color: var(--accent-ink); }
 .rv-less .rv-i { background: var(--wait); color: var(--on-wait); }
+
+/* Bedienung mit einer Hand (Handy) */
+.dlg-foot { display: none; }
+@media (max-width: 559px) {
+  #siteDlg .dlg-foot { display: block; position: sticky; bottom: calc(-16px - env(safe-area-inset-bottom)); margin: 12px -16px calc(-16px - env(safe-area-inset-bottom)); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); z-index: 2; }
+  #siteDlg .dlg-foot .btn { width: 100%; min-height: 50px; font-size: 17px; }
+  .map-tools { top: auto; bottom: 26px; }
+  .layer-panel { top: auto; bottom: 10px; max-height: calc(100% - 20px); overflow-y: auto; z-index: 600; }
+  .wind-bar { max-width: calc(100% - 120px); }
+  .tabs button { min-height: 56px; }
+}

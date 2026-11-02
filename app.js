@@ -1246,6 +1246,8 @@ function flightCheck(log) {
 function dlg(id, html) {
   const d = $(id);
   d.innerHTML = html;
+  // Auf dem Handy: «Schliessen» unten in Daumenreichweite (oben rechts ist mit einer Hand schwer erreichbar)
+  if (id === '#siteDlg') d.querySelector('.dlg-in')?.insertAdjacentHTML('beforeend', '<div class="dlg-foot"><button class="btn sec" type="button" data-act="closesite">Schliessen</button></div>');
   if (!d.open) d.showModal();
   return d;
 }
