@@ -454,3 +454,27 @@ test('Bise: Mitteilung am Vorabend', async () => {
   assert.match(n.title, /Starke Bise morgen/);
   assert.match(n.body, /Lee/);
 });
+
+test('Bise im Bödeli: Messwerte vom 1.11.2026 ergeben Gefahr, ruhiger Tag nicht', () => {
+  // 11:20 Uhr am 1.11.2026 (echte Messwerte von Lars' Mac): Interlaken war praktisch nicht fliegbar.
+  const bad = regionalFromObs({
+    BER: { wind: 18.4, gust: 43.6, dir: 42 }, THU: { wind: 13.3, gust: 30.6, dir: 55 },
+    BRZ: { wind: 14.4, gust: 27.4, dir: 126 }, MER: { wind: 19.4, gust: 35.3, dir: 306 },
+    INT: { wind: 15.5, gust: 27, dir: 29 }, PLF: { wind: 11.9, gust: 29.9, dir: 50 },
+    GRH: { wind: 4.3, gust: 9.4, dir: 266 }
+  });
+  assert.ok(bad.biseScore >= 70, `biseScore ${bad.biseScore}`);
+  assert.ok(bad.reasons.some(r => r.startsWith('Interlaken: Nordwind')));
+  // Morgen 10:20 Uhr: Brienz und Meiringen zeigen die Bise schon, bevor sie Interlaken erreicht.
+  const early = regionalFromObs({
+    BER: { wind: 14, gust: 38.9, dir: 52 }, BRZ: { wind: 22.7, gust: 36.4, dir: 131 },
+    MER: { wind: 25.2, gust: 42.1, dir: 326 }, INT: { wind: 3.6, gust: 7.6, dir: 164 }, GRH: { wind: 20.5, dir: 2 }
+  });
+  assert.ok(early.biseScore >= 70, `früh ${early.biseScore}`);
+  // 31.10.: Ostwind in Brienz allein, ohne Bise im Vorland, ist keine Bise.
+  const lake = regionalFromObs({ BER: { wind: 8.3, gust: 15.5, dir: 27 }, BRZ: { wind: 20.5, gust: 31.3, dir: 122 }, MER: { wind: 7.6, gust: 19.1, dir: 359 } });
+  assert.equal(lake.biseScore, 0);
+  // Meiringen Nordwest bei Föhn am Grimsel zählt nicht als Bise.
+  const fo = regionalFromObs({ BER: { wind: 12, gust: 20, dir: 40 }, MER: { wind: 25, gust: 40, dir: 330 }, GRH: { wind: 40, dir: 170 } });
+  assert.equal(fo.biseScore, 22);
+});
