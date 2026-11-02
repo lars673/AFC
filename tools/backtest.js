@@ -18,6 +18,7 @@ import { httpGet } from '../lib/http.js';
 import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from '../lib/plan.js';
 import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js';
 import { regionalFromObs } from '../lib/regional.js';
+import { biseLevel } from '../lib/scoring.js';
 import { PRESSURE_LEVELS } from '../lib/openmeteo.js';
 import { omTimeToMs, zurichParts, haversineKm, isNum } from '../lib/util.js';
 
@@ -86,8 +87,8 @@ async function stationHours(code) {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(Boolean);
   const h = parseCSVLine(lines[0]).map(s => s.trim());
   const col = (...names) => names.map(n => h.indexOf(n)).find(i => i >= 0);
-  const ti = col('reference_timestamp'), wi = col('fu3010h0'), gi = col('fu3010h1'), di = col('dkl010h0'), pi = col('rre150h0');
-  if (ti == null || wi == null) throw new Error(`${code}: Spalten nicht erkannt (${h.slice(0, 12).join(', ')})`);
+  const ti = col('reference_timestamp'), wi = col('fu3010h0'), gi = col('fu3010h1'), di = col('dkl010h0'), pi = col('rre150h0'), qi = col('pp0qffh0');
+  if (ti == null || (wi == null && qi == null)) throw new Error(`${code}: Spalten nicht erkannt (${h.slice(0, 12).join(', ')})`);
   const n = (r, i) => { if (i == null) return null; const v = Number(String(r[i] ?? '').replace(',', '.')); return String(r[i] ?? '').trim() === '' || !Number.isFinite(v) ? null : v; };
   const out = new Map();
   for (const line of lines.slice(1)) {
@@ -95,7 +96,7 @@ async function stationHours(code) {
     const m = String(r[ti]).match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})/);
     const ms = m ? Date.UTC(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]) : Date.parse(r[ti]);
     if (!Number.isFinite(ms) || ms < from - DAY || ms > to + 2 * DAY) continue;
-    out.set(ms, { wind: n(r, wi), gust: n(r, gi), dir: n(r, di), precip: n(r, pi) });
+    out.set(ms, { wind: n(r, wi), gust: n(r, gi), dir: n(r, di), precip: n(r, pi), qff: n(r, qi) });
   }
   return out;
 }
@@ -126,10 +127,24 @@ else {
 }
 
 const obs = {};
-if (cache?.obs) for (const [c, rows] of Object.entries(cache.obs)) obs[c] = new Map(rows);
-else {
+// Zusätzlich zu den Kernstationen: Brienz und Plaffeien (Bise im Bödeli und im Vorland), Druck in Lugano, Kloten, Genf
+const EXTRA_STATIONS = ['BRZ', 'PLF', 'LUG', 'KLO', 'GVE'];
+if (cache?.obs) {
+  for (const [c, rows] of Object.entries(cache.obs)) obs[c] = new Map(rows);
+  const missing = EXTRA_STATIONS.filter(c => !obs[c] && !(cache.missing || []).includes(c));
+  if (missing.length) {
+    process.stdout.write('Bise- und Druckstationen nachladen ');
+    const failed = [];
+    for (const code of missing) { try { obs[code] = await stationHours(code); process.stdout.write('.'); } catch (e) { failed.push(code); console.log(`\n  ${e.message}`); } }
+    console.log(' ok');
+    const prev = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    prev.obs = Object.fromEntries(Object.entries(obs).map(([c, m]) => [c, [...m]]));
+    prev.missing = [...new Set([...(prev.missing || []), ...failed])];
+    await fs.writeFile(cacheFile, JSON.stringify(prev));
+  }
+} else {
   process.stdout.write('Messwerte MeteoSchweiz laden ');
-  for (const code of Object.keys(CORE_STATIONS)) {
+  for (const code of [...Object.keys(CORE_STATIONS), ...EXTRA_STATIONS]) {
     try { obs[code] = await stationHours(code); process.stdout.write('.'); } catch (e) { console.log(`\n  ${e.message}`); }
   }
   console.log(' ok');
@@ -158,8 +173,8 @@ const mRows = [];
 
 // Föhnregel: Druck Lugano und Zürich-Kloten (wird bei älteren Zwischenspeichern nachgeladen)
 let grad = cache?.grad;
-if (!grad) {
-  process.stdout.write('Druck Lugano/Zürich laden ');
+if (!grad || !grad.GVE) {
+  process.stdout.write('Druck Lugano/Zürich/Genf laden ');
   try {
     grad = await history(FOEHN_POINTS, ['pressure_msl'], ['meteoswiss_icon_seamless', 'icon_seamless', 'best_match']);
     const prev = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
@@ -174,6 +189,10 @@ if (!raw.ref.sea) { console.error('Keine Referenzprognose, Abbruch.'); process.e
 
 /** Messungen einer Stunde für alle Stationen (für Föhnerkennung). */
 const obsAt = ms => Object.fromEntries(Object.entries(obs).map(([c, m]) => [c, m.get(ms)]).filter(([, v]) => v));
+/** Gemessener Luftdruck (QFF) einer Stunde im Format der App. */
+const qffAt = ms => Object.fromEntries(['LUG', 'KLO', 'GVE'].map(c => [c, obs[c]?.get(ms)]).filter(([, v]) => v && isNum(v.qff)).map(([c, v]) => [c, { qff: v.qff, time: new Date(ms).toISOString() }]));
+/** Bise gemessen in einer Stunde: Druck Kloten–Genf ab 4 hPa oder Bise-Muster der Stationen (Score ab 70). */
+const biseAt = ms => { const r = regionalFromObs(obsAt(ms), {}, qffAt(ms), ms); return { score: r.biseScore, dp: r.dp?.bise ?? null }; };
 /** Nächste Kernstation mit Messwerten zu einem Gebiet. */
 const nearestStation = a => Object.entries(CORE_STATIONS).filter(([c]) => obs[c]).map(([c, s]) => ({ c, d: haversineKm(a.lat, a.lon, s.lat, s.lon) })).sort((x, y) => x.d - y.d)[0];
 
@@ -203,12 +222,12 @@ function learnedAt(d) {
   return out;
 }
 
-const rows = [], dayLines = [], foehnDays = [];
+const rows = [], dayLines = [], foehnDays = [], biseDays = [];
 for (let d = from; d <= to; d += DAY) {
   const date = ymd(d);
   // Wie in der App am Morgen: Prognose plus die Messwerte von dann (Föhn am Alpenkamm, Bise, Talwind)
   const nowMs = d + 5 * 3600000, obsNow = obsAt(nowMs);
-  const regional = Object.keys(obsNow).length ? regionalFromObs(obsNow, {}) : null;
+  const regional = Object.keys(obsNow).length ? regionalFromObs(obsNow, {}, qffAt(nowMs), nowMs) : null;
   // Bergstationen am Morgen: wie live korrigieren sie die Windprognose für Startplätze in der Nähe
   const mObs = {}, mMeta = {};
   if (!process.argv.includes('--ohne-berg')) for (const m of Object.values(mountain)) {
@@ -227,6 +246,15 @@ for (let d = from; d <= to; d += DAY) {
   // Föhnregel aus der Prognose: grösster Druckunterschied Lugano–Zürich im Startfenster
   const dpMax = Math.max(-99, ...plan.region.days[di].hours.filter(h => h.h >= 10 && h.h <= 16).map(h => h.dp ?? -99));
   if (dpMax > -99) foehnDays.push({ date, dp: dpMax, measured: foehnHours >= 2 });
+  // Bise: Prognose allein (Druck Kloten–Genf und Nordostwind auf 2000 m, ohne Messungen) gegen Messung 10–16 Uhr
+  const bHours = hrs.map(biseAt);
+  const biseHours = bHours.filter(b => b.score >= 70 || (isNum(b.dp) && b.dp >= 4)).length;
+  const fcHours = plan.region.days[di].hours.filter(h => h.h >= 10 && h.h <= 16);
+  const bdpMax = Math.max(-99, ...fcHours.map(h => h.bdp ?? -99));
+  const fcLv = fcHours.map(h => biseLevel(h.bdp, h.up800 ? { speed: h.up800[0], dir: h.up800[1] } : null, 0).level);
+  const fcBise = fcLv.includes('danger') ? 'danger' : fcLv.includes('warn') ? 'warn' : 'ok';
+  const mdp = bHours.map(b => b.dp).filter(isNum);
+  if (bdpMax > -99) biseDays.push({ date, bdp: bdpMax, fc: fcBise, measured: biseHours >= 2, mdp: mdp.length ? Math.max(...mdp) : null, score: Math.max(0, ...bHours.map(b => b.score)) });
   const parts = [];
   for (const a of plan.areas) {
     const bestObj = a.days[di] ?? null;
@@ -250,6 +278,7 @@ for (let d = from; d <= to; d += DAY) {
     const rainHours = series.filter(o => (o.precip ?? 0) >= 0.3).length;
     const why = [];
     if (foehnHours >= 2) why.push('Föhn gemessen');
+    if (biseHours >= 2 && area.lat >= 46.6) why.push('Bise gemessen');
     if (maxGust >= 45 || maxWind >= 30) why.push(`Wind ${Math.round(maxWind)}/${Math.round(maxGust)} km/h (${st.c})`);
     if (rain >= 1 || rainHours >= 2) why.push(`Regen ${rain.toFixed(1)} mm (${st.c})`);
     const truth = why.length ? 'schlecht' : (rain === 0 && maxGust < 30 ? 'gut' : 'mittel');
@@ -298,6 +327,27 @@ function foehnReport() {
   ];
 }
 
+/** Bise-Prognose (ohne Messungen) gegen gemessene Bise: trifft sie, und wie oft warnt sie umsonst? */
+function biseReport() {
+  if (!biseDays.length) return ['BISE: keine Druckdaten', ''];
+  const row = lv => { const d = biseDays.filter(x => x.fc === lv); return `${d.length} Tage, davon Bise gemessen ${d.filter(x => x.measured).length}`; };
+  const missed = biseDays.filter(x => x.measured && x.fc === 'ok');
+  const fmt = x => `${x.date} (Prognose ${x.bdp.toFixed(1)} hPa${isNum(x.mdp) ? `, gemessen ${x.mdp.toFixed(1)} hPa` : ''}, Stationen ${Math.round(x.score)})`;
+  const bins = [[-99, 1], [1, 2], [2, 2.5], [2.5, 3], [3, 4], [4, 99]].map(([lo, hi]) => { const d = biseDays.filter(x => x.bdp >= lo && x.bdp < hi); return `  ${lo === -99 ? 'unter ' + hi : hi === 99 ? 'ab ' + lo : lo + ' bis ' + hi} hPa: ${d.length} Tage, Bise gemessen ${d.filter(x => x.measured).length}`; });
+  return [
+    'BISE-PROGNOSE (Druck Kloten minus Genf und Nordostwind auf 2000 m, ohne Messungen, 10–16 Uhr)',
+    `  keine Warnung: ${row('ok')}`,
+    `  Vorsicht:      ${row('warn')}`,
+    `  Gefahr:        ${row('danger')}`,
+    'Nach prognostiziertem Druckunterschied:',
+    ...bins,
+    `  Bisetage ohne Warnung: ${missed.length ? missed.map(fmt).join(', ') : 'keine'}`,
+    `  Gefahr ohne Bise:      ${biseDays.filter(x => x.fc === 'danger' && !x.measured).map(fmt).join(', ') || 'keine'}`,
+    '(Bise gemessen = mindestens 2 Stunden Druck Kloten–Genf ab 4 hPa oder starkes Bise-Muster an den Stationen.)',
+    ''
+  ];
+}
+
 const report = [
   `AFC Rückblick-Test ${ymd(from)} bis ${ymd(to)} (Erfahrungsstufe Normal, bestes Startfenster 10–16 Uhr je Gebiet)`,
   '',
@@ -322,6 +372,7 @@ const report = [
   'Hinweis: getestet wird die Bewertungslogik mit kurzfristigen Prognosen. Die Messung stammt von Talstationen.',
   '',
   ...foehnReport(),
+  ...biseReport(),
   ...mountainReport()
 ].join('\n');
 
@@ -362,6 +413,7 @@ const summary = {
   at: new Date().toISOString(), from: ymd(from), to: ymd(to), auto: process.argv.includes('--auto'),
   n, passt: cnt('passt'), gefaehrlich: cnt('GEFÄHRLICH'), zuStreng: cnt('zu streng'),
   berg: mRows.length ? { n: mRows.length, gefaehrlich: mc('GEFÄHRLICH'), zuMild: mc('zu mild'), zuStreng: mc('zu streng'), gustBias: gustErr.length ? Math.round(gustErr.reduce((a, b) => a + b, 0) / gustErr.length * 10) / 10 : null } : null,
+  bise: biseDays.length ? { tage: biseDays.filter(x => x.measured).length, verpasst: biseDays.filter(x => x.measured && x.fc === 'ok').length, umsonst: biseDays.filter(x => x.fc === 'danger' && !x.measured).length } : null,
   faelle: rows.filter(r => r.verdict === 'GEFÄHRLICH').slice(0, 10).map(r => `${r.date} ${r.area}: Score ${r.best}, gemessen ${r.why}`),
   datei: `backtest-${stamp}.txt`
 };

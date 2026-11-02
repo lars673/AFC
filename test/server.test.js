@@ -159,6 +159,8 @@ test('Rückblick-Test läuft gegen das Archiv und erkennt gefährliche Tage', as
     // Weil der Test wie die App die Morgenmessung mitnimmt, darf AFC diese Tage selbst erkennen (dann kein GEFÄHRLICH).
     assert.match(txt, /schlecht \d+/);
     assert.match(txt, /GEFÄHRLICH: +\d+/);
+    assert.match(txt, /BISE-PROGNOSE/);
+    assert.match(txt, /Gefahr: +\d+ Tage, davon Bise gemessen \d+/);
     // Kurzfassung für die App, Zwischenspeicher nach automatischem Lauf gelöscht
     const hist = JSON.parse(fs.readFileSync(path.join(dir, 'backtest-history.json'), 'utf8'));
     assert.equal(hist.length, 1);

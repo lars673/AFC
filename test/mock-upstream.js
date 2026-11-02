@@ -153,10 +153,12 @@ export function startMock(scenario = 'good', port = 0) {
         const d = new Date(day0 - 50 * 86400000 + i * 3600000);
         const ts = `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2, '0')}:00`;
         const bad = d.getUTCDate() % 7 === 0;   // jeder 7. Tag: Starkwind und Regen
-        rows.push(`${u.pathname.match(/smn_([a-z]+)_h/)[1].toUpperCase()};${ts};${bad ? 35 : 8};${bad ? 60 : 15};200;${bad ? 1.2 : 0}`);
+        const code = u.pathname.match(/smn_([a-z]+)_h/)[1].toUpperCase();
+        const qff = code === 'KLO' ? (bad ? 1022 : 1017) : code === 'GVE' ? 1016 : 1015;   // an schlechten Tagen Bisedruck +6 hPa
+        rows.push(`${code};${ts};${bad ? 35 : 8};${bad ? 60 : 15};200;${bad ? 1.2 : 0};${qff}`);
       }
       res.writeHead(200, { 'Content-Type': 'text/csv' });
-      return res.end(['station_abbr;reference_timestamp;fu3010h0;fu3010h1;dkl010h0;rre150h0', ...rows].join('\n'));
+      return res.end(['station_abbr;reference_timestamp;fu3010h0;fu3010h1;dkl010h0;rre150h0;pp0qffh0', ...rows].join('\n'));
     }
     if (u.pathname.includes('foehn')) return json({ features: [{ id: 'ABO', properties: { value: state.scenario === 'foehn' ? 2 : 0 } }] });
     if (u.pathname.endsWith('meta_stations.csv')) {

@@ -1337,7 +1337,59 @@ function landingHtml(s, hr) {
       <div class="land-c stc-${fl}"><small>Prognose ${hr ? hr.h + '–' + (hr.h + 1) + ' Uhr' : ''}</small><b>${fc ? fc[0] + ' / ' + (fc[1] ?? '–') : '–'}</b><small>Wind / Böen km/h</small></div>
       ${S.day === 0 ? `<div class="land-c stc-${sl}"><small>Gemessen jetzt</small><b>${sx ? Math.round(sx.wind) + ' / ' + (num(sx.gust) ? Math.round(sx.gust) : '–') : '–'}</b><small>${sx ? `${esc(sx.name)}, ${st.d.toFixed(0)} km · ${ageTxt(ageMin(sx.time, sx.age))}${num(sx.dir) ? ' · aus ' + dirLabel(sx.dir) : ''}` : 'keine Station in der Nähe'}</small></div>` : ''}
     </div>
-    <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p></div>`;
+    <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p>
+    ${l ? volteHtml(l, sx && num(sx.dir) && sx.wind >= 4 ? { dir: sx.dir, src: 'gemessen' } : hr?.valleyDir != null ? { dir: hr.valleyDir, src: 'Prognose' } : num(hr?.dir) ? { dir: hr.dir, src: 'Prognose am Start' } : null) : ''}</div>`;
+}
+
+/* ---- Landevolte: eigene Angabe je Landeplatz (Endanflug und Seite), sonst Vorschlag gegen den Wind */
+const VOLTE_DIRS = [['N', 0], ['NO', 45], ['O', 90], ['SO', 135], ['S', 180], ['SW', 225], ['W', 270], ['NW', 315]];
+function volteSvg(h, side, wind) {
+  const rad = d => d * Math.PI / 180, v = (d, L) => [Math.sin(rad(d)) * L, -Math.cos(rad(d)) * L];
+  // rückwärts vom Aufsetzpunkt: Endanflug, Queranflug, Gegenanflug (Linksvolte = Linkskurven)
+  const T = [0, 0], f = v(h, 46), P2 = [T[0] - f[0], T[1] - f[1]];
+  const b = v(side === 'R' ? h - 90 : h + 90, 34), P1 = [P2[0] - b[0], P2[1] - b[1]];
+  const dv = v(h + 180, 58), P0 = [P1[0] - dv[0], P1[1] - dv[1]];
+  const pts = [P0, P1, P2, T], xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const ox = 70 - (Math.min(...xs) + Math.max(...xs)) / 2, oy = 66 - (Math.min(...ys) + Math.max(...ys)) / 2;
+  const q = p => `${(p[0] + ox).toFixed(1)},${(p[1] + oy).toFixed(1)}`;
+  const seg = (a, c, cl) => `<line x1="${q(a).split(',')[0]}" y1="${q(a).split(',')[1]}" x2="${q(c).split(',')[0]}" y2="${q(c).split(',')[1]}" class="${cl}" marker-end="url(#va)"/>`;
+  const w = wind ? `<g transform="translate(128 14) rotate(${Math.round(wind.dir)})"><line x1="0" y1="-9" x2="0" y2="8" class="vw"/><path d="M-4 3 L0 9 L4 3" class="vw"/></g><text x="128" y="34" class="vt" text-anchor="middle">Wind</text>` : '';
+  return `<svg class="volte" viewBox="0 0 140 132" role="img" aria-label="Volte: Gegenanflug, Queranflug, Endanflug Richtung ${dirLabel(h)}">
+    <defs><marker id="va" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="vm"/></marker></defs>
+    <text x="10" y="14" class="vt">N ↑</text>${w}
+    ${seg(P0, P1, 'vl')}${seg(P1, P2, 'vl')}${seg(P2, T, 'vf')}
+    <circle cx="${q(T).split(',')[0]}" cy="${q(T).split(',')[1]}" r="5" class="vp"/></svg>`;
+}
+function volteHtml(l, wind) {
+  const mine = LB.data?.settings?.lands?.[l.id];
+  const h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
+  const side = mine?.side || 'L';
+  // Rückenwind auf dem eigenen Endanflug? (Wind kommt von hinten, wenn er mehr als 100° neben der Anflugrichtung liegt)
+  const off = mine && wind ? Math.abs(((wind.dir - mine.dir) % 360 + 540) % 360 - 180) : null;
+  const tail = off != null && off > 100;
+  const opt = (sel) => VOLTE_DIRS.map(([n, d]) => `<option value="${d}" ${sel === d ? 'selected' : ''}>nach ${n}</option>`).join('');
+  return `<div class="volte-box">
+    ${h != null ? volteSvg(h, side, wind) : ''}
+    <div class="volte-t">
+      <p style="margin:0"><b>Volte</b> ${h != null ? `${side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(h)}` : ''}
+      <span class="fine">${mine ? '(deine Angabe)' : h != null ? `(Vorschlag gegen den Wind, ${esc(wind.src)}; Seite und Hindernisse vor Ort klären)` : 'Keine Windangabe für einen Vorschlag.'}</span></p>
+      ${h != null ? '<p class="fine" style="margin:4px 0 0">Gestrichelt: Gegenanflug und Queranflug, grün: Endanflug zum Landepunkt. Der blaue Pfeil zeigt, wohin der Wind weht.</p>' : ''}
+      ${tail ? `<p class="volte-warn" role="alert">Wind heute aus ${dirLabel(wind.dir)} (${esc(wind.src)}): Rückenwind auf deinem Endanflug. Anders einteilen.</p>` : ''}
+      <details class="volte-ed"><summary>${mine ? 'Volte ändern' : 'Volte für diesen Landeplatz eintragen'}</summary>
+        <div class="volte-f"><label>Endanflug <select data-volte="dir">${opt(mine?.dir ?? h)}</select></label>
+        <label>Volte <select data-volte="side"><option value="L" ${side === 'L' ? 'selected' : ''}>links</option><option value="R" ${side === 'R' ? 'selected' : ''}>rechts</option></select></label>
+        <button class="btn sec" type="button" data-act="volteset" data-id="${esc(l.id)}">Speichern</button>${mine ? `<button class="linkbtn" type="button" data-act="volteset" data-id="${esc(l.id)}" data-clear="1">Entfernen</button>` : ''}</div>
+        <p class="fine" style="margin:4px 0 0">Wird in deinem Flugbuch gespeichert und mitgesichert.</p></details>
+    </div></div>`;
+}
+async function volteSet(id, btn) {
+  const d = LB.data;
+  if (!d) { toast('Flugbuch ist noch nicht geladen.'); return; }
+  const box = btn.closest('.volte-f'), lands = { ...(d.settings.lands || {}) };
+  if (btn.dataset.clear) delete lands[id];
+  else lands[id] = { dir: Number(box.querySelector('[data-volte=dir]').value), side: box.querySelector('[data-volte=side]').value };
+  try { await lbSave('settings', { ...d.settings, lands }); toast(btn.dataset.clear ? 'Volte entfernt' : 'Volte gespeichert'); if (S.detailData?.site) renderSite(); }
+  catch (e) { toast('Speichern fehlgeschlagen: ' + e.message); }
 }
 function profileHtml(prof) {
   if (!prof?.length) return '<p class="fine">Kein Windprofil verfügbar (Höhenmodell fehlt).</p>';
@@ -1445,17 +1497,22 @@ function renderSite() {
       <div class="kv">
         <div><b>${hr.speed ?? '–'} ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span></div>
         <div><b>${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
-        <div><b>${hr.head ?? '–'} / ${hr.tail ?? '–'}</b><span>Gegenwind / Rückenwind${hr.wd != null ? ', ' + hr.wd + '° neben dem Hang' : ''}</span></div>
         <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
-        <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko, CAPE ${hr.cape ?? '–'}</span></div>
+        <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
+      </div>
+      <details class="pro-more" ${store.get('proOpen') ? 'open' : ''}><summary>Für Profis: Windprofil, Thermik, Scherung, Modelle</summary>
+      <div class="kv">
+        <div><b>${hr.head ?? '–'} / ${hr.tail ?? '–'}</b><span>Gegenwind / Rückenwind${hr.wd != null ? ', ' + hr.wd + '° neben dem Hang' : ''}</span></div>
+        <div><b>${hr.cape ?? '–'}</b><span>CAPE J/kg (Gewitterenergie)</span></div>
         <div><b>${hr.thermal}</b><span>Thermikindex (0–100)</span></div>
         ${hr.thermalTop != null ? `<div><b>${hr.thermalTop} m</b><span>Thermik bis${hr.topMargin != null ? ' (' + (hr.topMargin >= 0 ? '+' : '') + hr.topMargin + ' m über Start)' : ''}${hr.wstar ? ', Steigen ca. ' + hr.wstar.toFixed(1) + ' m/s' : ''}${hr.inversion ? ', Inversion ab ' + hr.inversion + ' m' : ''}</span></div>` : ''}
         <div><b>${hr.valley ? hr.valley[0] + ' / ' + hr.valley[1] : '–'}</b><span>Landewind Wind / Böen km/h</span></div>
         <div><b>${hr.shear ?? '–'}</b><span>Scherung 500 m über Start km/h</span></div>
-        ${hr.spread != null ? `<div><b>${hr.spread}</b><span>Modell-Unterschied km/h</span></div>` : ''}
+        ${hr.spread != null ? `<div><b>${hr.spread}</b><span>Modell-Unterschied km/h (ICON gegen ECMWF${hr.spread >= 10 ? ', unsicher' : ''})</span></div>` : ''}
       </div>
       <h3 style="font:700 18px var(--f-num)">Wind über dem Startplatz</h3>
       ${profileHtml(hr.prof)}
+      </details>
     </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
   const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
@@ -2253,6 +2310,8 @@ function setTab(t) {
   if (t === 'profile') loadStatus();
   window.scrollTo({ top: 0 });
 }
+// «Für Profis» merkt sich, ob es offen war
+document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set('proOpen', e.target.open); }, true);
 document.addEventListener('click', async e => {
   const dlgEl = e.target.closest('dialog');
   if (e.target.tagName === 'DIALOG') { closeDlg(e.target); return; }
@@ -2321,6 +2380,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'camset': camSet(id); break;
+    case 'volteset': volteSet(id, b); break;
     case 'sort': if (b.dataset.v === 'near') { if (S.pos) { S.sort = 'near'; store.set('sort', 'near'); renderDecide(); } else locateNear(); } else { S.sort = 'best'; store.set('sort', 'best'); renderDecide(); } break;
     case 'watch': toggleWatch(id); break;
     case 'pushon': pushEnable(); break;
