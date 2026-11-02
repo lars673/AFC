@@ -284,10 +284,19 @@ function areaRow(a) {
   const best = d && siteById(d.siteId), nowH = nowHourToday();
   const km = S.pos ? Math.round(Math.min(...sites.map(s => haversineKm(S.pos[0], S.pos[1], s.lat, s.lon)))) : null;
   const sub = d ? `${esc(best.name)} · ${winText(d.best)}` : (isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster');
-  const rows = [...sites].sort((x, y) => (y.days[S.day].best?.score ?? -1) - (x.days[S.day].best?.score ?? -1)).map(s => {
+  const score = x => (x.blocked ? -1 : x.days[S.day].best?.score ?? -1);
+  const srow = (s, inGroup) => {
     const b = s.days[S.day].best;
-    return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
-  }).join('');
+    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
+  };
+  // Startplätze am selben Berg (höchstens 1.5 km auseinander) zusammen, beste Richtung zuerst
+  const rows = mountainGroups(sites).map(g => g.sites.sort((x, y) => score(y) - score(x)))
+    .sort((x, y) => score(y[0]) - score(x[0]))
+    .map(g => {
+      if (g.length === 1) return srow(g[0]);
+      const name = mountainName(g), top = g[0], tb = top.days[S.day].best;
+      return `<div class="grp-h"><b>${esc(name)}</b><span>${g.length} Startrichtungen${tb ? ` · am besten ${esc(aspectText(top))} (${tb.score})` : ''}</span></div>${g.map(x => srow(x, name)).join('')}`;
+    }).join('');
   return `<div class="arow${open ? ' open' : ''}">
     <button type="button" class="arow-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
       <span class="arow-txt"><span class="arow-name">${esc(a.name)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
@@ -296,6 +305,25 @@ function areaRow(a) {
     ${open ? `<div class="rows arow-rows">${rows}</div>` : ''}
   </div>`;
 }
+/** Startplätze gruppieren, die höchstens 1.5 km auseinander liegen (gleicher Berg, verschiedene Richtungen). */
+function mountainGroups(sites) {
+  const gs = [];
+  for (const s of sites) {
+    const hit = gs.filter(g => g.sites.some(x => haversineKm(x.lat, x.lon, s.lat, s.lon) <= 1.5));
+    if (!hit.length) gs.push({ sites: [s] });
+    else { const g = hit[0]; g.sites.push(s); for (const o of hit.slice(1)) { g.sites.push(...o.sites); gs.splice(gs.indexOf(o), 1); } }
+  }
+  return gs;
+}
+/** Gemeinsamer Namensanfang («Amisbühl Start 1 (Chalet)», «Amisbühl Start 5» → «Amisbühl»). */
+function mountainName(g) {
+  const w = g.map(x => x.name.split(/\s+/));
+  const out = [];
+  for (let i = 0; i < w[0].length; i++) { if (w.every(x => x[i] === w[0][i])) out.push(w[0][i]); else break; }
+  const n = out.join(' ').replace(/\s+(Start|Startplatz)$/i, '').trim();
+  return n.length >= 3 ? n : g[0].name;
+}
+const shortName = (name, group) => { const r = name.startsWith(group) ? name.slice(group.length).trim() : name; return r.length >= 2 ? r : name; };
 /** Standort für «In der Nähe» (nur im Browser, wird nirgends gespeichert). */
 function locateNear() {
   if (!navigator.geolocation) { toast('Dieses Gerät gibt keinen Standort an.'); return; }
@@ -1521,6 +1549,8 @@ function initMap() {
   mapMsg('');
   M.map = L.map('map', { zoomControl: true, attributionControl: true }).setView([46.62, 7.85], 10);
   M.group = L.layerGroup().addTo(M.map);
+  M.sites = L.layerGroup().addTo(M.map);
+  M.map.on('zoomend', () => { if (S.plan) drawSites(); });
   setBase(BASES[store.get('base')] ? store.get('base') : 'color');
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
@@ -1542,17 +1572,35 @@ function renderMap() {
   if ($('#mapMsg').textContent.startsWith('Wetterdaten werden')) mapMsg('');
   M.group.clearLayers();
   const showOv = k => { const i = $(`#layerPanel input[value="${k}"]`); return i ? i.checked : true; };
-  for (const s of S.plan.sites) {
-    const b = s.days[S.day]?.best, c = s.blocked ? 'none' : cls(b?.score);
-    const icon = L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b ? b.score : '–'}</div>` });
-    L.marker([s.lat, s.lon], { icon, title: `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 }).on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : mapSheet('site', s.id))).addTo(M.group);
-  }
+  drawSites();
   if (showOv('landings')) for (const l of S.plan.landings || []) {
     L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-l"></div>' }), title: 'Landeplatz ' + l.name, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: l.lat, lng: l.lon }, l.alt) : mapSheet('landing', l.id))).addTo(M.group);
   }
   if (showOv('stations')) for (const st of S.plan.stations || []) {
     if (!num(st.wind)) continue;
     L.marker([st.lat, st.lon], { icon: arrowIcon(st.dir, Math.round(st.wind)), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}`, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: st.lat, lng: st.lon }) : mapSheet('station', st.code))).addTo(M.group);
+  }
+}
+/**
+ * Startplätze auf der Karte. Liegen Punkte näher als 38 Pixel beieinander (z.B. fünf Starts am Amisbühl),
+ * werden sie zu einem Punkt mit dem besten Score und der Anzahl zusammengefasst. Antippen zeigt alle in einer Liste.
+ */
+function drawSites() {
+  M.sites.clearLayers();
+  const z = M.map.getZoom(), list = S.plan.sites.map(s => ({ s, b: s.days[S.day]?.best, p: M.map.project([s.lat, s.lon], z) }))
+    .sort((x, y) => (y.s.blocked ? -1 : y.b?.score ?? -1) - (x.s.blocked ? -1 : x.b?.score ?? -1));
+  const groups = [];
+  for (const it of list) {
+    const g = groups.find(g => g.p.distanceTo(it.p) < 38);
+    if (g) g.m.push(it); else groups.push({ p: it.p, m: [it] });
+  }
+  for (const g of groups) {
+    const top = g.m[0], s = top.s, b = top.b, c = s.blocked ? 'none' : cls(b?.score);
+    const n = g.m.length;
+    const icon = L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b ? b.score : '–'}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });
+    const at = n > 1 ? M.map.unproject(g.p, z) : [s.lat, s.lon];
+    L.marker(at, { icon, title: n > 1 ? `${n} Startplätze, bester ${s.name}: ${b ? b.score : 'keine Bewertung'}` : `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 })
+      .on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : n > 1 ? mapSheet('group', g.m.map(x => x.s.id)) : mapSheet('site', s.id))).addTo(M.sites);
   }
 }
 /* ---- Windkarte: Partikel strömen mit dem Prognosewind (eigene Canvas-Ebene, ohne Zusatzbibliothek) */
@@ -2021,6 +2069,13 @@ function mapSheet(kind, id) {
   if (kind === 'site') {
     const s = siteById(id), b = s.days[S.day]?.best;
     h = `<div class="sheet-top"><div><h3>${esc(s.name)}</h3><p class="fine" style="margin:0">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}</p></div>${pill(s.blocked ? null : b?.score)}</div><div class="sheet-act"><button class="btn" type="button" data-act="site" data-id="${esc(id)}">Details</button>${starBtn(id)}<button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+  } else if (kind === 'group') {
+    const ss = id.map(siteById).filter(Boolean);
+    const pts = ss.map(x => [x.lat, x.lon]);
+    M.groupBounds = pts;
+    h = `<div class="sheet-top"><div><h3>${ss.length} Startplätze hier</h3><p class="fine" style="margin:0">Bester zuerst. Antippen für Details.</p></div></div>
+      <div class="sheet-list">${ss.map(x => { const b = x.days[S.day]?.best; return `<button type="button" class="sheet-row" data-act="site" data-id="${esc(x.id)}"><span><b>${esc(x.name)}</b><small>${x.alt} m · ${esc(aspectText(x))} · ${b ? winText(b) : 'kein Fenster'}</small></span><span class="mini-pill s-${x.blocked ? 'none' : cls(b?.score)}">${x.blocked ? '✕' : b ? b.score : '–'}</span></button>`; }).join('')}</div>
+      <div class="sheet-act"><button class="btn sec" type="button" data-act="groupzoom">Hineinzoomen</button><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else if (kind === 'landing') {
     const l = S.plan.landings.find(x => x.id === id);
     h = `<div class="sheet-top"><div><h3>Landeplatz ${esc(l.name)}</h3><p class="fine" style="margin:0">${l.alt ?? '–'} m${l.status ? ' · ' + esc(l.status) : ''}</p></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
@@ -2034,7 +2089,7 @@ function mapSheet(kind, id) {
     h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${airHere(id.lat, id.lng)}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else {
     const st = S.plan.stations.find(x => x.code === id);
-    h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · vor ${st.age} min</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+    h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · ${ageTxt(ageMin(st.time, st.age))}</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   }
   el.innerHTML = h; el.hidden = false;
 }
@@ -2072,6 +2127,7 @@ document.addEventListener('click', async e => {
     case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); renderDecide(); break;
     case 'site': $('#mapSheet').hidden = true; openSite(id); break;
     case 'closesite': closeDlg($('#siteDlg')); break;
+    case 'groupzoom': if (M.groupBounds) { M.map.fitBounds(M.groupBounds, { padding: [60, 60], maxZoom: 16 }); $('#mapSheet').hidden = true; } break;
     case 'week': openWeek(); break;
     case 'compare': openCompare(); break;
     case 'cmpday': S.day = Number(b.dataset.d); render(); openCompare(); break;
