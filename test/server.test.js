@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startMock } from './mock-upstream.js';
+import http from 'node:http';
+import crypto from 'node:crypto';
 
 async function boot(scenario, port, extraEnv = {}) {
   const mock = await startMock(scenario);
@@ -283,4 +285,51 @@ test('Handy: Karte kommt vom eigenen Server, nichts von cdnjs', async () => {
     assert.ok(!/cdnjs/.test(html));
     for (const f of ['/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/leaflet/images/marker-icon.png', '/igc.js', '/sw.js']) assert.equal((await fetch(s.base + f)).status, 200, f);
   } finally { await s.stop(); }
+});
+
+test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgelaufenes Abo wird entfernt', async () => {
+  const got = [];
+  let answer = 201;
+  const rx = http.createServer((req, res) => { const c = []; req.on('data', d => c.push(d)); req.on('end', () => { got.push({ path: req.url, headers: req.headers, body: Buffer.concat(c) }); res.writeHead(answer); res.end(); }); });
+  await new Promise(r => rx.listen(0, '127.0.0.1', r));
+  const s = await boot('good', 18794, { AFC_PUSH_TEST_URL: `http://127.0.0.1:${rx.address().port}` });
+  try {
+    const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
+    const post = (u, b) => fetch(s.base + u, { method: 'POST', headers: H, body: JSON.stringify(b) });
+    const key = await (await fetch(s.base + '/api/push/key', { headers: H })).json();
+    assert.equal(Buffer.from(key.publicKey, 'base64url').length, 65);
+    const ua = crypto.createECDH('prime256v1'); ua.generateKeys();
+    const auth = crypto.randomBytes(16);
+    const endpoint = 'https://web.push.apple.com/QTestGeraet';
+    const subscription = { endpoint, keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: auth.toString('base64url') } };
+    assert.equal((await post('/api/push/subscribe', { subscription: { ...subscription, endpoint: 'https://evil.example/x' } })).status, 400);
+    const sj = await (await post('/api/push/subscribe', { subscription, prefs: { threshold: 80, level: 'careful', favs: ['a', '../x'] } })).json();
+    assert.deepEqual([sj.prefs.threshold, sj.prefs.level, sj.prefs.favs], [80, 'careful', ['a']]);
+    const decrypt = body => {
+      const salt = body.subarray(0, 16), idlen = body[20], asPub = body.subarray(21, 21 + idlen), ct = body.subarray(21 + idlen);
+      const ikm = Buffer.from(crypto.hkdfSync('sha256', ua.computeSecret(asPub), auth, Buffer.concat([Buffer.from('WebPush: info\0'), ua.getPublicKey(), asPub]), 32));
+      const d = crypto.createDecipheriv('aes-128-gcm', Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16)), Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12)));
+      d.setAuthTag(ct.subarray(-16));
+      return JSON.parse(Buffer.concat([d.update(ct.subarray(0, -16)), d.final()]).subarray(0, -1).toString());
+    };
+    assert.equal((await post('/api/push/test', { endpoint })).status, 200);
+    assert.equal(got.length, 1);
+    assert.equal(got[0].path, '/QTestGeraet');
+    assert.match(got[0].headers.authorization, /^vapid t=.+, k=/);
+    assert.equal(decrypt(got[0].body).title, 'AFC-Test');
+    // Retter seit 7 Monaten nicht gepackt: morgens eine Meldung, beim zweiten Durchlauf keine mehr
+    await fetch(s.base + '/api/logbook/gear/r1', { method: 'PUT', headers: H, body: JSON.stringify({ type: 'reserve', brand: 'Supair', model: 'Light', packedLast: new Date(Date.now() - 210 * 86400000).toISOString().slice(0, 10), packMonths: 6 }) });
+    assert.equal((await (await post('/api/push/run', { phase: 'morning' })).json()).sent, 1);
+    const m = decrypt(got[1].body);
+    assert.equal(m.title, 'Retter packen fällig');
+    assert.match(m.body, /Supair Light/);
+    assert.equal((await (await post('/api/push/run', { phase: 'morning' })).json()).sent, 0);
+    let st = await (await post('/api/push/status', { endpoint })).json();
+    assert.ok(st.subscribed && st.lastOk);
+    // Gerät hat das Abo gelöscht: der Push-Dienst meldet 410, AFC vergisst das Gerät
+    answer = 410;
+    assert.equal((await post('/api/push/test', { endpoint })).status, 502);
+    st = await (await post('/api/push/status', { endpoint })).json();
+    assert.equal(st.subscribed, false);
+  } finally { await s.stop(); rx.close(); }
 });

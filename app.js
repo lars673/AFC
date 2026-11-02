@@ -84,6 +84,7 @@ async function loadPlan(manual) {
     $('.icon-btn[data-act="reload"]')?.classList.remove('spin');
     if (S.plan) S.day = Math.min(S.day, S.plan.dates.length - 1);
     render();
+    pushSync();
   }
 }
 async function loadDetail(id) {
@@ -464,6 +465,7 @@ function renderProfile() {
   const favs = [...S.fav].map(id => S.plan && siteById(id)).filter(Boolean);
   el.innerHTML = `
     ${pilotPanel()}
+    <div class="panel"><h3>Benachrichtigungen</h3><div id="pushPanel">${pushHtml()}</div></div>
     <div class="panel"><h3>Darstellung</h3>
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
     <div class="panel"><h3>Favoriten</h3>
@@ -643,6 +645,95 @@ function renderBook() {
       </div>
       <p class="fine">«Drucken / PDF» nimmt die Flüge der gewählten Jahres-Ansicht; im Druckfenster «Als PDF sichern» wählen. «Sicherung laden» ergänzt und aktualisiert Flüge, löscht aber nichts.</p>
     </div>`;
+}
+
+/* ---- Benachrichtigungen (Web Push über den eigenen Mac, gratis) */
+const PU = { state: null, sub: null, reg: null, key: null, serverOff: false, busy: false };
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function pushPrefs() {
+  const p = store.get('pushPrefs', {});
+  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
+}
+async function pushInit() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { PU.state = isIOS() && !isStandalone() ? 'install' : 'unsupported'; return; }
+  try {
+    PU.reg = await Promise.race([navigator.serviceWorker.ready, new Promise((_, no) => setTimeout(() => no(new Error('kein Service Worker')), 8000))]);
+    PU.sub = await PU.reg.pushManager.getSubscription();
+    const k = await (await fetch('/api/push/key', { headers: { 'X-AFC-Client': clientId } })).json();
+    PU.key = k.publicKey; PU.serverOff = !k.enabled;
+  } catch { /* offline: später nochmals */ }
+  PU.state = Notification.permission === 'denied' ? 'denied' : PU.sub ? 'on' : 'off';
+}
+const pushPost = (u, b) => fetch(u, { method: 'POST', headers: { 'X-AFC-Client': clientId, 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+/** Einstellungen, Favoriten und Erfahrungsstufe an den Mac melden, wenn sie sich geändert haben. */
+async function pushSync(force = false) {
+  if (!PU.sub) return;
+  const prefs = pushPrefs(), sig = JSON.stringify([PU.sub.endpoint, prefs]);
+  if (!force && store.get('pushSig') === sig) return;
+  try { const r = await pushPost('/api/push/subscribe', { subscription: PU.sub.toJSON(), prefs }); if (r.ok) store.set('pushSig', sig); } catch { /* nächstes Mal */ }
+}
+async function pushEnable() {
+  if (!PU.reg || !PU.key) { toast(PU.serverOff ? 'Benachrichtigungen sind auf dem Mac ausgeschaltet.' : 'AFC auf dem Mac ist gerade nicht erreichbar.'); return; }
+  PU.busy = true;
+  try {
+    // direkt im Tipp, sonst lässt iOS die Abfrage nicht zu
+    PU.sub = await PU.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(PU.key.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)) });
+    await pushSync(true);
+    PU.state = 'on';
+    toast('Benachrichtigungen eingeschaltet. Tippe auf «Test senden».');
+  } catch (err) {
+    PU.state = Notification.permission === 'denied' ? 'denied' : 'off';
+    toast(PU.state === 'denied' ? 'Benachrichtigungen wurden nicht erlaubt.' : 'Einschalten hat nicht geklappt: ' + err.message);
+  } finally { PU.busy = false; renderPush(); }
+}
+async function pushDisable() {
+  const ep = PU.sub?.endpoint;
+  try { await PU.sub?.unsubscribe(); } catch { /* egal */ }
+  if (ep) await pushPost('/api/push/unsubscribe', { endpoint: ep }).catch(() => {});
+  PU.sub = null; PU.state = 'off'; store.del('pushSig');
+  toast('Benachrichtigungen ausgeschaltet'); renderPush();
+}
+async function pushTest() {
+  try {
+    await pushSync(true);
+    const r = await pushPost('/api/push/test', { endpoint: PU.sub?.endpoint });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+    toast('Test gesendet. Er sollte in wenigen Sekunden ankommen.');
+  } catch (err) { toast('Test fehlgeschlagen: ' + err.message); if (/abgelaufen/.test(err.message)) { PU.sub = null; PU.state = 'off'; renderPush(); } }
+}
+const renderPush = () => { const el = $('#pushPanel'); if (el) el.innerHTML = pushHtml(); };
+function pushHtml() {
+  const what = 'Abends um 19 Uhr, wenn morgen ein guter Flugtag wird (an deinen Favoriten, sonst überall) und bei Föhn. Morgens um 7 Uhr bei Föhn und wenn Retter packen oder Schirm-Check fällig ist. Dafür muss der Mac wach sein.';
+  switch (PU.state) {
+    case null: return '<p class="fine" style="margin:0">Wird geprüft …</p>';
+    case 'install': return `<p class="fine" style="margin:0">${what}</p><p class="fine"><b>So geht es auf dem iPhone:</b> AFC in Safari öffnen, unten auf Teilen tippen, «Zum Home-Bildschirm» wählen und AFC dann von dort öffnen. Hier erscheint danach «Einschalten».</p>`;
+    case 'unsupported': return `<p class="fine" style="margin:0">Dieser Browser kann keine Benachrichtigungen. Auf dem iPhone (ab iOS 16.4) geht es, wenn AFC vom Home-Bildschirm aus geöffnet ist.</p>`;
+    case 'denied': return `<p class="fine" style="margin:0">Benachrichtigungen sind für AFC blockiert. Auf dem iPhone: Einstellungen › Mitteilungen › AFC › «Mitteilungen erlauben». Danach AFC neu öffnen.</p>`;
+    case 'off': return `<p class="fine" style="margin:0 0 8px">${what}</p><div class="btn-row" style="justify-content:flex-start"><button class="btn" type="button" data-act="pushon" ${PU.busy ? 'disabled' : ''}>Einschalten</button></div>`;
+    default: {
+      const p = pushPrefs();
+      return `<form id="pushForm" class="push-form">
+        <label class="chk"><input type="checkbox" name="good" ${p.good ? 'checked' : ''}><span>Guter Flugtag morgen, ab <select name="threshold" aria-label="ab welchem AFC-Wert">${[65, 70, 75, 80, 85].map(v => `<option ${v === p.threshold ? 'selected' : ''}>${v}</option>`).join('')}</select></span></label>
+        <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhnwarnung</span></label>
+        <label class="chk"><input type="checkbox" name="gear" ${p.gear ? 'checked' : ''}><span>Retter packen und Schirm-Check fällig</span></label>
+      </form>
+      <p class="fine">${what}</p>
+      <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="pushtest">Test senden</button><button class="btn sec" type="button" data-act="pushoff">Ausschalten</button></div>`;
+    }
+  }
+}
+/** Aus einer Benachrichtigung öffnen: /?tab=… oder /?site=… */
+function applyDeepLink(url) {
+  let q;
+  try { q = new URL(url, location.href).searchParams; } catch { return; }
+  const tab = q.get('tab'), site = q.get('site');
+  if (tab && $('#v-' + tab)) setTab(tab);
+  if (site) {
+    const open = () => { if (siteById(site)) { if (S.tab !== 'decide') setTab('decide'); openSite(site); } };
+    S.plan ? open() : loadPlan().then(open);
+  }
 }
 
 /* ---- Sicherung und Export */
@@ -1694,7 +1785,7 @@ document.addEventListener('click', async e => {
     case 'closemsg': closeDlg($('#msgDlg')); break;
     case 'closesheet': $('#mapSheet').hidden = true; break;
     case 'fav': {
-      S.fav.has(id) ? S.fav.delete(id) : S.fav.add(id); store.set('fav', [...S.fav]);
+      S.fav.has(id) ? S.fav.delete(id) : S.fav.add(id); store.set('fav', [...S.fav]); pushSync();
       b.setAttribute('aria-pressed', String(S.fav.has(id)));
       if (!dlgEl) { if (S.tab === 'decide') renderDecide(); else if (S.tab === 'profile') renderProfile(); }
       else if (S.detailData) renderSite();
@@ -1730,6 +1821,9 @@ document.addEventListener('click', async e => {
       } catch (err) { toast('Nicht gespeichert: ' + err.message); }
       break;
     }
+    case 'pushon': pushEnable(); break;
+    case 'pushoff': pushDisable(); break;
+    case 'pushtest': pushTest(); break;
     case 'fbskip': store.set('fbSkip', [...store.get('fbSkip', []), id].slice(-50)); rerender(); break;
     case 'lbcsv': lbExport('csv'); break;
     case 'lbjson': lbExport('json'); break;
@@ -1804,6 +1898,11 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
+  if (t.closest('#pushForm')) {
+    const f = new FormData($('#pushForm'));
+    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), threshold: Number(f.get('threshold')) || 75 });
+    pushSync(); return;
+  }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
   else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
 });
@@ -1840,5 +1939,10 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open') applyDeepLink(e.data.url); });
+  }
+  pushInit().then(() => { renderPush(); pushSync(); });
+  if (/[?&](tab|site)=/.test(location.search)) { applyDeepLink(location.href); history.replaceState(null, '', '/'); }
 })();

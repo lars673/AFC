@@ -2,7 +2,7 @@
 // - App-Dateien: Netzwerk zuerst (immer aktuelle Version), Zwischenspeicher nur als Offline-Rückfall.
 // - /api/ wird nie zwischengespeichert; die App hält den letzten Plan selbst vor und kennzeichnet ihn als alt.
 // - Leaflet liegt im Projekt (/vendor/leaflet) und gehört zu den App-Dateien.
-const CACHE = 'afc-8.3';
+const CACHE = 'afc-8.4';
 const CORE = ['/', '/app.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', e => e.waitUntil((async () => {
@@ -38,5 +38,22 @@ self.addEventListener('fetch', e => {
     } catch {
       return (await cached()) || new Response('AFC offline', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     }
+  })());
+});
+
+// Benachrichtigungen vom eigenen Mac (Web Push, siehe lib/webpush.js)
+self.addEventListener('push', e => {
+  let m = {};
+  try { m = e.data ? e.data.json() : {}; } catch { m = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(m.title || 'AFC', { body: m.body || '', tag: m.tag || undefined, icon: '/icon-192.png', badge: '/icon-192.png', data: { url: m.url || '/' } }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || '/', self.location.origin).href;
+  e.waitUntil((async () => {
+    for (const c of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) {
+      if ('focus' in c) { c.postMessage({ type: 'open', url }); return c.focus(); }
+    }
+    return self.clients.openWindow(url);
   })());
 });

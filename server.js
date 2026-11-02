@@ -20,6 +20,8 @@ import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windg
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedback } from './lib/logbook.js';
+import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
+import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -73,6 +75,8 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=N
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
 CREATE TABLE IF NOT EXISTS flight_reports (id INTEGER PRIMARY KEY, client_hash TEXT, reported_at TEXT, site_id TEXT, site_name TEXT, group_name TEXT, launch_time TEXT, launched INTEGER, quality INTEGER, afc_score REAL, afc_decision TEXT, afc_best_time TEXT, learning_features TEXT, note TEXT, site_revision TEXT);
 CREATE TABLE IF NOT EXISTS clients (client_hash TEXT PRIMARY KEY, created_at TEXT, last_seen TEXT);
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, prefs TEXT NOT NULL, created TEXT, last_ok TEXT, last_error TEXT);
+CREATE TABLE IF NOT EXISTS push_sent (endpoint TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(endpoint,key));
 CREATE TABLE IF NOT EXISTS logbook (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS fc_pred (id INTEGER PRIMARY KEY, code TEXT NOT NULL, target TEXT NOT NULL, issued TEXT NOT NULL, lead REAL, wind REAL, gust REAL, dir REAL, temp REAL, UNIQUE(code,target));
 CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
@@ -584,6 +588,38 @@ const server = http.createServer(async (req, res) => {
           [h, at, site.id, site.name, site.area, launch, b.launched ? 1 : 0, quality, score >= 0 && score <= 100 ? Math.round(score) : null, cleanText(b.afcDecision, 40), null, null, cleanText(b.note, 280), SITES_FILE.meta?.checked || null]);
         return sendJson(req, res, 200, { ok: true });
       }
+      // Benachrichtigungen (Web Push) an die installierte App
+      if (p.startsWith('/api/push/')) {
+        if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
+        if (req.method === 'GET' && p === '/api/push/key') return sendJson(req, res, 200, { ok: true, enabled: PUSH_ON, publicKey: PUSH_ON ? vapid().publicKey : null });
+        if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
+        if (limited(req, 'post', 30)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+        const b = await readBody(req);
+        if (p === '/api/push/subscribe') {
+          if (!PUSH_ON) return sendJson(req, res, 503, { error: 'Benachrichtigungen sind ausgeschaltet' });
+          const sub = cleanSubscription(b.subscription);
+          if (!sub) return sendJson(req, res, 400, { error: 'Ungültiges Abo' });
+          const prefs = cleanPrefs(b.prefs);
+          dbRun('INSERT INTO push_subs(endpoint,keys,prefs,created) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET keys=excluded.keys, prefs=excluded.prefs', [sub.endpoint, JSON.stringify(sub.keys), JSON.stringify(prefs), nowIso()]);
+          return sendJson(req, res, 200, { ok: true, prefs });
+        }
+        const row = dbGet('SELECT * FROM push_subs WHERE endpoint=?', [String(b.endpoint || '')]);
+        if (p === '/api/push/unsubscribe') {
+          dbRun('DELETE FROM push_subs WHERE endpoint=?', [String(b.endpoint || '')]);
+          dbRun('DELETE FROM push_sent WHERE endpoint=?', [String(b.endpoint || '')]);
+          return sendJson(req, res, 200, { ok: true });
+        }
+        if (p === '/api/push/test') {
+          if (!row) return sendJson(req, res, 404, { error: 'Dieses Gerät ist nicht angemeldet' });
+          const r = await pushTo(row, { title: 'AFC-Test', body: 'Benachrichtigungen funktionieren. So meldet sich AFC bei einem guten Flugtag, bei Föhn und wenn der Retter gepackt werden muss.', url: '/', tag: 'test' });
+          return sendJson(req, res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.gone ? 'Das Abo ist abgelaufen, bitte neu einschalten' : `Push-Dienst antwortet nicht (${r.status || r.error})` });
+        }
+        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: await pushTick(b.phase) });   // nur in den Tests
+        if (p === '/api/push/status') {
+          return sendJson(req, res, 200, { ok: true, enabled: PUSH_ON, subscribed: !!row, prefs: row ? JSON.parse(row.prefs) : null, lastOk: row?.last_ok || null, lastError: row?.last_error || null });
+        }
+        return sendJson(req, res, 404, { error: 'unbekannt' });
+      }
       // Flugbuch (persönlich, bleibt auf diesem Rechner): Flüge, Ausrüstung, Einstellungen
       if (p === '/api/logbook' || p.startsWith('/api/logbook/')) {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
@@ -686,6 +722,47 @@ async function tick(kind, fn) {
   try { await fn(); } catch (e) { console.error(kind, errMsg(e)); } finally { busy[kind] = false; }
 }
 
+/* ------------------------------------------------------------------ Benachrichtigungen */
+// Abends (19–21 Uhr) der Ausblick auf morgen, morgens (7–9 Uhr) Föhn heute und fällige Ausrüstung.
+// Jede Meldung geht je Gerät nur einmal raus (push_sent).
+const PUSH_ON = process.env.AFC_PUSH !== '0';
+let vapidKeys = null;
+const vapid = () => (vapidKeys ||= loadVapid(path.join(dataDir, 'vapid.json')));
+// Nur für die Tests: Push-Dienst durch einen lokalen Empfänger ersetzen
+const pushFetch = process.env.AFC_PUSH_TEST_URL ? (u, o) => fetch(process.env.AFC_PUSH_TEST_URL + new URL(u).pathname, o) : undefined;
+async function pushTo(row, msg) {
+  const r = await sendPush({ endpoint: row.endpoint, keys: JSON.parse(row.keys) }, msg, vapid(), pushFetch ? { fetchImpl: pushFetch } : {});
+  if (r.gone) { dbRun('DELETE FROM push_subs WHERE endpoint=?', [row.endpoint]); dbRun('DELETE FROM push_sent WHERE endpoint=?', [row.endpoint]); }
+  else dbRun('UPDATE push_subs SET last_ok=COALESCE(?,last_ok), last_error=? WHERE endpoint=?', [r.ok ? nowIso() : null, r.ok ? null : `${nowIso()} ${r.status || r.error}`, row.endpoint]);
+  return r;
+}
+function pushPhase(ms = Date.now()) {
+  const h = zurichParts(ms).hour;
+  return h >= 19 && h <= 21 ? 'evening' : h >= 7 && h <= 9 ? 'morning' : null;
+}
+async function pushTick(phase = pushPhase()) {
+  if (!PUSH_ON || !phase) return 0;
+  const subs = dbAll('SELECT * FROM push_subs');
+  if (!subs.length) return 0;
+  const model = currentModel();
+  if (!model?.ok) return 0;
+  const lb = logbookData();
+  const plans = {};
+  let sent = 0;
+  for (const row of subs) {
+    const prefs = cleanPrefs(JSON.parse(row.prefs));
+    const plan = plans[prefs.level] ||= model.planPayload(prefs.level);
+    for (const n of buildNotices({ phase, plan, prefs, gear: lb.gear, flights: lb.flights })) {
+      if (dbGet('SELECT 1 x FROM push_sent WHERE endpoint=? AND key=?', [row.endpoint, n.key])) continue;
+      const r = await pushTo(row, n);
+      if (r.gone) break;
+      if (r.ok) { dbRun('INSERT OR IGNORE INTO push_sent(endpoint,key,at) VALUES(?,?,?)', [row.endpoint, n.key, nowIso()]); sent++; }
+    }
+  }
+  dbRun('DELETE FROM push_sent WHERE at<?', [new Date(Date.now() - 90 * 86400000).toISOString()]);
+  return sent;
+}
+
 /* ------------------------------------------------------------------ Flugbuch-Sicherung */
 // Täglich (und kurz nach jeder Änderung) eine Kopie des Flugbuchs als JSON (zum Einspielen) und CSV (Tabelle):
 // immer in data/backups/flugbuch, zusätzlich in iCloud Drive (Ordner «AFC-Sicherung»), wenn es auf dem Mac eingerichtet ist.
@@ -786,6 +863,7 @@ async function start() {
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
   if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
+  if (PUSH_ON) timers.push(setInterval(() => tick('push', pushTick), 10 * 60000));
   updater.start();
 }
 
