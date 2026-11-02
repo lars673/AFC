@@ -311,7 +311,9 @@ function renderLage() {
   const el = $('#v-lage');
   if (!S.plan) { el.innerHTML = stateBox(); return; }
   const p = S.plan, day = p.region.days[S.day];
-  const step = matchMedia('(min-width: 900px)').matches ? 1 : 2;
+  // Breiter Bildschirm: jede Stunde. Tablet: alle 2 Stunden. Handy: alle 3 Stunden, damit die Tabelle ohne Wischen passt.
+  const phone = !matchMedia('(min-width: 560px)').matches;
+  const step = matchMedia('(min-width: 900px)').matches ? 1 : phone ? 3 : 2;
   const hrs = (day?.hours || []).filter(h => h.h >= 7 && h.h <= 20 && (h.h - 7) % step === 0);
   const nowH = nowHourToday();
   const lc = (lvl, tip) => `<div class="bc ${lvl}" title="${esc(tip || LVL_TXT[lvl])}" aria-label="${LVL_TXT[lvl]}${tip ? ': ' + esc(tip) : ''}">${LVL_SYM[lvl]}</div>`;
@@ -320,10 +322,10 @@ function renderLage() {
     ['Kaltfront', h => lc(h.front, h.frontWhy?.[0])],
     ['Gewitter', h => lc(h.storm, `CAPE ${h.cape} J/kg, Regen ${h.pop} %`)],
     ['Föhn', h => lc(h.foehn)],
-    ['Wind 2000 m', h => wc(h.up800, 40)],
-    ['Wind 3000 m', h => wc(h.up700, 60)],
-    ['Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
-    ['Thermik bis km', h => (num(h.top) ? `<div class="bc mut" aria-label="Thermik bis ${h.top} m${h.inv ? ', Inversion ab ' + h.inv + ' m' : ''}">${(h.top / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
+    [phone ? 'Wind 2000' : 'Wind 2000 m', h => wc(h.up800, 40)],
+    [phone ? 'Wind 3000' : 'Wind 3000 m', h => wc(h.up700, 60)],
+    [phone ? 'Basis km' : 'Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
+    [phone ? 'Thermik km' : 'Thermik bis km', h => (num(h.top) ? `<div class="bc mut" aria-label="Thermik bis ${h.top} m${h.inv ? ', Inversion ab ' + h.inv + ' m' : ''}">${(h.top / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
     ['Thermik', h => `<div class="bc mut" aria-label="Thermikindex ${h.therm}">${h.therm >= 60 ? '●●●' : h.therm >= 30 ? '●●○' : h.therm > 8 ? '●○○' : '○○○'}</div>`],
     ['Urteil', h => `<div class="bc v s-${cls(h.v)}" aria-label="Regionsurteil ${h.v}">${h.v}</div>`]
   ];
@@ -358,11 +360,37 @@ const CHECKS = [
   'Ausrüstung, Rettung und Funk kontrolliert',
   'Jemand weiss, wo ich fliege und wann ich zurück bin'
 ];
+/** Messwerte als Karten: nahe deinen Favoriten (sonst bei dir, sonst die hohen Stationen) zuerst, starker Wind farbig. */
+const WIND_LIM = { careful: [22, 30], normal: [25, 35], expert: [30, 40] };
+function stationCards(list) {
+  if (!list.length) return '<div class="empty">Keine aktuellen Messwerte. Wetterstationen liefern derzeit keine Daten.</div>';
+  const favs = [...S.fav].map(siteById).filter(Boolean);
+  const ref = favs.length ? favs : S.pos ? [{ lat: S.pos[0], lon: S.pos[1], name: 'dir' }] : null;
+  const near = x => {
+    if (!ref || !num(x.lat)) return null;
+    let best = null;
+    for (const r of ref) { const d = haversineKm(x.lat, x.lon, r.lat, r.lon); if (!best || d < best.d) best = { d, r }; }
+    return best;
+  };
+  const rows = list.map(x => ({ x, n: near(x) }));
+  rows.sort((a, b) => (a.n && b.n ? a.n.d - b.n.d : (b.x.alt ?? 0) - (a.x.alt ?? 0)));
+  const [warn, bad] = WIND_LIM[S.level] || WIND_LIM.normal;
+  const how = favs.length ? 'Nächste zu deinen Favoriten zuerst' : S.pos ? 'Nächste zu dir zuerst' : 'Hohe Stationen zuerst. Mit Favoriten kommen die Stationen in ihrer Nähe nach oben';
+  return `<p class="fine" style="margin:0 0 8px">${how}. Farbig ab Böen ${warn} km/h (Vorsicht) und ${bad} km/h (stark), passend zu deiner Erfahrung.</p>
+    <div class="stc-grid">${rows.map(({ x, n }) => {
+      const g = num(x.gust) ? Math.round(x.gust) : null, w = num(x.wind) ? Math.round(x.wind) : null, top = Math.max(g ?? 0, w ?? 0);
+      const lvl = top >= bad ? 'bad' : top >= warn ? 'warn' : 'ok', old = x.age > 40;
+      return `<div class="stc stc-${lvl}${old ? ' old' : ''}"><div class="stc-h"><b>${esc(x.name)}</b><span>${x.alt ?? '–'} m${n && n.r.name !== 'dir' ? ` · ${Math.round(n.d)} km zu ${esc(n.r.name.split(' ')[0])}` : n ? ` · ${Math.round(n.d)} km` : ''}</span></div>
+        <div class="stc-v"><span class="stc-w"><b>${w ?? '–'}</b><small>Wind</small></span><span class="stc-w"><b>${g ?? '–'}</b><small>Böen</small></span><span class="stc-d">${num(x.dir) ? arrow(x.dir) + ' ' + dirLabel(x.dir) : '–'}</span></div>
+        <div class="stc-f">${num(x.temp) ? x.temp.toFixed(1) + '° · ' : ''}${old ? '<b>vor ' + x.age + ' min</b>' : 'vor ' + x.age + ' min'}</div></div>`;
+    }).join('')}</div>
+    <p class="fine">Wind in km/h, 10-Minuten-Mittel der MeteoSchweiz (SwissMetNet).</p>`;
+}
 function renderDay() {
   const el = $('#v-day');
   const key = 'check.' + todayKey();
   const done = store.get(key, []);
-  const st = (S.plan?.stations || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const st = S.plan?.stations || [];
   const q = S.plan?.quality?.stations || [];
   el.innerHTML = `
     <div class="panel"><h3>Vor dem Start</h3>
@@ -370,7 +398,7 @@ function renderDay() {
       <p class="fine">Die Liste gilt für heute und wird morgen zurückgesetzt. <a href="https://www.skybriefing.com/" target="_blank" rel="noopener">Skybriefing</a> · <a href="https://map.geo.admin.ch/" target="_blank" rel="noopener">Karte des Bundes</a></p>
     </div>
     <div class="panel"><h3>Messwerte jetzt</h3>
-      ${st.length ? `<div class="tw"><table class="plain"><thead><tr><th>Station</th><th>Wind</th><th>Böen</th><th>Richtung</th><th>Temp.</th><th>Alter</th></tr></thead><tbody>${st.map(s => `<tr><td>${esc(s.name)} <span class="srow-sub">${s.alt ?? ''} m</span></td><td>${num(s.wind) ? Math.round(s.wind) : '–'}</td><td>${num(s.gust) ? Math.round(s.gust) : '–'}</td><td>${num(s.dir) ? arrow(s.dir) + ' ' + dirLabel(s.dir) : '–'}</td><td>${num(s.temp) ? s.temp.toFixed(1) + '°' : '–'}</td><td>${s.age} min</td></tr>`).join('')}</tbody></table></div><p class="fine">Wind in km/h, 10-Minuten-Mittel der MeteoSchweiz (SwissMetNet).</p>` : '<div class="empty">Keine aktuellen Messwerte. Wetterstationen liefern derzeit keine Daten.</div>'}
+      ${stationCards(st)}
     </div>
     <div class="panel"><h3>Wie gut war die Prognose?</h3>
       ${q.length ? `<div class="tw"><table class="plain"><thead><tr><th>Station</th><th>Wind Ø-Fehler</th><th>Böen</th><th>Richtung</th><th>Messungen</th></tr></thead><tbody>${q.map(r => `<tr><td>${esc(r.name)}</td><td>${num(r.windMae) ? r.windMae.toFixed(1) + ' km/h' : '–'}${num(r.windBias) && Math.abs(r.windBias) >= 2 ? ` <span class="srow-sub">(${r.windBias > 0 ? 'zu schwach' : 'zu stark'} prognostiziert)</span>` : ''}</td><td>${num(r.gustMae) ? r.gustMae.toFixed(1) : '–'}</td><td>${num(r.dirMae) ? Math.round(r.dirMae) + '°' : '–'}</td><td>${r.n}</td></tr>`).join('')}</tbody></table></div><p class="fine">Prognose 3 Stunden im Voraus gegen die spätere Messung, letzte 7 Tage. Je kleiner der Fehler, desto verlässlicher die Prognose an dieser Station.</p>` : '<div class="empty">Die Auswertung braucht etwa einen Tag Laufzeit, bis genug Vergleiche vorliegen.</div>'}
