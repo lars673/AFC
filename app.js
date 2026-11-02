@@ -726,6 +726,17 @@ async function lbDelete(kind, id) {
   else LB.data.gear = LB.data.gear.filter(x => x.id !== id);
   lbSyncProfile();
 }
+/**
+ * Flüge aus dem Pilotenprofil ins Flugbuch übernehmen: Wer im Profil mehr Flüge angibt, als das Flugbuch kennt,
+ * hat die übrigen vor dem Flugbuch gemacht. Sonst zeigt das Flugbuch «0 Flüge», obwohl im Profil 150 stehen.
+ */
+async function lbAlignBefore(quiet = true) {
+  const d = LB.data, pr = store.get('pilot', {});
+  if (!d || !num(pr.flights)) return false;
+  const total = (d.settings.flightsBefore || 0) + d.flights.length;
+  if (pr.flights <= total) return false;
+  try { await lbSave('settings', { ...d.settings, flightsBefore: pr.flights - d.flights.length }, quiet); return true; } catch { return false; }
+}
 /** Pilotenprofil aus dem Flugbuch nachführen (Flüge, Stunden, letzter Flug, Schirmklasse). */
 function lbSyncProfile() {
   const d = LB.data, p = d && LG()?.profileFromLog(d.flights, d.settings);
@@ -840,7 +851,7 @@ function renderBook() {
         <div><b>${st.last ? Math.max(0, Math.round((Date.now() - Date.parse(st.last.date)) / 86400000)) + ' Tg.' : '–'}</b><span>seit dem letzten Flug</span></div>
       </div>
       ${years.length > 1 ? `<div class="seg" role="group" aria-label="Jahr">${['all', ...years].map(y => `<button type="button" data-act="lbyear" data-v="${y}" aria-pressed="${LB.year === y}">${y === 'all' ? 'Alle' : y}</button>`).join('')}</div>` : ''}
-      <div class="lb-list">${rows || '<p class="fine" style="margin:8px 0 0">Noch keine Flüge. Tippe auf «+ Flug».</p>'}</div>
+      <div class="lb-list">${rows || `<p class="fine" style="margin:8px 0 0">${d.settings.flightsBefore ? `Noch keine Flüge einzeln erfasst. Deine ${d.settings.flightsBefore} Flüge von vorher zählen im Total. Neue Flüge mit «+ Flug» oder «IGC laden».` : 'Noch keine Flüge. Tippe auf «+ Flug» oder lade IGC-Dateien.'}</p>`}</div>
       ${st.longest?.durMin ? `<p class="fine">Längster Flug: ${L.fmtDur(st.longest.durMin)} h am ${ddmm(st.longest.date)}${st.longest.date.slice(0, 4)} (${esc(st.longest.siteName || '–')})${st.farthest ? ` · weitester: ${st.farthest.km} km` : ''}</p>` : ''}
     </div>
     ${lbStatsHtml(d.flights)}
@@ -1225,6 +1236,7 @@ function savePilot(form) {
   const f = new FormData(form), int = k => { const v = f.get(k); return v === '' || v == null ? null : Math.max(0, Math.round(Number(v))); };
   const pr = { flights: int('flights'), hours12: int('hours12'), glider: f.get('glider') || 'B', lastFlight: f.get('lastFlight') || null, student: f.get('student') === 'on' };
   store.set('pilot', pr); store.del('levelManual');
+  lbAlignBefore().then(ok => { if (ok && S.tab === 'book') renderBook(); });
   const pl = P()?.pilotLevel(pr);
   if (pl && pl.level !== S.level) { S.level = pl.level; store.set('level', S.level); S.detail.clear(); loadPlan(); }
   toast(pl ? `Gespeichert: Stufe «${LEVEL_INFO[pl.level][0]}»` : 'Gespeichert');
@@ -2506,7 +2518,7 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   T.mode = ['thermal', 'soar'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
   render();
   loadPlan();
-  lbLoad().then(() => { lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
+  lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
