@@ -1316,8 +1316,9 @@ async function openSite(id) {
 }
 /** Landeplatz: nächster offizieller Landeplatz im Gebiet, Prognose zur gewählten Stunde und Messung in der Nähe. */
 function landingHtml(s, hr) {
-  const L = (S.plan?.landings || []).filter(l => l.area === s.area && num(l.lat))
-    .map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) })).sort((a, b) => a.d - b.d)[0];
+  // Landeplätze des Gebiets, sonst der nächste im Umkreis von 5 km (z.B. Lehn für Amisbühl)
+  const cand = (S.plan?.landings || []).filter(l => num(l.lat)).map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) }));
+  const L = (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => a.d - b.d)[0];
   if (!L && !hr?.valley) return '';
   const l = L?.l, [warn, bad] = [22, 28];
   const fc = hr?.valley, fv = fc ? Math.max(fc[0], 0.75 * (fc[1] ?? 0)) : null;
@@ -1363,7 +1364,9 @@ function volteSvg(h, side, wind) {
 function volteHtml(l, wind) {
   const mine = LB.data?.settings?.lands?.[l.id];
   const h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
-  const side = mine?.side || 'L';
+  // Regel des Landeplatzes (z.B. Lehn: Rechtsvolte bei Talwind, Linksvolte bei Bergwind)
+  const R = l.volte, tal = R && wind ? wind.dir >= R.talFrom[0] && wind.dir < R.talFrom[1] : null;
+  const side = mine?.side || (R && tal != null ? (tal ? R.tal : R.berg) : 'L');
   // Rückenwind auf dem eigenen Endanflug? (Wind kommt von hinten, wenn er mehr als 100° neben der Anflugrichtung liegt)
   const off = mine && wind ? Math.abs(((wind.dir - mine.dir) % 360 + 540) % 360 - 180) : null;
   const tail = off != null && off > 100;
@@ -1372,7 +1375,9 @@ function volteHtml(l, wind) {
     ${h != null ? volteSvg(h, side, wind) : ''}
     <div class="volte-t">
       <p style="margin:0"><b>Volte</b> ${h != null ? `${side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(h)}` : ''}
-      <span class="fine">${mine ? '(deine Angabe)' : h != null ? `(Vorschlag gegen den Wind, ${esc(wind.src)}; Seite und Hindernisse vor Ort klären)` : 'Keine Windangabe für einen Vorschlag.'}</span></p>
+      <span class="fine">${mine ? '(deine Angabe)' : h != null ? `(Vorschlag gegen den Wind, ${esc(wind.src)}${R ? `; Seite nach Platzregel bei ${tal ? 'Talwind' : 'Bergwind'}` : '; Seite und Hindernisse vor Ort klären'})` : 'Keine Windangabe für einen Vorschlag.'}</span></p>
+      ${R ? `<p class="fine" style="margin:4px 0 0">Platzregel: ${R.tal === 'R' ? 'Rechtsvolte' : 'Linksvolte'} bei Talwind, ${R.berg === 'R' ? 'Rechtsvolte' : 'Linksvolte'} bei Bergwind${R.src ? ' (' + esc(R.src) + ')' : ''}. Vor Ort an der Tafel prüfen.</p>` : ''}
+      ${(l.notes || []).map((n, i) => i ? `<p class="fine" style="margin:4px 0 0">${esc(n)}</p>` : `<p class="volte-warn">${esc(n)}</p>`).join('')}
       ${h != null ? '<p class="fine" style="margin:4px 0 0">Gestrichelt: Gegenanflug und Queranflug, grün: Endanflug zum Landepunkt. Der blaue Pfeil zeigt, wohin der Wind weht.</p>' : ''}
       ${tail ? `<p class="volte-warn" role="alert">Wind heute aus ${dirLabel(wind.dir)} (${esc(wind.src)}): Rückenwind auf deinem Endanflug. Anders einteilen.</p>` : ''}
       <details class="volte-ed"><summary>${mine ? 'Volte ändern' : 'Volte für diesen Landeplatz eintragen'}</summary>

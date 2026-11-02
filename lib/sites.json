@@ -412,7 +412,7 @@
   },
   {
    "id": "niederhorn-land-1",
-   "name": "Niederhorn Landeplatz 1",
+   "name": "Lehn (Schiessstand), Interlaken",
    "type": "landing",
    "area": "niederhorn",
    "group": "Niederhorn",
@@ -423,11 +423,24 @@
    "pg": true,
    "status": null,
    "season": null,
-   "source": "DHV"
+   "source": "DHV",
+   "volte": {
+    "tal": "R",
+    "berg": "L",
+    "talFrom": [
+     180,
+     360
+    ],
+    "src": "Infotafel Interlaken (Swiss League)"
+   },
+   "notes": [
+    "Keine tiefen Überflüge über Schiessstand und Schussbahn, keine Landung in der Schussbahn: Lebensgefahr.",
+    "Bei starkem Talwind und Ablösungen turbulent. Kein Groundhandling, Schirm unter den Bäumen am Höheweg packen."
+   ]
   },
   {
    "id": "niederhorn-land-2",
-   "name": "Niederhorn Landeplatz 2",
+   "name": "Höhematte, Interlaken",
    "type": "landing",
    "area": "niederhorn",
    "group": "Niederhorn",
