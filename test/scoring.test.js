@@ -445,6 +445,11 @@ test('Bise: Stufe aus Druck, Höhenwind und Messung; Lee-Hang am Thunersee ist K
   const valley = assessHour(site, good({ bise: { level: 'warn', why: ['Bisedruck Zürich–Genf +2.8 hPa'] }, biseExposure: 'half' }));
   assert.ok(valley.reasons.some(r => /Bise in der Region/.test(r)));
   assert.ok(valley.score >= calm.score - 2);
+  // Nordrand, Nordost-Hang, nur Vorsicht (wie 22.4.2026): kein «Start» mehr, höchstens «Prüfen»
+  const warnNe = assessHour(neSite, good({ dir: 45, bise: { level: 'warn', why: ['Bisedruck Zürich–Genf +2.1 hPa'] }, biseExposure: 'full' }));
+  assert.ok(warnNe.score <= 74 && warnNe.reasons.some(r => /Bise von Nordost/.test(r)), 'warn NE ' + warnNe.score);
+  assert.equal(biseLevel(2.1, null).level, 'warn');
+  assert.equal(biseLevel(1.9, null).level, 'ok');
 });
 
 test('Bise: Mitteilung am Vorabend', async () => {
