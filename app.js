@@ -325,6 +325,7 @@ function renderDecide() {
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
     ${levelLine()}
+    <div class="tool-row"><button type="button" class="btn sec" data-act="week"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Wochenblick</button><button type="button" class="btn sec" data-act="compare"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Vergleichen</button></div>
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
@@ -334,6 +335,61 @@ function renderDecide() {
     <div class="card alist">${areas.map(areaRow).join('')}</div>
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
+
+/* ---- Wochenblick: bestes Fenster je Favorit und Gebiet für alle Prognosetage */
+function weekHtml() {
+  const p = S.plan, nd = p.dates.length;
+  const favs = [...S.fav].map(siteById).filter(Boolean);
+  const cell = (b, d, act, id) => `<td><button type="button" class="wk-c s-${cls(b?.score)}" data-act="${act}" data-id="${esc(id)}" data-d="${d}" aria-label="${esc(dayName(d))}: ${b ? b.score + ', ' + winText(b) : 'kein Fenster'}"><b>${b ? b.score : '–'}</b><small>${b ? b.from + '–' + b.to : ''}</small></button></td>`;
+  const head = `<tr><th></th>${p.dates.map((_, d) => `<th scope="col" class="${d === S.day ? 'sel' : ''}">${esc(dayName(d))}<small>${dayDate(d)}</small></th>`).join('')}</tr>`;
+  const favRows = favs.map(x => `<tr><th scope="row">${esc(x.name)}</th>${x.days.slice(0, nd).map((dd, d) => cell(dd.best, d, 'wksite', x.id)).join('')}</tr>`).join('');
+  const areas = [...p.areas].sort((a, b) => {
+    const sum = z => z.days.reduce((t, x) => t + (x?.best.score ?? 0), 0);
+    return sum(b) - sum(a);
+  });
+  const areaRows = areas.map(a => `<tr><th scope="row">${esc(a.name)}</th>${a.days.slice(0, nd).map((x, d) => cell(x?.best, d, x ? 'wksite' : 'wkday', x?.siteId || '')).join('')}</tr>`).join('');
+  // Bester Tag der Woche (nach dem besten Gebiet)
+  let top = null;
+  p.dates.forEach((_, d) => { const t = p.days[d]?.top; if (t && (!top || t.best.score > top.t.best.score)) top = { d, t }; });
+  return `<div class="dlg-in"><div class="dlg-h"><div><h2 id="siteDlgT">Wochenblick</h2><p class="fine" style="margin:2px 0 0">Bester Score und bestes Fenster je Tag. Antippen öffnet den Startplatz an diesem Tag.</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
+    ${top ? `<div class="wk-top t-${cls(top.t.best.score)}"><b>${esc(dayName(top.d))} ${dayDate(top.d)}</b> sieht am besten aus: ${esc(areaById(top.t.areaId)?.name || '')}, ${esc(siteById(top.t.siteId)?.name || '')} ${top.t.best.score}, ${winText(top.t.best)}.</div>` : ''}
+    <div class="wk-wrap"><table class="wk"><thead>${head}</thead>
+      ${favRows ? `<tbody><tr class="wk-sec"><th colspan="${nd + 1}">Meine Startplätze</th></tr>${favRows}</tbody>` : ''}
+      <tbody><tr class="wk-sec"><th colspan="${nd + 1}">Gebiete (bester Startplatz)</th></tr>${areaRows}</tbody></table></div>
+    <p class="fine">Je weiter voraus, desto unsicherer: ab dem dritten Tag ist der Score eher eine Tendenz.</p></div>`;
+}
+
+/* ---- Startplätze vergleichen: bis zu drei Plätze Stunde für Stunde */
+function cmpIds() {
+  const p = S.plan, ok = id => siteById(id) && !siteById(id).blocked;
+  let ids = store.get('cmp', []).filter(ok);
+  if (ids.length < 2) {
+    const fav = [...S.fav].filter(ok);
+    // sonst die besten Plätze aus verschiedenen Gebieten
+    const top = p.areas.map(a => a.days[S.day]).filter(Boolean).sort((a, b) => b.best.score - a.best.score).map(x => x.siteId);
+    ids = [...new Set([...ids, ...fav, ...top])].slice(0, 3);
+  }
+  return ids.slice(0, 3);
+}
+function compareHtml() {
+  const p = S.plan, ids = cmpIds(), sites = ids.map(siteById);
+  const opts = sel => p.areas.map(a => `<optgroup label="${esc(a.name)}">${a.sites.map(siteById).filter(x => x && !x.blocked).map(x => `<option value="${esc(x.id)}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</optgroup>`).join('');
+  const hours = [];
+  for (let i = 0; i < 16; i++) if (sites.some(x => num(x.days[S.day]?.scores?.[i]))) hours.push(i);
+  const nowH = nowHourToday();
+  const bestOf = x => x.days[S.day]?.best;
+  const winner = sites.reduce((w, x) => (bestOf(x) && (!w || bestOf(x).score > bestOf(w).score) ? x : w), null);
+  return `<div class="dlg-in"><div class="dlg-h"><div><h2 id="siteDlgT">Vergleichen</h2></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
+    <div class="seg seg-sm cmp-days" role="group" aria-label="Tag">${p.dates.map((_, d) => `<button type="button" data-act="cmpday" data-d="${d}" aria-pressed="${d === S.day}">${esc(dayName(d))}</button>`).join('')}</div>
+    <div class="cmp-sel">${[0, 1, 2].map(i => `<label><span class="fine">Platz ${i + 1}</span><select data-cmp="${i}">${i === 2 ? `<option value="">– keiner –</option>` : ''}${opts(ids[i])}</select></label>`).join('')}</div>
+    ${winner ? `<div class="wk-top t-${cls(bestOf(winner).score)}"><b>${esc(winner.name)}</b> ist ${esc(dayName(S.day).toLowerCase() === 'heute' ? 'heute' : 'an diesem Tag')} am besten: ${bestOf(winner).score}, ${winText(bestOf(winner))}.</div>` : ''}
+    <div class="wk-wrap"><table class="cmp"><thead><tr><th>Uhr</th>${sites.map(x => `<th scope="col"><button type="button" class="linkish" data-act="site" data-id="${esc(x.id)}">${esc(x.name)}</button><small>${x.alt} m</small></th>`).join('')}</tr></thead>
+      <tbody><tr class="cmp-best"><th scope="row">Fenster</th>${sites.map(x => `<td>${bestOf(x) ? winText(bestOf(x)).replace(' Uhr', '') : '–'}</td>`).join('')}</tr>
+      ${hours.map(i => { const h = p.h0 + i; return `<tr class="${h === nowH ? 'now' : ''}"><th scope="row">${h === nowH ? 'jetzt' : h}</th>${sites.map(x => { const v = x.days[S.day]?.scores?.[i]; return `<td><span class="mini-pill s-${cls(v)}">${num(v) ? v : '–'}</span></td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
+    <p class="fine">Name antippen für Details und Gründe.</p></div>`;
+}
+function openCompare() { S.panel = 'compare'; dlg('#siteDlg', compareHtml()); }
+function openWeek() { S.panel = 'week'; dlg('#siteDlg', weekHtml()); }
 
 /* ---- Lage */
 function regionSummary(d) {
@@ -1148,7 +1204,7 @@ function toast(msg) {
 async function openSite(id) {
   if (!S.plan || !siteById(id)) return;
   const base = siteById(id);
-  S.site = id; S.hour = null;
+  S.site = id; S.hour = null; S.panel = null;
   dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="warm"><div class="spinner"></div>Lade Details …</div></div>`);
   try {
     const d = await loadDetail(id);
@@ -1160,6 +1216,31 @@ async function openSite(id) {
   } catch (e) {
     dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="empty">Details konnten nicht geladen werden: ${esc(e.message)}</div></div>`);
   }
+}
+/** Landeplatz: nächster offizieller Landeplatz im Gebiet, Prognose zur gewählten Stunde und Messung in der Nähe. */
+function landingHtml(s, hr) {
+  const L = (S.plan?.landings || []).filter(l => l.area === s.area && num(l.lat))
+    .map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) })).sort((a, b) => a.d - b.d)[0];
+  if (!L && !hr?.valley) return '';
+  const l = L?.l, [warn, bad] = [22, 28];
+  const fc = hr?.valley, fv = fc ? Math.max(fc[0], 0.75 * (fc[1] ?? 0)) : null;
+  const fl = fv == null ? 'none' : fv >= bad ? 'bad' : fv >= warn ? 'warn' : 'ok';
+  let st = null;
+  if (l && S.day === 0) {
+    for (const x of S.plan.stations || []) {
+      if (!num(x.lat) || !num(x.wind)) continue;
+      const d = haversineKm(l.lat, l.lon, x.lat, x.lon);
+      if (d <= 12 && Math.abs((x.alt ?? 0) - (l.alt ?? 0)) <= 400 && (!st || d < st.d)) st = { x, d };
+    }
+  }
+  const sx = st?.x, sv = sx ? Math.max(sx.wind, 0.75 * (sx.gust ?? 0)) : null, sl = sv == null ? 'none' : sv >= bad ? 'bad' : sv >= warn ? 'warn' : 'ok';
+  return `<div class="panel land" style="margin:0"><h3>Landeplatz</h3>
+    ${l ? `<p style="margin:0 0 8px"><b>${esc(l.name)}</b> <span class="fine">${l.alt ?? '–'} m · ${L.d.toFixed(1)} km vom Start · ${num(l.alt) ? (s.alt - l.alt) + ' m tiefer' : ''}</span></p>` : ''}
+    <div class="land-g">
+      <div class="land-c stc-${fl}"><small>Prognose ${hr ? hr.h + '–' + (hr.h + 1) + ' Uhr' : ''}</small><b>${fc ? fc[0] + ' / ' + (fc[1] ?? '–') : '–'}</b><small>Wind / Böen km/h</small></div>
+      ${S.day === 0 ? `<div class="land-c stc-${sl}"><small>Gemessen jetzt</small><b>${sx ? Math.round(sx.wind) + ' / ' + (num(sx.gust) ? Math.round(sx.gust) : '–') : '–'}</b><small>${sx ? `${esc(sx.name)}, ${st.d.toFixed(0)} km · ${ageTxt(ageMin(sx.time, sx.age))}${num(sx.dir) ? ' · aus ' + dirLabel(sx.dir) : ''}` : 'keine Station in der Nähe'}</small></div>` : ''}
+    </div>
+    <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p></div>`;
 }
 function profileHtml(prof) {
   if (!prof?.length) return '<p class="fine">Kein Windprofil verfügbar (Höhenmodell fehlt).</p>';
@@ -1267,6 +1348,7 @@ function renderSite() {
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
+    ${landingHtml(s, hr)}
     ${table}
     <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
   </div>`);
@@ -1957,6 +2039,11 @@ document.addEventListener('click', async e => {
     case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); renderDecide(); break;
     case 'site': $('#mapSheet').hidden = true; openSite(id); break;
     case 'closesite': closeDlg($('#siteDlg')); break;
+    case 'week': openWeek(); break;
+    case 'compare': openCompare(); break;
+    case 'cmpday': S.day = Number(b.dataset.d); render(); openCompare(); break;
+    case 'wksite': S.day = Number(b.dataset.d); render(); openSite(b.dataset.id); break;
+    case 'wkday': S.day = Number(b.dataset.d); closeDlg($('#siteDlg')); render(); break;
     case 'closemsg': closeDlg($('#msgDlg')); break;
     case 'closesheet': $('#mapSheet').hidden = true; break;
     case 'fav': {
@@ -2081,6 +2168,10 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.matches('select[data-cmp]')) {
+    const ids = [...document.querySelectorAll('select[data-cmp]')].map(x => x.value).filter(Boolean);
+    store.set('cmp', [...new Set(ids)]); openCompare(); return;
+  }
   if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
   if (t.closest('#pushForm')) {

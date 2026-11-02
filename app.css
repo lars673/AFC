@@ -469,3 +469,43 @@ table.plain th { color: var(--muted); font-weight: 600; }
 #sunBtn[aria-pressed="true"] { background: #ffd400; color: #000; border-color: #ffd400; }
 .src-dot { white-space: nowrap; }
 @media (max-width: 420px) { .top-actions { gap: 6px; } .icon-btn, .src-dot { padding: 0 8px; } .src-dot { gap: 6px; } }
+
+/* Landeplatz-Karte */
+.land-g { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.land-c { border: 1px solid var(--line); border-left: 5px solid var(--go); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--panel); }
+.land-c b { font: 700 26px/1.1 var(--f-num); }
+.land-c small { color: var(--muted); font-size: 12.5px; }
+.land-c.stc-bad { border-left-color: var(--no); background: color-mix(in srgb, var(--no) 10%, var(--panel)); } .land-c.stc-none { border-left-color: var(--none); }
+
+/* Wochenblick und Vergleich */
+.tool-row { display: flex; gap: 8px; margin: 10px 0 4px; }
+.tool-row .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
+.tool-row svg { width: 20px; height: 20px; flex: none; }
+.wk-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+table.wk, table.cmp { border-collapse: collapse; width: 100%; font-size: 14px; }
+.wk th, .wk td, .cmp th, .cmp td { padding: 3px 2px; text-align: center; border-bottom: 1px solid var(--line); }
+.wk thead th, .cmp thead th { font: 600 14px/1.1 var(--f-num); color: var(--muted); padding: 6px 2px; vertical-align: bottom; }
+.wk thead th small, .cmp thead th small { display: block; font: 500 11px var(--f-body); }
+.wk thead th.sel { color: var(--ink); }
+.wk tbody th { text-align: left; font-weight: 600; font-size: 13px; padding: 4px 6px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; position: sticky; left: 0; background: var(--panel); }
+.wk-sec th { background: var(--panel2) !important; font: 700 12px var(--f-num) !important; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); max-width: none !important; }
+.wk-c { width: 100%; min-width: 36px; min-height: 44px; border: 0; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; background: var(--none); padding: 2px; }
+.wk-c b { font: 700 17px/1 var(--f-num); }
+.wk-c small { font-size: 10px; line-height: 1; opacity: .9; }
+.wk-c.s-go { background: var(--go); color: var(--on-go); } .wk-c.s-ready { background: var(--ready); color: var(--on-ready); }
+.wk-c.s-check { background: var(--check); color: var(--on-check); } .wk-c.s-wait { background: var(--wait); color: var(--on-wait); } .wk-c.s-no { background: var(--no); color: var(--on-no); }
+.wk-top { border-left: 5px solid var(--go); background: var(--panel2); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; }
+.wk-top.t-check, .wk-top.t-wait { border-left-color: var(--wait); } .wk-top.t-no, .wk-top.t-none { border-left-color: var(--no); }
+.cmp-days { margin: 0 0 10px; overflow-x: auto; max-width: 100%; flex-wrap: nowrap; }
+.cmp-days button { white-space: nowrap; }
+.cmp-sel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+.cmp-sel label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cmp-sel .fine { margin: 0; }
+.cmp-sel select { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 0 6px; font-size: 14px; }
+.cmp thead th { width: 30%; } .cmp thead th:first-child { width: 10%; }
+.cmp .linkish { background: none; border: 0; color: var(--accent); font: 700 14px/1.15 var(--f-num); text-decoration: underline; padding: 4px 2px; min-height: 36px; }
+.cmp tbody th { font: 600 14px var(--f-num); color: var(--muted); }
+.cmp tr.now th { color: var(--ink); }
+.cmp tr.now td, .cmp tr.now th { background: var(--panel2); }
+.cmp .mini-pill { display: inline-block; font-size: 17px; min-width: 44px; }
+.cmp-best td { font: 600 13px var(--f-num); }
