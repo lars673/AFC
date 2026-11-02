@@ -540,3 +540,14 @@ button.st-site .st-sn { color: var(--accent); text-decoration: underline; }
 .grp-h b { font: 700 17px var(--f-num); }
 .grp-h span { color: var(--muted); font-size: 13px; }
 .srow.in-grp { padding-left: 12px; border-left: 3px solid var(--line); margin-left: 14px; }
+
+/* Rückblick im Flug */
+.rv { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.rv > span:first-child { font-weight: 700; }
+.rv-list { display: grid; gap: 6px; }
+.rv-row { display: grid; grid-template-columns: 26px 1fr; gap: 2px 8px; align-items: center; }
+.rv-row small { display: block; color: var(--muted); font-size: 12.5px; }
+.rv-n { grid-column: 2; font-size: 13.5px; font-weight: 600; }
+.rv-i { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--go); color: var(--on-go); }
+.rv-more .rv-i { background: var(--accent); color: var(--accent-ink); }
+.rv-less .rv-i { background: var(--wait); color: var(--on-wait); }

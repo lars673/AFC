@@ -749,6 +749,29 @@ function afcScoreAt(siteId, date, start) {
   const at = Number.isFinite(h) ? day?.scores?.[h - (p.h0 ?? 6)] : null;
   return num(at) ? at : day?.best?.score ?? null;
 }
+/** Prognose zur Startzeit festhalten (Wind, Thermik, Basis, Fenster), solange AFC den Tag kennt. Für den Rückblick. */
+async function afcFcAt(siteId, date, start) {
+  if (!siteId || !S.plan?.dates?.includes(date) || !siteById(siteId)) return null;
+  try {
+    const d = await loadDetail(siteId), day = d.days.find(x => x.date === date);
+    if (!day || d._savedAt) return null;
+    const h = start ? Number(start.slice(0, 2)) : day.best?.peak;
+    const hr = day.hours.find(x => x.h === h) || day.hours.find(x => x.h === day.best?.peak);
+    if (!hr) return null;
+    return { h: hr.h, score: hr.score, speed: hr.speed, gust: hr.gust, dir: hr.dir, top: hr.thermalTop, base: hr.cloudBase, wstar: hr.wstar, valley: hr.valley?.[0] ?? null, from: day.best ? Number(String(day.best.from).slice(0, 2)) : null, to: day.best ? Number(String(day.best.to).slice(0, 2)) : null };
+  } catch { return null; }
+}
+/** Rückblick-Karte im Flug: was AFC sagte und wie es war. */
+function reviewHtml(f) {
+  const fc = f.afcFc;
+  if (!fc) return '';
+  const rv = LG().flightReview(f);
+  const sym = { ok: '✓', more: '↑', less: '↓' };
+  return `<div class="fld lb-wide rv"><span>Rückblick: Prognose gegen Flug</span>
+    <p class="fine" style="margin:0 0 6px">AFC sagte für ${fc.h}–${fc.h + 1} Uhr: Score ${fc.score ?? '–'}, Wind ${fc.speed ?? '–'} km/h${num(fc.dir) ? ' aus ' + dirLabel(fc.dir) : ''}, Böen ${fc.gust ?? '–'}${num(fc.top) ? ', Thermik bis ' + fc.top + ' m' : ''}${num(fc.base) ? ', Basis ' + fc.base + ' m' : ''}.</p>
+    ${rv.length ? `<div class="rv-list">${rv.map(x => `<div class="rv-row rv-${x.lvl}"><span class="rv-i" aria-hidden="true">${sym[x.lvl]}</span><span><b>${esc(x.k)}</b><small>Prognose ${esc(x.fc)} · Flug ${esc(x.real)}</small></span><span class="rv-n">${esc(x.note)}</span></div>`).join('')}</div>` : '<p class="fine" style="margin:0">Mit einer IGC-Datei (z.B. aus FlySkyHy) vergleicht AFC auch Thermikhöhe und Steigen.</p>'}
+    <p class="fine" style="margin:6px 0 0">Stimmt das mit deinem Gefühl? Gleich darunter bei «AFC-Bewertung» sagen, ob AFC richtig, zu streng oder zu mild war.</p></div>`;
+}
 /** Neuester Flug der letzten 14 Tage an einem bekannten Startplatz ohne Rückmeldung. */
 function feedbackDue() {
   const d = LB.data;
@@ -882,7 +905,7 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function pushPrefs() {
   const p = store.get('pushPrefs', {});
-  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, health: p.health !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
+  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, health: p.health !== false, review: p.review !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
 }
 async function pushInit() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { PU.state = isIOS() && !isStandalone() ? 'install' : 'unsupported'; return; }
@@ -947,6 +970,7 @@ function pushHtml() {
         <label class="chk"><input type="checkbox" name="good" ${p.good ? 'checked' : ''}><span>Guter Flugtag morgen, ab <select name="threshold" aria-label="ab welchem AFC-Wert">${[65, 70, 75, 80, 85].map(v => `<option ${v === p.threshold ? 'selected' : ''}>${v}</option>`).join('')}</select></span></label>
         <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhnwarnung</span></label>
         <label class="chk"><input type="checkbox" name="gear" ${p.gear ? 'checked' : ''}><span>Retter packen und Schirm-Check fällig</span></label>
+        <label class="chk"><input type="checkbox" name="review" ${p.review ? 'checked' : ''}><span>Abends: Rückblick auf deinen Flug von heute</span></label>
         <label class="chk"><input type="checkbox" name="health" ${p.health ? 'checked' : ''}><span>Störungen von AFC (Wetterdaten veraltet, Sicherung fehlgeschlagen)</span></label>
       </form>
       <p class="fine">${what}</p>
@@ -958,8 +982,9 @@ function pushHtml() {
 function applyDeepLink(url) {
   let q;
   try { q = new URL(url, location.href).searchParams; } catch { return; }
-  const tab = q.get('tab'), site = q.get('site');
+  const tab = q.get('tab'), site = q.get('site'), flight = q.get('flight');
   if (tab && $('#v-' + tab)) setTab(tab);
+  if (flight) lbLoad().then(d => { if (d.flights.some(x => x.id === flight)) flightForm(flight); }).catch(() => {});
   if (site) {
     const open = () => { if (siteById(site)) { if (S.tab !== 'decide') setTab('decide'); openSite(site); } };
     S.plan ? open() : loadPlan().then(open);
@@ -1053,6 +1078,7 @@ async function importIgc(files) {
       track: { ...a.track, takeoff: a.takeoff, landing: a.landing }
     };
     item.afcScore = afcScoreAt(item.siteId, a.date, a.start);
+    item.afcFc = await afcFcAt(item.siteId, a.date, a.start);
     try { lastId = (await lbSave('flight', item, true)).id; added++; } catch { bad++; }
   }
   if (S.tab === 'book') renderBook();
@@ -1100,6 +1126,7 @@ function flightForm(id) {
       <label class="fld"><span>Schirm</span><select name="gliderId">${opts('glider', v.gliderId)}</select></label>
       <label class="fld"><span>Gurtzeug</span><select name="harnessId">${opts('harness', v.harnessId)}</select></label>
       <label class="fld"><span>Retter</span><select name="reserveId">${opts('reserve', v.reserveId)}</select></label>
+      ${f ? reviewHtml(f) : ''}
       <div class="fld lb-wide"><span id="lbVerdL">AFC-Bewertung${num(v.afcScore) ? ` (AFC sagte ${v.afcScore})` : ''}</span><div class="stars lb-verd" role="radiogroup" aria-labelledby="lbVerdL">${Object.entries(L.VERDICTS).map(([k, n]) => `<label><input type="radio" name="afcVerdict" value="${k}" ${v.afcVerdict === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
       <div class="fld lb-wide"><span id="lbRateL">Bewertung</span><div class="stars" role="radiogroup" aria-labelledby="lbRateL">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" ${v.rating === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
       ${v.track ? trackHtml(v.track) : ''}
@@ -1117,6 +1144,7 @@ function flightForm(id) {
     const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, afcVerdict: x.afcVerdict || '', note: x.note };
     // AFC-Score des Startplatzes zur Startzeit festhalten (zum späteren Abgleich), solange der Plan diesen Tag noch kennt
     if (!num(item.afcScore) || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcScore = afcScoreAt(item.siteId, item.date, item.start) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcScore : null);
+    if (!item.afcFc || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcFc = (await afcFcAt(item.siteId, item.date, item.start)) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcFc : null);
     try { await lbSave('flight', item); closeDlg($('#msgDlg')); toast('Flug gespeichert'); renderBook(); }
     catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
   });
@@ -2265,7 +2293,7 @@ document.addEventListener('change', e => {
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
   if (t.closest('#pushForm')) {
     const f = new FormData($('#pushForm'));
-    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), threshold: Number(f.get('threshold')) || 75 });
+    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), review: f.has('review'), threshold: Number(f.get('threshold')) || 75 });
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);

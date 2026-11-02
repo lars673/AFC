@@ -33,5 +33,17 @@ test('Morgens Föhn und Ausrüstung, abends Ausblick; abgeschaltete Arten fehlen
   assert.deepEqual(m.map(x => x.title), ['Föhnwarnung heute', 'Retter packen bald fällig']);
   assert.equal(buildNotices({ phase: 'morning', plan: p, prefs: cleanPrefs({ gear: false, foehn: false }), gear, now }).length, 0);
   assert.deepEqual(buildNotices({ phase: 'evening', plan: p, prefs: cleanPrefs({}), gear, now }).map(x => x.title), ['Morgen 86 am Amisbühl']);
-  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, health: true, threshold: 75, favs: [], level: 'normal' });
+  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, health: true, review: true, threshold: 75, favs: [], level: 'normal' });
+});
+
+test('Abends Rückblick für heutige Flüge ohne Rückmeldung', async () => {
+  const { buildNotices, cleanPrefs } = await import('../lib/notify.js');
+  const flights = [{ id: 'a1', date: '2026-07-12', siteName: 'Niesen', afcVerdict: '' }, { id: 'a2', date: '2026-07-12', afcVerdict: 'richtig' }, { id: 'a3', date: '2026-07-11' }];
+  const plan = { dates: ['2026-07-12'], sites: [], region: { days: [] } };
+  const n = buildNotices({ phase: 'evening', plan, prefs: cleanPrefs({}), flights });
+  const rv = n.filter(x => x.key.startsWith('review:'));
+  assert.equal(rv.length, 1);
+  assert.match(rv[0].title, /Niesen/);
+  assert.equal(rv[0].url, '/?tab=book&flight=a1');
+  assert.equal(buildNotices({ phase: 'evening', plan, prefs: cleanPrefs({ review: false }), flights }).filter(x => x.key.startsWith('review:')).length, 0);
 });

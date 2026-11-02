@@ -86,3 +86,18 @@ test('Rückmeldungen je Startplatz: ab 3, «zu mild» zählt doppelt, begrenzt',
   assert.equal(cleanFlight({ date: '2026-09-01', afcVerdict: 'falsch' }).afcVerdict, '');
   assert.equal(cleanFlight({ date: '2026-09-01', afcVerdict: 'mild' }).afcVerdict, 'mild');
 });
+
+test('Rückblick: Prognose gegen IGC-Flug', async () => {
+  const { flightReview, cleanFlight } = await import('../lib/logbook.js');
+  const f = cleanFlight({ date: '2026-07-12', start: '11:10', durMin: 95, afcFc: { h: 11, score: 82, top: 2400, base: 2600, wstar: 1.5, from: 10, to: 16 },
+    track: { thermals: [{ alt: 2900, rate: 2.4 }, { alt: 2700, rate: 2.0 }] } });
+  assert.equal(f.afcFc.top, 2400);
+  const r = flightReview(f);
+  const by = Object.fromEntries(r.map(x => [x.k, x]));
+  assert.equal(by['Thermik-Obergrenze'].lvl, 'more');
+  assert.match(by['Thermik-Obergrenze'].note, /500 m höher/);
+  assert.equal(by['Steigen im Mittel'].lvl, 'more');
+  assert.equal(by['Wolkenbasis'].lvl, 'more');
+  assert.equal(by['Zeitfenster'].lvl, 'ok');
+  assert.deepEqual(flightReview(cleanFlight({ date: '2026-07-12' })), []);
+});
