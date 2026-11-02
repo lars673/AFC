@@ -30,7 +30,7 @@ const clientId = (() => {
 
 /* ---------------------------------------------------------------- Zustand */
 const S = {
-  plan: null, day: 0, tab: 'decide', warming: false, offline: false, err: null, loadedAt: 0,
+  plan: null, day: 0, tab: 'decide', warming: false, offline: false, err: null, loadedAt: 0, sort: 'best', pos: null, locating: false,
   level: ['careful', 'normal', 'expert'].includes(store.get('level')) ? store.get('level') : 'normal',
   theme: ['auto', 'light', 'dark'].includes(store.get('theme')) ? store.get('theme') : 'auto',
   fav: new Set(store.get('fav', [])), open: new Set(store.get('open', [])),
@@ -232,28 +232,34 @@ function headlineFor(d) {
   return { tone, title, text };
 }
 
-function areaCard(a) {
+/** Kompakte Zeile pro Gebiet: Name, bester Start mit Fenster, Score; aufklappbar für alle Startplätze. */
+function areaRow(a) {
   const d = a.days[S.day];
   const sites = a.sites.map(siteById).filter(Boolean);
-  const open = S.open.has(a.id);
-  const hasFav = sites.some(s => S.fav.has(s.id));
-  const best = d && siteById(d.siteId);
-  const nowH = nowHourToday();
-  const head = d
-    ? `<div class="card-top"><div><div class="card-name">${esc(a.name)}${hasFav ? ' ★' : ''}</div><div class="card-sub">${esc(best.name)} · ${best.alt} m · ${esc(aspectText(best))} · ${winText(d.best)}</div></div>${pill(d.best.score)}</div>${ribbon(best.days[S.day].scores, d.best, { now: nowH })}`
-    : `<div class="card-top"><div><div class="card-name">${esc(a.name)}</div><div class="card-sub">${isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster'}</div></div>${pill(null, false)}</div>`;
+  const open = S.open.has(a.id), hasFav = sites.some(s => S.fav.has(s.id));
+  const best = d && siteById(d.siteId), nowH = nowHourToday();
+  const km = S.pos ? Math.round(Math.min(...sites.map(s => haversineKm(S.pos[0], S.pos[1], s.lat, s.lon)))) : null;
+  const sub = d ? `${esc(best.name)} · ${winText(d.best)}` : (isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster');
   const rows = [...sites].sort((x, y) => (y.days[S.day].best?.score ?? -1) - (x.days[S.day].best?.score ?? -1)).map(s => {
     const b = s.days[S.day].best;
     return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
   }).join('');
-  return `<article class="card">
-    <button type="button" class="card-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}: ${d ? 'bester Start ' + esc(best.name) + ' öffnen' : 'aufklappen'}">${head}</button>
-    <div class="card-foot"><span class="card-sub">${sites.length} ${sites.length === 1 ? 'Startplatz' : 'Startplätze'}</span>
-      <button type="button" class="exp-btn" data-act="toggle" data-id="${esc(a.id)}" aria-expanded="${open}">${open ? 'Weniger' : 'Alle Startplätze'}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
-    ${open ? `<div class="rows">${rows}</div>` : ''}
-  </article>`;
+  return `<div class="arow${open ? ' open' : ''}">
+    <button type="button" class="arow-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
+      <span class="arow-txt"><span class="arow-name">${esc(a.name)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
+      <span class="mini-pill s-${d ? cls(d.best.score) : 'none'}">${d ? d.best.score : '–'}</span></button>
+    <button type="button" class="arow-exp" data-act="toggle" data-id="${esc(a.id)}" aria-expanded="${open}" aria-label="${sites.length} ${sites.length === 1 ? 'Startplatz' : 'Startplätze'} ${open ? 'zuklappen' : 'zeigen'}"><span>${sites.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    ${open ? `<div class="rows arow-rows">${rows}</div>` : ''}
+  </div>`;
 }
-
+/** Standort für «In der Nähe» (nur im Browser, wird nirgends gespeichert). */
+function locateNear() {
+  if (!navigator.geolocation) { toast('Dieses Gerät gibt keinen Standort an.'); return; }
+  S.locating = true; renderDecide();
+  navigator.geolocation.getCurrentPosition(p => {
+    S.pos = [p.coords.latitude, p.coords.longitude]; S.locating = false; S.sort = 'near'; store.set('sort', 'near'); renderDecide();
+  }, () => { S.locating = false; S.sort = 'best'; store.set('sort', 'best'); renderDecide(); toast('Standort nicht freigegeben. Auf dem iPhone: Einstellungen › Datenschutz › Ortungsdienste › Safari-Websites.'); }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 15 * 60000 });
+}
 /** Erfahrungsstufe kurz anzeigen; ändern im Profil (dort wird sie aus Flügen, Stunden und Pause berechnet). */
 function levelLine() {
   const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
@@ -265,7 +271,9 @@ function renderDecide() {
   if (!S.plan) { el.innerHTML = stateBox(); return; }
   const p = S.plan, h = headlineFor(S.day);
   const favSites = [...S.fav].map(siteById).filter(Boolean);
-  const areas = [...p.areas].sort((a, b) => (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
+  const near = S.sort === 'near' && S.pos;
+  const dist = a => Math.min(...a.sites.map(siteById).filter(Boolean).map(x => haversineKm(S.pos[0], S.pos[1], x.lat, x.lon)));
+  const areas = [...p.areas].sort((a, b) => near ? dist(a) - dist(b) : (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
   el.innerHTML = `
     ${watchLineHtml()}
@@ -277,8 +285,9 @@ function renderDecide() {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
-    <h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
-    <div class="cards">${areas.map(areaCard).join('')}</div>
+    <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
+      <div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'In der Nähe'}</button></div></div>
+    <div class="card alist">${areas.map(areaRow).join('')}</div>
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
 
@@ -1132,10 +1141,16 @@ function renderSite() {
   const fav = S.fav.has(s.id);
   const c = hr ? cls(hr.score) : 'none';
   const nc = d.nowcast;
+  const actionsHtml = `<div class="site-acts">
+      ${S.day === 0 ? watchBtnHtml(s.id) : ''}
+      <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+      ${webcamHtml(s)}
+    </div>`;
   const detailHtml = hr ? `
     <div class="hr-detail">
       <div class="hr-head">${pill(hr.score, false)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
       ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint(store.get('pilot', {}), hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
+      ${actionsHtml}
       <details class="why-more"><summary>Alle Gründe für den Score</summary>
       ${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine">Keine Auffälligkeiten.</p>'}
@@ -1154,13 +1169,10 @@ function renderSite() {
       </div>
       <h3 style="font:700 18px var(--f-num)">Wind über dem Startplatz</h3>
       ${profileHtml(hr.prof)}
-    </div>` : '<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>';
+    </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
   const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
-    <div class="btn-row" style="justify-content:flex-start">${starBtn(s.id).replace('class="star"', 'class="star" style="border:1px solid var(--line);border-radius:8px"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
-    ${S.day === 0 ? watchBtnHtml(s.id) : ''}
-    ${webcamHtml(s)}
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
@@ -1894,6 +1906,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'camset': camSet(id); break;
+    case 'sort': if (b.dataset.v === 'near') { if (S.pos) { S.sort = 'near'; store.set('sort', 'near'); renderDecide(); } else locateNear(); } else { S.sort = 'best'; store.set('sort', 'best'); renderDecide(); } break;
     case 'watch': toggleWatch(id); break;
     case 'pushon': pushEnable(); break;
     case 'pushoff': pushDisable(); break;
@@ -2019,5 +2032,6 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   }
   pushInit().then(() => { renderPush(); pushSync(); });
   loadWatch().then(() => { if (S.tab === 'decide') renderDecide(); });
+  if (store.get('sort') === 'near') locateNear();
   if (/[?&](tab|site)=/.test(location.search)) { applyDeepLink(location.href); history.replaceState(null, '', '/'); }
 })();

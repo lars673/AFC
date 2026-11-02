@@ -389,3 +389,31 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .watch-row .fine { margin: 0; }
 @media (max-width: 420px) { .watch-row { grid-template-columns: 1fr; } }
 .watch-line { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+/* Entscheid: kompakte Liste der Gebiete */
+.sec-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.seg-sm button { min-height: 36px; padding: 0 12px; font-size: 14px; }
+.alist { padding: 0; }
+.arow { display: grid; grid-template-columns: 1fr auto; border-bottom: 1px solid var(--line); }
+.arow:last-child { border-bottom: 0; }
+.arow-main { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; text-align: left; background: none; border: 0; padding: 10px 4px 10px 14px; min-height: 56px; color: inherit; }
+.arow-txt { display: grid; gap: 3px; min-width: 0; }
+.arow-name { font-weight: 700; font-size: 16px; }
+.arow-fav { color: var(--accent); }
+.arow-km { font-weight: 500; font-size: 13px; color: var(--muted); }
+.arow-sub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.arow .ribbon { height: 6px; margin-top: 2px; }
+.arow-exp { min-width: 48px; background: none; border: 0; border-left: 1px solid var(--line); color: var(--accent); display: grid; place-items: center; align-content: center; gap: 0; font-weight: 600; font-size: 13px; }
+.arow-exp svg { width: 16px; height: 16px; transition: transform .15s; }
+.arow-exp[aria-expanded="true"] svg { transform: rotate(180deg); }
+.arow-rows { grid-column: 1 / -1; }
+/* Startplatz-Ansicht: Aktionen nach «Kurz erklärt», auf dem Handy bildschirmfüllend */
+.site-acts { display: grid; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.act-row { display: grid; grid-template-columns: 48px 1fr 1fr; gap: 8px; }
+.act-row .btn { width: 100%; justify-content: center; }
+.act-star { border: 1px solid var(--line); border-radius: 8px; min-height: 44px; }
+.cam-row .linkbtn { min-height: 32px; }
+@media (max-width: 560px) {
+  #siteDlg { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
+  #siteDlg .dlg-in { max-height: 100dvh; height: 100dvh; padding: calc(12px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
+  #siteDlg .dlg-h { position: sticky; top: calc(-12px - env(safe-area-inset-top)); background: var(--panel); z-index: 2; padding: 4px 0 8px; margin-top: -4px; }
+}
