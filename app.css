@@ -562,3 +562,13 @@ button.st-site .st-sn { color: var(--accent); text-decoration: underline; }
   .wind-bar { max-width: calc(100% - 120px); }
   .tabs button { min-height: 56px; }
 }
+
+/* Regenradar und Webcam-Bild */
+.radar-chip { position: absolute; top: 10px; left: 56px; z-index: 520; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font: 600 13px var(--f-num); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.rad-near { border-left: 5px solid var(--go); padding: 6px 10px; border-radius: 6px; background: var(--panel2); }
+.rad-near.warn { border-left-color: var(--wait); background: color-mix(in srgb, var(--wait) 14%, var(--panel)); }
+.cam-img { margin: 8px 0 0; }
+.cam-img img { display: block; width: 100%; max-height: 300px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); }
+.cam-img figcaption { margin-top: 4px; }
+
+.kv > div.kv-warn { border-left: 5px solid var(--wait); } .kv > div.kv-bad { border-left: 5px solid var(--no); }

@@ -13,7 +13,7 @@ import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts } from './l
 import { spawn } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
-import { loadStationList, fetchObservations, fetchFoehnIndex } from './lib/stations.js';
+import { loadStationList, fetchObservations, fetchFoehnIndex, PRESSURE_STATIONS } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LEARN_DAYS, LEARN_MIN_N } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
@@ -22,6 +22,7 @@ import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedback } from './lib/logbook.js';
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
+import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { learnedVerdict, thermalLearn } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
@@ -137,9 +138,11 @@ function foehnTrend() {
 }
 
 async function collectObservations() {
-  const codes = Object.keys(state.stationList);
+  const codes = [...new Set([...Object.keys(state.stationList), ...Object.keys(PRESSURE_STATIONS)])];
   try {
     const { data, source } = await fetchObservations(codes);
+    // Luftdruck auf Meereshöhe für Föhn- und Bisedruck (nur im Speicher, nach 10 Minuten wieder frisch)
+    state.qff = Object.fromEntries(Object.keys(PRESSURE_STATIONS).filter(c => isNum(data[c]?.qff)).map(c => [c, { qff: data[c].qff, time: data[c].time }]));
     const rows = storeObservations(data);
     ingest.observations = { ok: true, at: nowIso(), error: null, source, rows };
   } catch (e) {
@@ -150,7 +153,7 @@ async function collectObservations() {
     ingest.foehn = { ok: true, at: nowIso(), error: null };
   } catch (e) { ingest.foehn = { ok: false, at: nowIso(), error: errMsg(e) }; }
   state.obs = latestObs();
-  state.regional = Object.keys(state.obs).length ? regionalFromObs(state.obs, state.foehnIndex) : null;
+  state.regional = Object.keys(state.obs).length ? regionalFromObs(state.obs, state.foehnIndex, state.qff) : null;
   state.trend = foehnTrend();
   invalidate();
 }
@@ -406,6 +409,65 @@ const corsHeaders = req => {
   return o === CORS_ORIGIN ? { 'Access-Control-Allow-Origin': o, Vary: 'Origin' } : {};
 };
 
+/* ------------------------------------------------------------------ Regenradar und Webcam-Bilder */
+const RADAR_URL = () => process.env.AFC_RADAR_URL || 'https://api.rainviewer.com/public/weather-maps.json';
+const radarCache = makeCache(400), camCache = makeCache(60);
+let radarIndex = null, radarIndexAt = 0, radarReq = null;
+async function radarInfo() {
+  if (radarIndex && Date.now() - radarIndexAt < 5 * 60000) return radarIndex;
+  radarReq ??= (async () => {
+    const r = await fetch(RADAR_URL(), { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error('Radar ' + r.status);
+    radarIndex = radarFrames(await r.json(), { allowLocal: /^http:\/\/127\.0\.0\.1:/.test(RADAR_URL()) }); radarIndexAt = Date.now();
+    return radarIndex;
+  })().finally(() => { radarReq = null; });
+  return radarReq;
+}
+async function fetchImage(url, maxBytes, { cam = false } = {}) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(12000), redirect: 'follow', headers: { 'User-Agent': 'AFC (persoenliche Flugwetter-App)' } });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (cam && r.url && !camUrlOk(r.url)) throw new Error('Weiterleitung ins lokale Netz');
+  const type = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!/^image\/(png|jpeg|jpg|webp|gif)$/.test(type)) { const e = new Error('kein Bild'); e.notImage = true; throw e; }
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error('Bild zu gross');
+  return { type, buf, modified: r.headers.get('last-modified') };
+}
+async function mediaRoute(req, res, p, u) {
+  const img = (code, o, maxAge) => { res.writeHead(code, { 'Content-Type': o.type, 'Content-Length': o.buf.length, 'Cache-Control': `private, max-age=${maxAge}`, 'X-Content-Type-Options': 'nosniff', ...(o.at ? { 'X-AFC-Image-Time': o.at } : {}) }); res.end(o.buf); };
+  try {
+    if (p === '/api/radar') {
+      const ri = await radarInfo();
+      return sendJson(req, res, 200, { ok: !!ri.frames.length, frames: ri.frames.map(f => f.time), source: 'RainViewer' });
+    }
+    const m = p.match(/^\/api\/radar\/(\d{9,11})\/(\d)\/(\d{1,4})\/(\d{1,4})\.png$/);
+    if (m) {
+      const [ts, z, x, y] = m.slice(1).map(Number);
+      if (!tileOk(z, x, y)) return sendJson(req, res, 400, { error: 'Kachel ungültig' });
+      const key = `${ts}/${z}/${x}/${y}`, hit = radarCache.get(key);
+      if (hit) return img(200, hit, 600);
+      const ri = await radarInfo(), f = ri.frames.find(q => q.time === ts);
+      if (!f) return sendJson(req, res, 404, { error: 'Radarbild nicht mehr verfügbar' });
+      const o = await fetchImage(`${ri.host}${f.path}/256/${z}/${x}/${y}/2/1_0.png`, 400000);
+      radarCache.set(key, o, 30 * 60000);
+      return img(200, o, 600);
+    }
+    if (p === '/api/camimg') {
+      const url = camUrlOk(u.searchParams.get('u'));
+      if (!url) return sendJson(req, res, 400, { error: 'Adresse ungültig (nur https, kein lokales Netz)' });
+      const hit = camCache.get(url);
+      if (hit) return img(200, hit, 60);
+      const o = await fetchImage(url, 4000000, { cam: true });
+      o.at = o.modified ? new Date(o.modified).toISOString() : new Date().toISOString();
+      camCache.set(url, o, 2 * 60000);
+      return img(200, o, 60);
+    }
+    return sendJson(req, res, 404, { error: 'unbekannt' });
+  } catch (e) {
+    return sendJson(req, res, e.notImage ? 415 : 502, { error: e.notImage ? 'Die Adresse liefert kein Bild' : 'nicht erreichbar: ' + String(e.message || e).slice(0, 80) });
+  }
+}
+
 function sendJson(req, res, code, obj) {
   const b = Buffer.from(JSON.stringify(obj));
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...SEC, ...corsHeaders(req) });
@@ -495,6 +557,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
 
+    // Regenradar und Webcam-Bilder: eigene Grenze, weil eine Karte viele Kacheln auf einmal lädt
+    if (req.method === 'GET' && (p === '/api/radar' || p.startsWith('/api/radar/') || p === '/api/camimg')) {
+      if (limited(req, 'media', 600)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+      return mediaRoute(req, res, p, u);
+    }
     if (p.startsWith('/api/')) {
       if (limited(req, 'api', 180)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
       if (req.method === 'GET' && p === '/api/plan') {

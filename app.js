@@ -450,6 +450,8 @@ function renderLage() {
     ['Kaltfront', h => lc(h.front, h.frontWhy?.[0])],
     ['Gewitter', h => lc(h.storm, `CAPE ${h.cape} J/kg, Regen ${h.pop} %`)],
     ['Föhn', h => lc(h.foehn)],
+    [phone ? 'Föhn hPa' : 'Föhndruck hPa', h => (num(h.dp) ? `<div class="bc ${h.dp >= 8 ? 'danger' : h.dp >= 4 ? 'warn' : 'mut'}" aria-label="Druck Lugano minus Zürich ${h.dp} hPa">${h.dp > 0 ? '+' : ''}${h.dp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
+    [phone ? 'Bise hPa' : 'Bisedruck hPa', h => (num(h.bdp) ? `<div class="bc ${h.bdp >= 4 ? 'danger' : h.bdp >= 2 ? 'warn' : 'mut'}" aria-label="Druck Zürich minus Genf ${h.bdp} hPa">${h.bdp > 0 ? '+' : ''}${h.bdp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
     [phone ? 'Wind 2000' : 'Wind 2000 m', h => wc(h.up800, 40)],
     [phone ? 'Wind 3000' : 'Wind 3000 m', h => wc(h.up700, 60)],
     [phone ? 'Basis km' : 'Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
@@ -470,10 +472,13 @@ function renderLage() {
       <tbody>${rows.map(([name, f]) => `<tr><th class="rl" scope="row">${name}</th>${hrs.map(h => `<td>${f(h)}</td>`).join('')}</tr>`).join('')}</tbody>
     </table></div>
     <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
+    <p class="fine" style="margin:4px 0 0">Föhndruck = Luftdruck Lugano minus Zürich (Prognose): ab +4 hPa Föhn möglich, ab +8 hPa Föhn. Bisedruck = Zürich minus Genf: ab +2 hPa Bise, ab +4 hPa starke Bise.</p>
     ${whyAll.length ? `<div class="panel" style="margin-top:12px"><h3>Warum die Frontwarnung?</h3><ul class="why">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p></div>` : ''}
     ${isToday() && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
       <div><b>${nowS.foehnScore}</b><span>Föhn-Signal${nowS.foehn !== 'ok' ? ' (' + LVL_TXT[nowS.foehn] + ')' : ''}</span></div>
       <div><b>${nowS.bise}</b><span>Bise im Vorland</span></div>
+      ${num(nowS.dpFoehn) ? `<div class="${nowS.dpFoehn >= 8 ? 'kv-bad' : nowS.dpFoehn >= 4 ? 'kv-warn' : ''}"><b>${nowS.dpFoehn > 0 ? '+' : ''}${nowS.dpFoehn.toFixed(1)} hPa</b><span>Föhndruck Lugano–Kloten</span></div>` : ''}
+      ${num(nowS.dpBise) ? `<div class="${nowS.dpBise >= 4 ? 'kv-bad' : nowS.dpBise >= 2 ? 'kv-warn' : ''}"><b>${nowS.dpBise > 0 ? '+' : ''}${nowS.dpBise.toFixed(1)} hPa</b><span>Bisedruck Kloten–Genf</span></div>` : ''}
       <div><b>${nowS.talwind}</b><span>Talwind Richtung Alpen</span></div></div>
       ${nowS.reasons?.length ? `<ul class="why">${nowS.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
       <p class="fine">Messwerte zählen nur für die nächsten Stunden. Für spätere Stunden und andere Tage gilt allein die Modellprognose.</p></div>` : ''}`;
@@ -1381,13 +1386,32 @@ const WEBCAMS = {
 function webcamHtml(s) {
   const w = WEBCAMS.site[s.id] || WEBCAMS.area[s.area], mine = LB.data?.settings?.cams?.[s.id];
   const links = [mine && `<a href="${esc(mine)}" target="_blank" rel="noopener">Meine Webcam</a>`, w && `<a href="${WF(w[1])}" target="_blank" rel="noopener">Webcams ${esc(w[0])}</a>`].filter(Boolean);
-  return `<p class="cam-row"><b>Webcam:</b> ${links.length ? links.join(' · ') : '<span class="fine">noch keine hinterlegt</span>'} <button type="button" class="linkbtn fine" data-act="camset" data-id="${esc(s.id)}">${mine ? 'ändern' : 'eigene festlegen'}</button></p>`;
+  return `${mine ? `<figure class="cam-img" id="camImg" data-u="${esc(mine)}" hidden><img alt="Webcam ${esc(s.name)}"><figcaption class="fine"></figcaption></figure>` : ''}<p class="cam-row"><b>Webcam:</b> ${links.length ? links.join(' · ') : '<span class="fine">noch keine hinterlegt</span>'} <button type="button" class="linkbtn fine" data-act="camset" data-id="${esc(s.id)}">${mine ? 'ändern' : 'eigene festlegen'}</button></p>`;
+}
+/** Eigene Webcam als Bild zeigen, wenn die Adresse ein Bild liefert (über den eigenen Mac, mit Uhrzeit). */
+const CAMURL = new Map();
+async function fillCam(s) {
+  const fig = $('#camImg');
+  if (!fig) return;
+  const u = fig.dataset.u;
+  try {
+    const r = await fetch('/api/camimg?u=' + encodeURIComponent(u), { cache: 'no-store' });
+    if (!r.ok) return;   // keine Bildadresse: es bleibt beim Link
+    const blob = await r.blob(), at = r.headers.get('X-AFC-Image-Time');
+    if ($('#camImg') !== fig) return;
+    if (CAMURL.get(u)) URL.revokeObjectURL(CAMURL.get(u));
+    const obj = URL.createObjectURL(blob); CAMURL.set(u, obj);
+    fig.querySelector('img').src = obj;
+    const age = at ? ageMin(at) : null;
+    fig.querySelector('figcaption').innerHTML = at ? `Bild ${esc(whenTxt(at))}${age > 30 ? ' · <b>' + ageTxt(age) + ', eventuell veraltet</b>' : ''}` : '';
+    fig.hidden = false;
+  } catch { /* Link bleibt */ }
 }
 async function camSet(id) {
   const d = await lbLoad().catch(err => { toast(err.message); return null; });
   if (!d) return;
   const cur = d.settings.cams?.[id] || '';
-  const v = prompt('Adresse deiner Webcam für diesen Startplatz (beginnt mit https://). Leer lassen zum Entfernen.', cur);
+  const v = prompt('Adresse deiner Webcam (beginnt mit https://). Am besten die Adresse des Bildes: im Browser lange auf das Webcam-Bild drücken und «Bildadresse kopieren» wählen. Dann zeigt AFC das Bild direkt an. Leer lassen zum Entfernen.', cur);
   if (v === null) return;
   const cams = { ...(d.settings.cams || {}) };
   if (v.trim()) { const u = LG().httpsUrl(v); if (!u) { toast('Bitte eine Adresse mit https:// eingeben.'); return; } cams[id] = u; } else delete cams[id];
@@ -1439,10 +1463,13 @@ function renderSite() {
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
+    ${S.day === 0 && !d._savedAt ? `<div class="panel" style="margin:0"><h3>Regen jetzt</h3><div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div></div>` : ''}
     ${landingHtml(s, hr)}
     ${table}
     <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
   </div>`);
+  if (S.day === 0 && !d._savedAt) fillRadarNear(s);
+  fillCam(s);
 }
 function reportForm(id) {
   const s = siteById(id);
@@ -1487,6 +1514,88 @@ const OVERLAYS = {
 };
 const M = { map: null, base: null, baseKey: null, ov: {}, group: null, me: null, errs: {}, loaded: 0 };
 
+/* ---- Regenradar (RainViewer über den eigenen Mac, /api/radar). Gratis für persönliche Nutzung. */
+const RAD = { frames: [], at: 0, layer: null, timer: null, near: new Map() };
+async function radarFrames(force) {
+  if (!force && RAD.frames.length && Date.now() - RAD.at < 5 * 60000) return RAD.frames;
+  const r = await fetch('/api/radar', { cache: 'no-store' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.frames?.length) throw new Error(j.error || 'Radar nicht verfügbar');
+  RAD.frames = j.frames; RAD.at = Date.now();
+  return RAD.frames;
+}
+const radarUrl = ts => `/api/radar/${ts}/{z}/{x}/{y}.png`;
+async function setRadar(on) {
+  const keep = store.get('ov', {}); keep.radar = on; store.set('ov', keep);
+  clearInterval(RAD.timer); RAD.timer = null;
+  if (RAD.layer) { M.map?.removeLayer(RAD.layer); RAD.layer = null; }
+  const chip = $('#radarChip');
+  if (!on || !M.map) { if (chip) chip.hidden = true; return; }
+  const draw = async force => {
+    try {
+      const f = await radarFrames(force), ts = f.at(-1);
+      if (!RAD.layer) RAD.layer = L.tileLayer(radarUrl(ts), { opacity: 0.65, maxNativeZoom: 7, maxZoom: 18, zIndex: 450, attribution: 'Radar <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>' }).addTo(M.map);
+      else RAD.layer.setUrl(radarUrl(ts));
+      chip.textContent = `Regenradar ${timeOf(new Date(ts * 1000).toISOString())} Uhr`; chip.hidden = false;
+    } catch (e) { chip.textContent = 'Regenradar: ' + e.message; chip.hidden = false; }
+  };
+  await draw(false);
+  RAD.timer = setInterval(() => { if (S.tab === 'map') draw(true); }, 10 * 60000);
+}
+/** Regen auf dem Radar in der Nähe eines Ortes: nächster Regen (km, Richtung) jetzt und vor 20 Minuten. */
+async function radarNear(lat, lon, radiusKm = 30) {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`, hit = RAD.near.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60000) return hit.v;
+  const f = await radarFrames(false), z = 7, n = 2 ** z;
+  const xt = (lon + 180) / 360 * n, phi = lat * Math.PI / 180, yt = (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2 * n;
+  const mpp = 156543.03 * Math.cos(phi) / n, rPx = Math.ceil(radiusKm * 1000 / mpp);
+  const cx = xt * 256, cy = yt * 256;
+  const tx0 = Math.floor((cx - rPx) / 256), tx1 = Math.floor((cx + rPx) / 256), ty0 = Math.floor((cy - rPx) / 256), ty1 = Math.floor((cy + rPx) / 256);
+  const nearest = async ts => {
+    const cv = document.createElement('canvas'); cv.width = (tx1 - tx0 + 1) * 256; cv.height = (ty1 - ty0 + 1) * 256;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    for (let tx = tx0; tx <= tx1; tx++) for (let ty = ty0; ty <= ty1; ty++) {
+      const r = await fetch(`/api/radar/${ts}/${z}/${tx}/${ty}.png`);
+      if (!r.ok) throw new Error('Radarbild fehlt');
+      const bmp = await createImageBitmap(await r.blob());
+      g.drawImage(bmp, (tx - tx0) * 256, (ty - ty0) * 256);
+    }
+    const px = cx - tx0 * 256, py = cy - ty0 * 256;
+    const x0 = Math.max(0, Math.floor(px - rPx)), y0 = Math.max(0, Math.floor(py - rPx));
+    const data = g.getImageData(x0, y0, Math.min(cv.width - x0, 2 * rPx + 1), Math.min(cv.height - y0, 2 * rPx + 1));
+    let best = null, cells = 0;
+    for (let y = 0; y < data.height; y++) for (let x = 0; x < data.width; x++) {
+      if (data.data[(y * data.width + x) * 4 + 3] < 60) continue;
+      const dx = x0 + x - px, dy = y0 + y - py, d = Math.hypot(dx, dy) * mpp / 1000;
+      if (d > radiusKm) continue;
+      cells++;
+      if (!best || d < best.d) best = { d, deg: (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360 };
+    }
+    return best ? { ...best, cells } : null;
+  };
+  const now = await nearest(f.at(-1)), before = f.length >= 3 ? await nearest(f.at(-3)).catch(() => null) : null;
+  const v = { ts: f.at(-1), radiusKm, now, before };
+  RAD.near.set(key, { at: Date.now(), v });
+  return v;
+}
+const DIR8 = ['Norden', 'Nordosten', 'Osten', 'Südosten', 'Süden', 'Südwesten', 'Westen', 'Nordwesten'];
+const dir8 = deg => DIR8[Math.round(deg / 45) % 8];
+const DIR8_ADJ = ['nördlich', 'nordöstlich', 'östlich', 'südöstlich', 'südlich', 'südwestlich', 'westlich', 'nordwestlich'];
+function radarNearHtml(v) {
+  const when = timeOf(new Date(v.ts * 1000).toISOString());
+  if (!v.now) return `<div class="rad-near ok"><b>Kein Regen</b> im Umkreis von ${v.radiusKm} km <span class="fine">(Radar ${when} Uhr)</span></div>`;
+  const d = Math.max(1, Math.round(v.now.d)), b = v.before ? Math.round(v.before.d) : null;
+  const trend = b === null ? '' : !v.before ? '' : b - d >= 3 ? `, kommt näher (vor 20 min ${b} km)` : d - b >= 3 ? `, zieht weg (vor 20 min ${b} km)` : ', bleibt etwa gleich';
+  const newRain = !v.before && v.now ? ', neu entstanden (Schauer?)' : '';
+  const lvl = d <= 10 || (b !== null && b - d >= 3 && d <= 20) || newRain ? 'warn' : 'ok';
+  return `<div class="rad-near ${lvl}"><b>Regen ${d <= 2 ? 'hier' : d + ' km ' + DIR8_ADJ[Math.round(v.now.deg / 45) % 8]}</b>${trend}${newRain} <span class="fine">(Radar ${when} Uhr)</span></div>`;
+}
+async function fillRadarNear(s) {
+  const el = $('#radarNear');
+  if (!el) return;
+  try { const v = await radarNear(s.lat, s.lon); if ($('#radarNear') === el) el.innerHTML = radarNearHtml(v); }
+  catch (e) { if ($('#radarNear') === el) el.innerHTML = `<p class="fine" style="margin:0">Regenradar nicht verfügbar (${esc(e.message)}).</p>`; }
+}
 function mapMsg(t) { const m = $('#mapMsg'); m.hidden = !t; m.textContent = t || ''; }
 function setBase(key) {
   if (!M.map || !BASES[key]) return;
@@ -1584,6 +1693,7 @@ function initMap() {
   setBase(BASES[store.get('base')] ? store.get('base') : 'color');
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
+  if (ov.radar) setRadar(true);
   syncLayerPanel();
   M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else if (airHere(e.latlng.lat, e.latlng.lng)) mapSheet('air', e.latlng); else $('#mapSheet').hidden = true; });
   updateAir();
@@ -2299,7 +2409,7 @@ document.addEventListener('change', e => {
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
-  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
+  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value === 'radar') setRadar(t.checked); else if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
 });
 // IGC-Dateien aufs Flugbuch ziehen
 document.addEventListener('dragover', e => { if (S.tab === 'book' && e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });

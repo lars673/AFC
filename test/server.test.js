@@ -13,7 +13,7 @@ async function boot(scenario, port, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_BACKUP_DIR: '', ...extraEnv },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_RADAR_URL: mock.url + '/public/weather-maps.json', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_BACKUP_DIR: '', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -380,4 +380,27 @@ test('Selbstüberwachung: fehlende Messwerte melden, einmal pro Tag', async () =
     await post('/api/push/subscribe', { subscription: { endpoint: 'https://web.push.apple.com/QHealth2', keys }, prefs: { health: false } });
     assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 12 })).json()).sent, 0);
   } finally { await s.stop(); rx.close(); }
+});
+
+test('Regenradar über den eigenen Server, Webcam-Adressen geprüft', async () => {
+  const s = await boot('good', 18799);
+  try {
+    const r = await fetch(s.base + '/api/radar');
+    assert.equal(r.status, 200, s.log());
+    const j = await r.json();
+    assert.equal(j.ok, true);
+    assert.equal(j.frames.length, 3);
+    const ts = j.frames.at(-1);
+    const t = await fetch(`${s.base}/api/radar/${ts}/7/66/45.png`);
+    assert.equal(t.status, 200);
+    assert.equal(t.headers.get('content-type'), 'image/png');
+    const buf = Buffer.from(await t.arrayBuffer());
+    assert.equal(buf.subarray(1, 4).toString(), 'PNG');
+    assert.equal((await fetch(`${s.base}/api/radar/${ts}/8/66/45.png`)).status, 400);      // höchstens Zoom 7
+    assert.equal((await fetch(`${s.base}/api/radar/${ts}/7/200/45.png`)).status, 400);     // ausserhalb des Rasters
+    assert.equal((await fetch(`${s.base}/api/radar/1000000000/7/66/45.png`)).status, 404); // altes Bild
+    for (const bad of ['http://example.com/a.jpg', 'https://127.0.0.1/a.jpg', 'https://localhost/a.jpg', 'https://192.168.1.10/cam.jpg', 'https://user:pw@example.com/a.jpg', 'https://example.com:8080/a.jpg']) {
+      assert.equal((await fetch(s.base + '/api/camimg?u=' + encodeURIComponent(bad))).status, 400, bad);
+    }
+  } finally { await s.stop(); }
 });

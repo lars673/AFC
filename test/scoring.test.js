@@ -407,3 +407,18 @@ test('Gelernte Thermik-Obergrenze: höherer Arbeitsraum mit Begründung', () => 
   const none = assessHour(site, good({ thermik: { top: 1500, wstar: 0 }, cloudBase: 3200, thermLearn: { add: 300, n: 4, median: 420 } }));
   assert.ok(!none.reasons.some(r => /Thermik-Obergrenze/.test(r)));
 });
+
+test('Druckdifferenzen: Föhn Lugano–Kloten, Bise Kloten–Genf, nur frische Werte', async () => {
+  const { pressureDiffs, regionalFromObs } = await import('../lib/regional.js');
+  const now = Date.parse('2026-11-01T10:00:00Z'), t = '2026-11-01T09:50:00Z';
+  const q = { LUG: { qff: 1016.0, time: t }, KLO: { qff: 1024.6, time: t }, GVE: { qff: 1019.9, time: t } };
+  const d = pressureDiffs(q, now);
+  assert.equal(d.foehn, -8.6);
+  assert.equal(d.bise, 4.7);
+  const r = regionalFromObs({}, {}, q, now);
+  assert.ok(r.biseScore >= 50, 'starke Bise aus dem Druck allein');
+  assert.ok(r.reasons.some(x => /Bisedruck Kloten–Genf \+4\.7 hPa/.test(x)));
+  assert.equal(r.foehn, 'ok');
+  // alte Werte zählen nicht
+  assert.equal(pressureDiffs({ ...q, GVE: { qff: 1010, time: '2026-11-01T07:00:00Z' } }, now).bise, null);
+});

@@ -1,5 +1,6 @@
 // Simulierte Datenquellen (Open-Meteo, MeteoSchweiz) für Tests ohne Internet.
 import http from 'node:http';
+import zlib from 'node:zlib';
 
 const PL = [950, 925, 900, 850, 800, 700, 600];
 const ZH = { 950: 540, 925: 770, 900: 990, 850: 1460, 800: 1950, 700: 3010, 600: 4200 };
@@ -47,6 +48,22 @@ DP 46:47:00 N 007:54:00 E
 DP 46:46:00 N 007:54:00 E
 `;
 
+/** 256×256-PNG, durchsichtig, mit einem blauen Fleck (Regen) – ohne Zusatzpakete. */
+function mockRadarPng() {
+  const W = 256, raw = Buffer.alloc((W * 4 + 1) * W);
+  for (let y = 0; y < W; y++) {
+    raw[y * (W * 4 + 1)] = 0;
+    for (let x = 0; x < W; x++) {
+      if (x >= 60 && x < 90 && y >= 60 && y < 90) { const o = y * (W * 4 + 1) + 1 + x * 4; raw[o] = 40; raw[o + 1] = 110; raw[o + 2] = 230; raw[o + 3] = 200; }
+    }
+  }
+  const crcT = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcT[n] = c >>> 0; }
+  const crc = b => { let c = 0xffffffff; for (const v of b) c = crcT[(c ^ v) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (t, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(t), d]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(W, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
 export function startMock(scenario = 'good', port = 0) {
   const state = { scenario, hits: [] };
   const day0 = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
@@ -90,6 +107,15 @@ export function startMock(scenario = 'good', port = 0) {
     const u = new URL(req.url, 'http://x');
     state.hits.push(u.pathname);
     const json = o => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+    // Regenradar (RainViewer-Format): eine Regenzelle 20 bis 30 Pixel nordwestlich der Kachelmitte
+    if (u.pathname === '/public/weather-maps.json') {
+      const t = Math.floor(Date.now() / 600000) * 600;
+      return json({ version: '2.0', generated: t, host: `http://127.0.0.1:${server.address().port}`, radar: { past: [0, 1, 2].map(k => ({ time: t - (2 - k) * 600, path: `/v2/radar/${t - (2 - k) * 600}` })) } });
+    }
+    if (/^\/v2\/radar\/\d+\/256\/\d\/\d+\/\d+\/2\/1_0\.png$/.test(u.pathname)) {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      return res.end(mockRadarPng());
+    }
     if (u.pathname === '/downloads/switzerland-airspace-metric.txt') {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=latin1' });
       return res.end(Buffer.from(MOCK_AIR, 'latin1'));
