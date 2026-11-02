@@ -324,6 +324,17 @@ test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgela
     assert.equal(m.title, 'Retter packen fällig');
     assert.match(m.body, /Supair Light/);
     assert.equal((await (await post('/api/push/run', { phase: 'morning' })).json()).sent, 0);
+    // Flugtag-Wächter
+    const wpost = b => fetch(s.base + '/api/watch', { method: 'POST', headers: H, body: JSON.stringify(b) });
+    assert.equal((await wpost({ siteId: 'gibtsnicht' })).status, 400);
+    let wj = await (await wpost({ siteId: 'niesen', level: 'careful' })).json();
+    assert.deepEqual(wj.watches.map(w => [w.siteId, w.level]), [['niesen', 'careful']]);
+    assert.equal(wj.devices, 1);
+    await wpost({ siteId: 'stockhorn-1' }); await wpost({ siteId: 'first' });
+    assert.equal((await wpost({ siteId: 'maennlichen' })).status, 400);   // höchstens 3
+    assert.equal(typeof (await (await post('/api/push/run', { phase: 'watch', hour: 12 })).json()).sent, 'number');
+    wj = await (await wpost({ siteId: 'niesen', on: false })).json();
+    assert.deepEqual(wj.watches.map(w => w.siteId).sort(), ['first', 'stockhorn-1']);
     // Selbstüberwachung: im guten Szenario keine Störung, also keine Meldung
     const stat = await (await fetch(s.base + '/api/status')).json();
     assert.deepEqual(stat.problems, []);

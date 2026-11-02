@@ -268,6 +268,7 @@ function renderDecide() {
   const areas = [...p.areas].sort((a, b) => (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
   el.innerHTML = `
+    ${watchLineHtml()}
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
@@ -1057,6 +1058,33 @@ function profileHtml(prof) {
   const max = Math.max(40, ...prof.map(p => p[1]));
   return `<div class="profile" role="table" aria-label="Windprofil">${[...prof].reverse().map(p => `<div class="pr" role="row"><span>+${p[0]} m</span><span class="bar"><i class="${p[1] >= 40 ? 'hi' : ''}" style="width:${Math.round(p[1] / max * 100)}%"></i></span><b>${p[1]} ${arrow(p[2])} ${dirLabel(p[2])}</b></div>`).join('')}</div>`;
 }
+/* ---- Flugtag-Wächter: «Heute fliege ich hier» (lib/watch.js) */
+const WT = { list: [], devices: 0, to: 20 };
+async function loadWatch() {
+  try { const j = await (await fetch('/api/watch', { headers: { 'X-AFC-Client': clientId } })).json(); if (j.ok) Object.assign(WT, { list: j.watches, devices: j.devices, to: j.to ?? 20 }); } catch { /* offline */ }
+}
+const watching = id => WT.list.some(w => w.siteId === id);
+function watchBtnHtml(id) {
+  const on = watching(id);
+  return `<div class="watch-row${on ? ' on' : ''}"><button class="btn ${on ? '' : 'sec'}" type="button" data-act="watch" data-id="${esc(id)}" aria-pressed="${on}">${on ? '✓ Wächter aktiv' : 'Heute fliege ich hier'}</button><span class="fine">${on ? `AFC meldet sich bis ${WT.to} Uhr sofort, wenn Böen, Föhn oder die Bewertung kippen. Nochmals tippen beendet den Wächter.` : 'AFC behält den Startplatz heute im Auge und meldet sich, wenn es kippt.'}</span></div>`;
+}
+function watchLineHtml() {
+  const names = WT.list.map(w => siteById(w.siteId)).filter(Boolean);
+  if (!names.length) return '';
+  return `<div class="watch-line" role="status">Wächter aktiv: ${names.map(s => `<button type="button" class="linkbtn" data-act="site" data-id="${esc(s.id)}">${esc(s.name)}</button>`).join(', ')} <span class="fine">bis ${WT.to} Uhr</span></div>`;
+}
+async function toggleWatch(id) {
+  const on = !watching(id);
+  try {
+    const r = await fetch('/api/watch', { method: 'POST', headers: { 'X-AFC-Client': clientId, 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: id, on, level: S.level }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+    WT.list = j.watches; WT.devices = j.devices;
+    toast(!on ? 'Wächter beendet' : j.devices ? 'Wächter aktiv. AFC meldet sich, wenn es kippt.' : 'Wächter aktiv, aber noch kein Gerät für Benachrichtigungen angemeldet (Profil › Benachrichtigungen).');
+    if (S.detailData?.site?.id === id) renderSite();
+    if (S.tab === 'decide') renderDecide();
+  } catch (err) { toast('Nicht geklappt: ' + err.message); }
+}
 /* ---- Webcams je Startplatz: Windfinder listet alle Webcams im Umkreis mit Entfernung und letzter Aufnahme */
 const WF = slug => 'https://www.windfinder.com/webcams/' + slug;
 const WEBCAMS = {
@@ -1122,6 +1150,7 @@ function renderSite() {
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     <div class="btn-row" style="justify-content:flex-start">${starBtn(s.id).replace('class="star"', 'class="star" style="border:1px solid var(--line);border-radius:8px"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+    ${S.day === 0 ? watchBtnHtml(s.id) : ''}
     ${webcamHtml(s)}
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
@@ -1856,6 +1885,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'camset': camSet(id); break;
+    case 'watch': toggleWatch(id); break;
     case 'pushon': pushEnable(); break;
     case 'pushoff': pushDisable(); break;
     case 'pushtest': pushTest(); break;
@@ -1973,11 +2003,12 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   lbLoad().then(() => { lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
-  setInterval(() => { if (!document.hidden) loadPlan(); }, 5 * 60000);
+  setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
     navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open') applyDeepLink(e.data.url); });
   }
   pushInit().then(() => { renderPush(); pushSync(); });
+  loadWatch().then(() => { if (S.tab === 'decide') renderDecide(); });
   if (/[?&](tab|site)=/.test(location.search)) { applyDeepLink(location.href); history.replaceState(null, '', '/'); }
 })();

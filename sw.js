@@ -2,7 +2,7 @@
 // - App-Dateien: Netzwerk zuerst (immer aktuelle Version), Zwischenspeicher nur als Offline-Rückfall.
 // - /api/ wird nie zwischengespeichert; die App hält den letzten Plan selbst vor und kennzeichnet ihn als alt.
 // - Leaflet liegt im Projekt (/vendor/leaflet) und gehört zu den App-Dateien.
-const CACHE = 'afc-8.6';
+const CACHE = 'afc-8.7';
 const CORE = ['/', '/app.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', e => e.waitUntil((async () => {

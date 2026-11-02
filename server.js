@@ -22,6 +22,7 @@ import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedback } from './lib/logbook.js';
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
+import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS flight_reports (id INTEGER PRIMARY KEY, client_hash T
 CREATE TABLE IF NOT EXISTS clients (client_hash TEXT PRIMARY KEY, created_at TEXT, last_seen TEXT);
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, prefs TEXT NOT NULL, created TEXT, last_ok TEXT, last_error TEXT);
 CREATE TABLE IF NOT EXISTS push_sent (endpoint TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(endpoint,key));
+CREATE TABLE IF NOT EXISTS watch (site_id TEXT PRIMARY KEY, date TEXT NOT NULL, level TEXT, state TEXT, created TEXT);
 CREATE TABLE IF NOT EXISTS logbook (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS fc_pred (id INTEGER PRIMARY KEY, code TEXT NOT NULL, target TEXT NOT NULL, issued TEXT NOT NULL, lead REAL, wind REAL, gust REAL, dir REAL, temp REAL, UNIQUE(code,target));
 CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
@@ -588,6 +590,27 @@ const server = http.createServer(async (req, res) => {
           [h, at, site.id, site.name, site.area, launch, b.launched ? 1 : 0, quality, score >= 0 && score <= 100 ? Math.round(score) : null, cleanText(b.afcDecision, 40), null, null, cleanText(b.note, 280), SITES_FILE.meta?.checked || null]);
         return sendJson(req, res, 200, { ok: true });
       }
+      // Flugtag-Wächter: «Heute fliege ich hier»
+      if (p === '/api/watch') {
+        if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
+        const today = zurichParts(Date.now()).date;
+        dbRun('DELETE FROM watch WHERE date<>?', [today]);
+        const list = () => dbAll('SELECT site_id siteId, level, created FROM watch WHERE date=?', [today]);
+        if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, watches: list(), devices: dbGet('SELECT COUNT(*) n FROM push_subs').n, from: WATCH_FROM, to: WATCH_TO });
+        if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
+        if (limited(req, 'post', 60)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+        const b = await readBody(req);
+        const sid = String(b.siteId || '');
+        if (!SITE_IDS.has(sid)) return sendJson(req, res, 400, { error: 'Unbekannter Startplatz' });
+        if (b.on === false) dbRun('DELETE FROM watch WHERE site_id=?', [sid]);
+        else {
+          if (!dbGet('SELECT 1 x FROM watch WHERE site_id=?', [sid]) && list().length >= WATCH_MAX) return sendJson(req, res, 400, { error: `Höchstens ${WATCH_MAX} Startplätze gleichzeitig` });
+          const level = LEVELS[b.level] ? b.level : DEFAULT_LEVEL;
+          dbRun('INSERT INTO watch(site_id,date,level,state,created) VALUES(?,?,?,?,?) ON CONFLICT(site_id) DO UPDATE SET date=excluded.date, level=excluded.level', [sid, today, level, '{}', nowIso()]);
+          tick('watch', watchTick);   // gleich einmal prüfen
+        }
+        return sendJson(req, res, 200, { ok: true, watches: list(), devices: dbGet('SELECT COUNT(*) n FROM push_subs').n });
+      }
       // Benachrichtigungen (Web Push) an die installierte App
       if (p.startsWith('/api/push/')) {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
@@ -614,7 +637,7 @@ const server = http.createServer(async (req, res) => {
           const r = await pushTo(row, { title: 'AFC-Test', body: 'Benachrichtigungen funktionieren. So meldet sich AFC bei einem guten Flugtag, bei Föhn und wenn der Retter gepackt werden muss.', url: '/', tag: 'test' });
           return sendJson(req, res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.gone ? 'Das Abo ist abgelaufen, bitte neu einschalten' : `Push-Dienst antwortet nicht (${r.status || r.error})` });
         }
-        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: b.phase === 'health' ? await healthTick(Date.now(), b.hour) : await pushTick(b.phase) });   // nur in den Tests
+        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: b.phase === 'health' ? await healthTick(Date.now(), b.hour) : b.phase === 'watch' ? await watchTick(Date.now(), b.hour) : await pushTick(b.phase) });   // nur in den Tests
         if (p === '/api/push/status') {
           return sendJson(req, res, 200, { ok: true, enabled: PUSH_ON, subscribed: !!row, prefs: row ? JSON.parse(row.prefs) : null, lastOk: row?.last_ok || null, lastError: row?.last_error || null });
         }
@@ -760,6 +783,28 @@ async function pushTick(phase = pushPhase()) {
     }
   }
   dbRun('DELETE FROM push_sent WHERE at<?', [new Date(Date.now() - 90 * 86400000).toISOString()]);
+  return sent;
+}
+
+/* ------------------------------------------------------------------ Flugtag-Wächter */
+async function watchTick(now = Date.now(), hourOverride = null) {
+  const zp = zurichParts(now), h = hourOverride ?? zp.hour;
+  const rows = dbAll('SELECT * FROM watch WHERE date=?', [zp.date]);
+  if (!rows.length || h < WATCH_FROM || h > WATCH_TO) return 0;
+  const model = currentModel();
+  if (!model?.ok) return 0;
+  const subs = PUSH_ON ? dbAll('SELECT * FROM push_subs') : [];
+  let sent = 0;
+  for (const w of rows) {
+    const detail = model.siteDetail(w.site_id, w.level);
+    if (!detail) continue;
+    const { state, alerts } = watchCheck(detail, w.level, JSON.parse(w.state || '{}'), h, now);
+    dbRun('UPDATE watch SET state=? WHERE site_id=?', [JSON.stringify(state), w.site_id]);
+    for (const a of alerts) for (const row of subs) {
+      const r = await pushTo(row, { title: a.title, body: a.body, tag: `watch-${w.site_id}-${a.type}`, url: '/?site=' + encodeURIComponent(w.site_id) });
+      if (r.ok) sent++;
+    }
+  }
   return sent;
 }
 
@@ -915,7 +960,7 @@ async function start() {
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
   if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
-  if (PUSH_ON) timers.push(setInterval(() => tick('push', async () => { await pushTick(); await healthTick(); }), 10 * 60000));
+  if (PUSH_ON) timers.push(setInterval(() => tick('push', async () => { await pushTick(); await healthTick(); await watchTick(); }), 10 * 60000));
   if (STAY_AWAKE) { awakeTick(); timers.push(setInterval(() => awakeTick(), 10 * 60000)); }
   updater.start();
 }

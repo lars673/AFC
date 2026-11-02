@@ -57,6 +57,10 @@ AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, priv
 * **Mac wach halten:** Läuft AFC als Autostart auf dem Mac, verhindert es von 6 bis 22 Uhr, dass der Mac von selbst einschläft (`caffeinate -i`, der Bildschirm darf dunkel werden). Zugeklappt schläft ein MacBook trotzdem. `tools/AFC wach halten einrichten.command` weckt den Mac zusätzlich jeden Morgen um 06:40 (`pmset repeat`, fragt einmal nach dem Passwort). Abschalten: `AFC wach halten beenden.command` bzw. `AFC_STAY_AWAKE=0`. Stand unter Profil > Verbrauch und Updates.
 * **Selbstüberwachung:** Zwischen 6 und 22 Uhr prüft AFC alle 10 Minuten: Prognose älter als 4 Stunden, Messwerte älter als 3 Stunden, Flugbuch-Sicherung fehlgeschlagen, Speicher nicht beschreibbar, Open-Meteo-Kontingent über 90 %. Probleme stehen unter Profil und kommen als Benachrichtigung (einmal pro Tag und Art, dazu «läuft wieder normal», abschaltbar). Die ersten 30 Minuten nach dem Start wird nicht geprüft (`AFC_HEALTH_GRACE_MIN`).
 
+## Flugtag-Wächter
+
+In der Startplatz-Ansicht (Tag «Heute»): «Heute fliege ich hier». Von 7 bis 20 Uhr prüft AFC dann alle 10 Minuten den Platz (`lib/watch.js`) und schickt sofort eine Benachrichtigung, wenn an der nächsten Station Böen über etwa der eigenen Grenze gemessen werden (Stufe: Böen-K.-o. minus 4 km/h) oder die Bewertung jetzt bzw. in den nächsten 2 Stunden unter 55 fällt oder ein K.-o. auftaucht (mit Grund), und eine Entwarnung, wenn es sich beruhigt. Gleiche Art höchstens einmal pro Stunde. Bis zu 3 Plätze, gilt nur für den Tag. Oben im «Entscheid» steht, welche Plätze bewacht werden.
+
 ## Webcams
 
 In der Startplatz-Ansicht steht unter dem Namen «Webcam»: ein Link auf die Windfinder-Seite des Gebiets (alle Webcams im Umkreis mit Entfernung und Zeit der letzten Aufnahme). Mit «eigene festlegen» lässt sich je Startplatz die eigene Lieblings-Webcam hinterlegen (nur https). Sie liegt im Flugbuch (Einstellungen) und gilt damit auf Mac und iPhone und ist in der Sicherung enthalten. Ramslauen (Kiental) hat noch keine Vorgabe.
@@ -114,6 +118,7 @@ Für Tests überschreibbar: `AFC_AIRSPACE_URL`, `AFC_OPENMETEO_URL`, `AFC_SMN_UR
 | `GET /api/privacy/export`, `DELETE /api/privacy/delete` | Export und Löschung der Meldungen dieses Geräts |
 | `GET /api/health`, `GET /api/meta`, `GET /healthz` | Status |
 | `GET /api/logbook`, `PUT`/`DELETE /api/logbook/(flight\|gear\|settings)/:id` | Persönliches Flugbuch (Header `X-AFC-Client`) |
+| `GET`/`POST /api/watch` | Flugtag-Wächter: bewachte Startplätze heute, an- und abschalten |
 | `GET /api/push/key`, `POST /api/push/(subscribe\|unsubscribe\|test\|status)` | Benachrichtigungen an- und abmelden, Test senden |
 | `GET /api/logbook/export.(csv\|json)`, `POST /api/logbook/backup`, `POST /api/logbook/import` | Flugbuch exportieren, jetzt sichern, Sicherung einspielen |
 | `GET /api/airspace` | Lufträume und Wildschutzgebiete (SHV/FSVL) im Gebiet |
