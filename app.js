@@ -451,10 +451,13 @@ function statusHtml() {
     : u.available ? `Neue Version verfügbar, automatische Tests bestanden. ${esc(updText(u))}`
     : u.waiting ? `${esc(updText(u))}. ${esc(u.waiting)}`
     : u.checkedAt ? `Aktuell (geprüft ${timeOf(u.checkedAt)} Uhr).` : 'Noch nicht geprüft.';
-  return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
+  const probs = d.problems?.length ? `<div class="lb-alert due" role="status" style="margin-bottom:12px">${d.problems.map(x => `<div><b>${esc(x.title.replace(/^AFC: /, ''))}:</b> ${esc(x.body)}</div>`).join('')}</div>` : '';
+  const aw = d.awake?.enabled ? `<p class="fine" style="margin:6px 0 0">Mac wach halten: ${d.awake.active ? `aktiv bis ${timeOf(d.awake.until)} Uhr` : d.awake.error ? 'hat nicht geklappt (' + esc(d.awake.error) + ')' : 'nachts aus, ab 6 Uhr wieder aktiv'}. Zugeklappt schläft ein MacBook trotzdem.</p>` : '';
+  return `${probs}<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
     <div style="margin-top:12px"><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
+      ${aw}
       <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>
     ${learnedHtml(d.learned)}
     ${backtestHtml(d.backtest)}`;
@@ -653,7 +656,7 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function pushPrefs() {
   const p = store.get('pushPrefs', {});
-  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
+  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, health: p.health !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
 }
 async function pushInit() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { PU.state = isIOS() && !isStandalone() ? 'install' : 'unsupported'; return; }
@@ -705,7 +708,7 @@ async function pushTest() {
 }
 const renderPush = () => { const el = $('#pushPanel'); if (el) el.innerHTML = pushHtml(); };
 function pushHtml() {
-  const what = 'Abends um 19 Uhr, wenn morgen ein guter Flugtag wird (an deinen Favoriten, sonst überall) und bei Föhn. Morgens um 7 Uhr bei Föhn und wenn Retter packen oder Schirm-Check fällig ist. Dafür muss der Mac wach sein.';
+  const what = 'Abends um 19 Uhr, wenn morgen ein guter Flugtag wird (an deinen Favoriten, sonst überall) und bei Föhn. Morgens um 7 Uhr bei Föhn und wenn Retter packen oder Schirm-Check fällig ist. Tagsüber sofort, wenn bei AFC etwas nicht stimmt. Dafür muss der Mac wach sein.';
   switch (PU.state) {
     case null: return '<p class="fine" style="margin:0">Wird geprüft …</p>';
     case 'install': return `<p class="fine" style="margin:0">${what}</p><p class="fine"><b>So geht es auf dem iPhone:</b> AFC in Safari öffnen, unten auf Teilen tippen, «Zum Home-Bildschirm» wählen und AFC dann von dort öffnen. Hier erscheint danach «Einschalten».</p>`;
@@ -718,6 +721,7 @@ function pushHtml() {
         <label class="chk"><input type="checkbox" name="good" ${p.good ? 'checked' : ''}><span>Guter Flugtag morgen, ab <select name="threshold" aria-label="ab welchem AFC-Wert">${[65, 70, 75, 80, 85].map(v => `<option ${v === p.threshold ? 'selected' : ''}>${v}</option>`).join('')}</select></span></label>
         <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhnwarnung</span></label>
         <label class="chk"><input type="checkbox" name="gear" ${p.gear ? 'checked' : ''}><span>Retter packen und Schirm-Check fällig</span></label>
+        <label class="chk"><input type="checkbox" name="health" ${p.health ? 'checked' : ''}><span>Störungen von AFC (Wetterdaten veraltet, Sicherung fehlgeschlagen)</span></label>
       </form>
       <p class="fine">${what}</p>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="pushtest">Test senden</button><button class="btn sec" type="button" data-act="pushoff">Ausschalten</button></div>`;
@@ -1931,7 +1935,7 @@ document.addEventListener('change', e => {
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
   if (t.closest('#pushForm')) {
     const f = new FormData($('#pushForm'));
-    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), threshold: Number(f.get('threshold')) || 75 });
+    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), threshold: Number(f.get('threshold')) || 75 });
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);

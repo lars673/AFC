@@ -292,7 +292,7 @@ test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgela
   let answer = 201;
   const rx = http.createServer((req, res) => { const c = []; req.on('data', d => c.push(d)); req.on('end', () => { got.push({ path: req.url, headers: req.headers, body: Buffer.concat(c) }); res.writeHead(answer); res.end(); }); });
   await new Promise(r => rx.listen(0, '127.0.0.1', r));
-  const s = await boot('good', 18794, { AFC_PUSH_TEST_URL: `http://127.0.0.1:${rx.address().port}` });
+  const s = await boot('good', 18794, { AFC_PUSH_TEST_URL: `http://127.0.0.1:${rx.address().port}`, AFC_HEALTH_GRACE_MIN: '0' });
   try {
     const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
     const post = (u, b) => fetch(s.base + u, { method: 'POST', headers: H, body: JSON.stringify(b) });
@@ -324,6 +324,11 @@ test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgela
     assert.equal(m.title, 'Retter packen fällig');
     assert.match(m.body, /Supair Light/);
     assert.equal((await (await post('/api/push/run', { phase: 'morning' })).json()).sent, 0);
+    // Selbstüberwachung: im guten Szenario keine Störung, also keine Meldung
+    const stat = await (await fetch(s.base + '/api/status')).json();
+    assert.deepEqual(stat.problems, []);
+    assert.equal(stat.awake.enabled, false);
+    assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 12 })).json()).sent, 0);
     let st = await (await post('/api/push/status', { endpoint })).json();
     assert.ok(st.subscribed && st.lastOk);
     // Gerät hat das Abo gelöscht: der Push-Dienst meldet 410, AFC vergisst das Gerät
@@ -331,5 +336,26 @@ test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgela
     assert.equal((await post('/api/push/test', { endpoint })).status, 502);
     st = await (await post('/api/push/status', { endpoint })).json();
     assert.equal(st.subscribed, false);
+  } finally { await s.stop(); rx.close(); }
+});
+
+test('Selbstüberwachung: fehlende Messwerte melden, einmal pro Tag', async () => {
+  const got = [];
+  const rx = http.createServer((req, res) => { req.resume(); req.on('end', () => { got.push(req.url); res.writeHead(201); res.end(); }); });
+  await new Promise(r => rx.listen(0, '127.0.0.1', r));
+  const s = await boot('good', 18795, { AFC_PUSH_TEST_URL: `http://127.0.0.1:${rx.address().port}`, AFC_HEALTH_GRACE_MIN: '0', AFC_SMN_URL: 'http://127.0.0.1:9' });
+  try {
+    const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
+    const post = (u, b) => fetch(s.base + u, { method: 'POST', headers: H, body: JSON.stringify(b) });
+    const ua = crypto.createECDH('prime256v1'); ua.generateKeys();
+    const keys = { p256dh: ua.getPublicKey().toString('base64url'), auth: crypto.randomBytes(16).toString('base64url') };
+    await post('/api/push/subscribe', { subscription: { endpoint: 'https://web.push.apple.com/QHealth', keys }, prefs: {} });
+    const stat = await (await fetch(s.base + '/api/status')).json();
+    assert.deepEqual(stat.problems.map(p => p.id), ['obs']);
+    assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 12 })).json()).sent, 1);
+    assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 12 })).json()).sent, 0);
+    assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 23 })).json()).sent, 0);   // nachts nie
+    await post('/api/push/subscribe', { subscription: { endpoint: 'https://web.push.apple.com/QHealth2', keys }, prefs: { health: false } });
+    assert.equal((await (await post('/api/push/run', { phase: 'health', hour: 12 })).json()).sent, 0);
   } finally { await s.stop(); rx.close(); }
 });

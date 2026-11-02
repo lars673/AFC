@@ -542,7 +542,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!isLocal(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -614,7 +614,7 @@ const server = http.createServer(async (req, res) => {
           const r = await pushTo(row, { title: 'AFC-Test', body: 'Benachrichtigungen funktionieren. So meldet sich AFC bei einem guten Flugtag, bei Föhn und wenn der Retter gepackt werden muss.', url: '/', tag: 'test' });
           return sendJson(req, res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.gone ? 'Das Abo ist abgelaufen, bitte neu einschalten' : `Push-Dienst antwortet nicht (${r.status || r.error})` });
         }
-        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: await pushTick(b.phase) });   // nur in den Tests
+        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: b.phase === 'health' ? await healthTick(Date.now(), b.hour) : await pushTick(b.phase) });   // nur in den Tests
         if (p === '/api/push/status') {
           return sendJson(req, res, 200, { ok: true, enabled: PUSH_ON, subscribed: !!row, prefs: row ? JSON.parse(row.prefs) : null, lastOk: row?.last_ok || null, lastError: row?.last_error || null });
         }
@@ -763,6 +763,57 @@ async function pushTick(phase = pushPhase()) {
   return sent;
 }
 
+/* ------------------------------------------------------------------ Selbstüberwachung */
+// Zwischen 6 und 22 Uhr alle 10 Minuten: Sind die Wetterdaten frisch, klappt die Sicherung, reicht das Gratis-Kontingent?
+// Bei einem Problem kommt eine Meldung aufs iPhone (einmal pro Tag und Art), und eine zweite, sobald es wieder läuft.
+const healthAlerted = new Map();   // id -> Zeitpunkt der Meldung
+function healthProblems(now = Date.now()) {
+  const out = [];
+  if (process.uptime() < Number(process.env.AFC_HEALTH_GRACE_MIN ?? 30) * 60) return out;   // nach dem Start erst Daten holen lassen
+  const fcAge = state.raw ? (now - state.raw.fetchedAt) / 3600000 : Infinity;
+  if (fcAge > 4) out.push({ id: 'forecast', title: 'AFC: Prognose veraltet', body: `Die Wetterprognose ist ${Number.isFinite(fcAge) ? Math.round(fcAge) + ' Stunden alt' : 'nicht geladen'}${ingest.forecast?.error ? ` (${String(ingest.forecast.error).slice(0, 80)})` : ''}. Die Bewertungen sind nicht aktuell, bitte nicht darauf verlassen.` });
+  const t = dbGet('SELECT MAX(time) t FROM observations')?.t;
+  const obsAge = t ? (now - Date.parse(t)) / 3600000 : Infinity;
+  if (obsAge > 3) out.push({ id: 'obs', title: 'AFC: Messwerte fehlen', body: `Die letzten Messwerte der Stationen sind ${Number.isFinite(obsAge) ? Math.round(obsAge) + ' Stunden alt' : 'nicht vorhanden'}. Föhn und Wind am Berg werden nicht live geprüft.` });
+  if (lbBackup.error) out.push({ id: 'backup', title: 'AFC: Flugbuch-Sicherung fehlgeschlagen', body: `Die Sicherung auf dem Mac hat nicht geklappt (${lbBackup.error}). Bitte im Flugbuch «Sicherungsdatei» antippen und die Datei selbst aufbewahren.` });
+  if (storageProblem.degraded) out.push({ id: 'storage', title: 'AFC: Speicher nicht beschreibbar', body: 'AFC speichert gerade nur vorübergehend. Bitte auf dem Mac «AFC neu starten» doppelklicken.' });
+  const u = openMeteoUsage();
+  if (u.limitDay && u.calls >= u.limitDay * 0.9) out.push({ id: 'quota', title: 'AFC: Gratis-Kontingent fast aufgebraucht', body: `Open-Meteo: ${u.calls} von ${u.limitDay} Aufrufen heute. Wird es überschritten, fehlen bis Mitternacht neue Prognosen.` });
+  return out;
+}
+async function healthTick(now = Date.now(), hour = null) {
+  const h = hour ?? zurichParts(now).hour;
+  if (!PUSH_ON || h < 6 || h >= 22) return 0;
+  const subs = dbAll('SELECT * FROM push_subs').filter(r => cleanPrefs(JSON.parse(r.prefs)).health);
+  const probs = healthProblems(now), ids = new Set(probs.map(p => p.id)), day = zurichParts(now).date;
+  const msgs = [];
+  for (const p of probs) if (!healthAlerted.has(p.id) || healthAlerted.get(p.id) !== day) { msgs.push({ ...p, key: `health:${p.id}:${day}`, tag: 'health-' + p.id, url: '/?tab=profile' }); healthAlerted.set(p.id, day); }
+  for (const id of [...healthAlerted.keys()]) if (!ids.has(id)) { healthAlerted.delete(id); msgs.push({ key: `health:${id}:ok:${now}`, tag: 'health-' + id, title: 'AFC läuft wieder normal', body: { forecast: 'Die Prognose ist wieder aktuell.', obs: 'Die Messwerte kommen wieder.', backup: 'Die Flugbuch-Sicherung klappt wieder.', storage: 'Der Speicher ist wieder in Ordnung.', quota: 'Das Kontingent ist wieder frei.' }[id] || 'Das Problem ist behoben.', url: '/' }); }
+  let sent = 0;
+  for (const row of subs) for (const m of msgs) { const r = await pushTo(row, m); if (r.ok) sent++; if (r.gone) break; }
+  return sent;
+}
+
+/* ------------------------------------------------------------------ Mac wach halten */
+// Tagsüber (6–22 Uhr) verhindert AFC, dass der Mac von selbst einschläft (caffeinate, nur wenn AFC als Autostart läuft).
+// Bildschirm darf aus gehen. Zugeklappt schläft ein MacBook trotzdem. Morgens wecken: tools/«AFC wach halten einrichten».
+const STAY_AWAKE = process.platform === 'darwin' && AUTOSTART && process.env.AFC_STAY_AWAKE !== '0';
+const awake = { active: false, until: null, error: null, child: null };
+function awakeTick(now = Date.now()) {
+  if (!STAY_AWAKE || awake.child) return;
+  const h = zurichParts(now).hour;
+  if (h < 6 || h >= 22) return;
+  const end = new Date(now); end.setHours(22, 0, 0, 0);   // Mac läuft in Schweizer Zeit
+  const secs = Math.max(60, Math.round((end - now) / 1000));
+  try {
+    const c = spawn('/usr/bin/caffeinate', ['-i', '-w', String(process.pid), '-t', String(secs)], { stdio: 'ignore' });
+    awake.child = c; awake.active = true; awake.until = end.toISOString(); awake.error = null;
+    c.on('exit', () => { awake.child = null; awake.active = false; });
+    c.on('error', e => { awake.child = null; awake.active = false; awake.error = String(e.code || e.message); });
+  } catch (e) { awake.error = String(e.code || e.message); }
+}
+const awakeStatus = () => ({ enabled: STAY_AWAKE, active: awake.active, until: awake.until, error: awake.error });
+
 /* ------------------------------------------------------------------ Flugbuch-Sicherung */
 // Täglich (und kurz nach jeder Änderung) eine Kopie des Flugbuchs als JSON (zum Einspielen) und CSV (Tabelle):
 // immer in data/backups/flugbuch, zusätzlich in iCloud Drive (Ordner «AFC-Sicherung»), wenn es auf dem Mac eingerichtet ist.
@@ -772,7 +823,7 @@ function cloudBackupDir() {
   return fsc.existsSync(ICLOUD) ? path.join(ICLOUD, 'AFC-Sicherung') : null;
 }
 const LB_KEEP = 30;
-const lbBackup = { at: null, flights: 0, local: null, cloud: null, cloudDir: cloudBackupDir(), cloudError: null };
+const lbBackup = { at: null, flights: 0, local: null, cloud: null, cloudDir: cloudBackupDir(), cloudError: null, error: null };
 // Stand der letzten Sicherung nach einem Neustart aus den Dateien lesen
 function lastBackupFile(dir) {
   try {
@@ -809,7 +860,8 @@ async function backupLogbook() {
   const day = zurichParts(Date.now()).date;
   const csv = flightsCsv(file.flights, file.gear);
   const local = path.join(backupsDir, 'flugbuch');
-  await writeBackupSet(local, day, file, csv);
+  try { await writeBackupSet(local, day, file, csv); lbBackup.error = null; }
+  catch (e) { lbBackup.error = String(e.code || e.message); throw e; }
   Object.assign(lbBackup, { at: nowIso(), flights: file.flights.length, local, cloudDir: cloudBackupDir() });
   if (lbBackup.cloudDir) {
     try { await writeBackupSet(lbBackup.cloudDir, day, file, csv); lbBackup.cloud = nowIso(); lbBackup.cloudError = null; }
@@ -863,7 +915,8 @@ async function start() {
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   setTimeout(maintenance, 60000).unref();
   if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
-  if (PUSH_ON) timers.push(setInterval(() => tick('push', pushTick), 10 * 60000));
+  if (PUSH_ON) timers.push(setInterval(() => tick('push', async () => { await pushTick(); await healthTick(); }), 10 * 60000));
+  if (STAY_AWAKE) { awakeTick(); timers.push(setInterval(() => awakeTick(), 10 * 60000)); }
   updater.start();
 }
 

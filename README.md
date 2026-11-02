@@ -52,6 +52,11 @@ Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, 
 
 AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, privat, HTTPS, nur Geräte im eigenen Tailscale-Konto). Tailscale auf Mac und Handy installieren und mit demselben Konto anmelden, dann `tools/AFC aufs Handy.command` doppelklicken (`tailscale serve --bg 8787`). Die Adresse `https://<mac>.<tailnet>.ts.net` in Safari öffnen, «Zum Home-Bildschirm». Der Server bleibt an 127.0.0.1 gebunden. Schläft der Mac, zeigt die App den letzten Stand mit Warnung; bei schlechtem Empfang erscheint nach 4 s die gespeicherte Version. Leaflet liegt unter `vendor/leaflet` (BSD-2), damit die Karte nicht von cdnjs abhängt. Beenden: `tools/AFC Handy-Zugang beenden.command`.
 
+## Zuverlässigkeit
+
+* **Mac wach halten:** Läuft AFC als Autostart auf dem Mac, verhindert es von 6 bis 22 Uhr, dass der Mac von selbst einschläft (`caffeinate -i`, der Bildschirm darf dunkel werden). Zugeklappt schläft ein MacBook trotzdem. `tools/AFC wach halten einrichten.command` weckt den Mac zusätzlich jeden Morgen um 06:40 (`pmset repeat`, fragt einmal nach dem Passwort). Abschalten: `AFC wach halten beenden.command` bzw. `AFC_STAY_AWAKE=0`. Stand unter Profil > Verbrauch und Updates.
+* **Selbstüberwachung:** Zwischen 6 und 22 Uhr prüft AFC alle 10 Minuten: Prognose älter als 4 Stunden, Messwerte älter als 3 Stunden, Flugbuch-Sicherung fehlgeschlagen, Speicher nicht beschreibbar, Open-Meteo-Kontingent über 90 %. Probleme stehen unter Profil und kommen als Benachrichtigung (einmal pro Tag und Art, dazu «läuft wieder normal», abschaltbar). Die ersten 30 Minuten nach dem Start wird nicht geprüft (`AFC_HEALTH_GRACE_MIN`).
+
 ## Webcams
 
 In der Startplatz-Ansicht steht unter dem Namen «Webcam»: ein Link auf die Windfinder-Seite des Gebiets (alle Webcams im Umkreis mit Entfernung und Zeit der letzten Aufnahme). Mit «eigene festlegen» lässt sich je Startplatz die eigene Lieblings-Webcam hinterlegen (nur https). Sie liegt im Flugbuch (Einstellungen) und gilt damit auf Mac und iPhone und ist in der Sicherung enthalten. Ramslauen (Kiental) hat noch keine Vorgabe.

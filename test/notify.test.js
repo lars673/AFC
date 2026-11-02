@@ -33,5 +33,5 @@ test('Morgens Föhn und Ausrüstung, abends Ausblick; abgeschaltete Arten fehlen
   assert.deepEqual(m.map(x => x.title), ['Föhnwarnung heute', 'Retter packen bald fällig']);
   assert.equal(buildNotices({ phase: 'morning', plan: p, prefs: cleanPrefs({ gear: false, foehn: false }), gear, now }).length, 0);
   assert.deepEqual(buildNotices({ phase: 'evening', plan: p, prefs: cleanPrefs({}), gear, now }).map(x => x.title), ['Morgen 86 am Amisbühl']);
-  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, threshold: 75, favs: [], level: 'normal' });
+  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, health: true, threshold: 75, favs: [], level: 'normal' });
 });
