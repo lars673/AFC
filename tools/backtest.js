@@ -365,6 +365,11 @@ const summary = {
   faelle: rows.filter(r => r.verdict === 'GEFÄHRLICH').slice(0, 10).map(r => `${r.date} ${r.area}: Score ${r.best}, gemessen ${r.why}`),
   datei: `backtest-${stamp}.txt`
 };
+// Vergleichslauf (ohne Lernen) für die Selbstprüfung des Servers: nicht in den Verlauf, Zwischenspeicher behalten
+if (process.argv.includes('--vergleich')) {
+  await fs.writeFile(path.join(OUT, 'backtest-vergleich.json'), JSON.stringify({ ...summary, ohneLernen: process.argv.includes('--ohne-lernen') }, null, 1));
+  process.exit(0);
+}
 const histFile = path.join(OUT, 'backtest-history.json');
 let hist = [];
 try { hist = JSON.parse(await fs.readFile(histFile, 'utf8')); if (!Array.isArray(hist)) hist = []; } catch { /* erster Lauf */ }

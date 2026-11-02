@@ -335,6 +335,17 @@ test('Benachrichtigungen: anmelden, Test, Ausrüstung fällig nur einmal, abgela
     assert.equal(typeof (await (await post('/api/push/run', { phase: 'watch', hour: 12 })).json()).sent, 'number');
     wj = await (await wpost({ siteId: 'niesen', on: false })).json();
     assert.deepEqual(wj.watches.map(w => w.siteId).sort(), ['first', 'stockhorn-1']);
+    // Prognose je Startplatz festhalten, Flug mit Thermik wird damit verglichen
+    const zpOf = ms => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Zurich', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms)).reduce((m, x) => ({ ...m, [x.type]: x.value }), {});
+    // heute 11 Uhr Schweizer Zeit (Thermik nur bei Tag)
+    let noon = Date.now() - (Date.now() % 3600000);
+    while (zpOf(noon).hour !== '11') noon += zpOf(noon).hour < '11' ? 3600000 : -3600000;
+    const zp = zpOf(noon);
+    assert.ok((await (await post('/api/push/run', { phase: 'snapshot', now: new Date(noon).toISOString() })).json()).sent > 30);
+    await fetch(s.base + '/api/logbook/flight/t1', { method: 'PUT', headers: H, body: JSON.stringify({ date: `${zp.year}-${zp.month}-${zp.day}`, start: `${zp.hour}:05`, durMin: 50, siteId: 'niesen', siteName: 'Niesen', track: { thermals: [{ lat: 46.6, lon: 7.6, base: 2000, alt: 2900, rate: 2, gain: 900, at: `${zp.hour}:20` }] } }) });
+    const th = (await (await fetch(s.base + '/api/status')).json()).thermal;
+    assert.equal(th.niesen.n, 1);
+    assert.equal(th.niesen.add, 0);   // ein Flug genügt nicht
     // Selbstüberwachung: im guten Szenario keine Störung, also keine Meldung
     const stat = await (await fetch(s.base + '/api/status')).json();
     assert.deepEqual(stat.problems, []);

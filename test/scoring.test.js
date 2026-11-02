@@ -396,3 +396,14 @@ test('Rückmeldungen nach Flügen: kleine Anpassung mit Begründung, K.-o.-Decke
   assert.ok(ko.cap !== null);
   assert.ok(ko2.score <= ko.cap);
 });
+
+test('Gelernte Thermik-Obergrenze: höherer Arbeitsraum mit Begründung', () => {
+  const thermik = { top: 2300, wstar: 1.8, inversion: null };
+  const base = assessHour(site, good({ thermik, cloudBase: 3200 }));
+  const up = assessHour(site, good({ thermik, cloudBase: 3200, thermLearn: { add: 300, n: 4, median: 420 } }));
+  assert.equal(up.topMargin, base.topMargin + 300);
+  assert.ok(up.reasons.some(r => /Thermik-Obergrenze \+300 m: deine 4 Flüge hier gingen im Mittel 420 m höher/.test(r)));
+  // ohne prognostizierte Thermik keine Korrektur
+  const none = assessHour(site, good({ thermik: { top: 1500, wstar: 0 }, cloudBase: 3200, thermLearn: { add: 300, n: 4, median: 420 } }));
+  assert.ok(!none.reasons.some(r => /Thermik-Obergrenze/.test(r)));
+});

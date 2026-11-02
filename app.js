@@ -418,12 +418,20 @@ async function applyUpdate() {
   } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + err.message); }
 }
 /** Was AFC an den Bergstationen selbst gelernt hat (Böenfehler der letzten 14 Tage). */
-function learnedHtml(list) {
+function thermalHtml(t) {
+  const list = Object.entries(t || {});
+  const areaName = id => S.plan?.areas?.find(a => a.id === id)?.name || id;
+  return `<div style="margin-top:12px"><b>Aus deinen Flügen gelernt</b> <span class="fine">Thermik-Obergrenze aus IGC-Flügen gegen die Prognose zur Flugzeit, je Gebiet ab 3 Flügen. Übernommen wird nur, was die bisherigen Flüge besser erklärt hätte.</span>
+    ${list.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${list.map(([a, x]) => `<li>${esc(areaName(a))}: ${x.add ? `<b>${x.add > 0 ? '+' : ''}${x.add} m</b>, ` : ''}${esc(x.why)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:4px 0 0">Noch keine IGC-Flüge mit Thermik, für die AFC die Prognose kennt. Ab jetzt merkt sich AFC die Prognose jeder Stunde, damit neue Flüge verglichen werden können.</p>'}</div>`;
+}
+function learnedHtml(list, guard) {
   if (!list) return '';
+  if (guard?.off) return `<div style="margin-top:12px"><b>Selbst gelernt: pausiert</b> <p class="fine" style="margin:4px 0 0">Der Rückblick-Test war ohne das Gelernte besser (${esc(guard.reason || '')}). AFC rechnet darum vorerst ohne und prüft nächste Woche wieder.</p></div>`;
   const used = list.filter(x => x.used);
   return `<div style="margin-top:12px"><b>Selbst gelernt</b> <span class="fine">Bergstationen, letzte 14 Tage: wie stark waren die Böen im Vergleich zur Prognose?</span>
     ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li>${esc(x.name)}: Böen ${x.gust > 0 ? '+' : ''}${x.gust} km/h${x.gust > 0 ? ' (AFC hebt die Böen an Startplätzen in der Nähe an)' : ''} · ${x.n} Stunden</li>`).join('')}</ul>`
-      : `<p class="fine" style="margin:4px 0 0">Sammelt noch Daten (${list.length ? Math.max(...list.map(x => x.n)) : 0} von 30 Stunden). Wird mit jedem Tag genauer.</p>`}</div>`;
+      : `<p class="fine" style="margin:4px 0 0">Sammelt noch Daten (${list.length ? Math.max(...list.map(x => x.n)) : 0} von 30 Stunden). Wird mit jedem Tag genauer.</p>`}
+    ${guard?.at ? `<p class="fine" style="margin:4px 0 0">Selbstprüfung vom ${new Date(guard.at).toLocaleDateString('de-CH')} bestanden: ${esc(guard.reason || '')}.</p>` : ''}</div>`;
 }
 
 /** Ergebnis des automatischen Rückblick-Tests (wöchentlich nachts, letzte 14 Tage). */
@@ -460,7 +468,8 @@ function statusHtml() {
     <div style="margin-top:12px"><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
       ${aw}
       <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>
-    ${learnedHtml(d.learned)}
+    ${learnedHtml(d.learned, d.learnGuard)}
+    ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
 }
 function renderProfile() {

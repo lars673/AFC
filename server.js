@@ -23,6 +23,7 @@ import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFee
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
+import { learnedVerdict, thermalLearn } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS clients (client_hash TEXT PRIMARY KEY, created_at TEX
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, prefs TEXT NOT NULL, created TEXT, last_ok TEXT, last_error TEXT);
 CREATE TABLE IF NOT EXISTS push_sent (endpoint TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(endpoint,key));
 CREATE TABLE IF NOT EXISTS watch (site_id TEXT PRIMARY KEY, date TEXT NOT NULL, level TEXT, state TEXT, created TEXT);
+CREATE TABLE IF NOT EXISTS site_fc (site_id TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, lead REAL, top REAL, base REAL, PRIMARY KEY(site_id,date,hour));
 CREATE TABLE IF NOT EXISTS logbook (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS fc_pred (id INTEGER PRIMARY KEY, code TEXT NOT NULL, target TEXT NOT NULL, issued TEXT NOT NULL, lead REAL, wind REAL, gust REAL, dir REAL, temp REAL, UNIQUE(code,target));
 CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
@@ -315,7 +317,8 @@ function currentModel() {
   if (!state.raw) return null;
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
-      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedBias(),
+      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnGuard().off ? null : learnedBias(),
+      thermLearn: thermalLearned(),
       feedback: siteFeedback(dbAll("SELECT data FROM logbook WHERE kind='flight'").map(r => JSON.parse(r.data))),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
@@ -544,7 +547,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!isLocal(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -637,7 +640,7 @@ const server = http.createServer(async (req, res) => {
           const r = await pushTo(row, { title: 'AFC-Test', body: 'Benachrichtigungen funktionieren. So meldet sich AFC bei einem guten Flugtag, bei Föhn und wenn der Retter gepackt werden muss.', url: '/', tag: 'test' });
           return sendJson(req, res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.gone ? 'Das Abo ist abgelaufen, bitte neu einschalten' : `Push-Dienst antwortet nicht (${r.status || r.error})` });
         }
-        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: b.phase === 'health' ? await healthTick(Date.now(), b.hour) : b.phase === 'watch' ? await watchTick(Date.now(), b.hour) : await pushTick(b.phase) });   // nur in den Tests
+        if (p === '/api/push/run' && pushFetch) return sendJson(req, res, 200, { ok: true, sent: b.phase === 'health' ? await healthTick(Date.now(), b.hour) : b.phase === 'watch' ? await watchTick(Date.now(), b.hour) : b.phase === 'snapshot' ? snapshotSiteForecasts(Date.parse(b.now) || Date.now()) : await pushTick(b.phase) });   // nur in den Tests
         if (p === '/api/push/status') {
           return sendJson(req, res, 200, { ok: true, enabled: PUSH_ON, subscribed: !!row, prefs: row ? JSON.parse(row.prefs) : null, lastOk: row?.last_ok || null, lastError: row?.last_error || null });
         }
@@ -786,6 +789,40 @@ async function pushTick(phase = pushPhase()) {
   return sent;
 }
 
+/* ------------------------------------------------------------------ Lernen aus Flügen */
+// Prognose je Startplatz und Stunde festhalten (die letzte vor der Stunde, höchstens 3 h voraus),
+// damit spätere IGC-Flüge mit der Prognose zur Flugzeit verglichen werden können (lib/learn.js).
+function snapshotSiteForecasts(now = Date.now()) {
+  const model = currentModel();
+  if (!model?.ok) return 0;
+  const res = model.compute(DEFAULT_LEVEL);
+  let n = 0;
+  const up = db.prepare('INSERT INTO site_fc(site_id,date,hour,lead,top,base) VALUES(?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base WHERE excluded.lead<=site_fc.lead');
+  for (let i = 0; i < model.n; i++) {
+    const lead = (model.t[i] - now) / 3600000;
+    if (lead < -0.5 || lead > 3) continue;
+    const zp = zurichParts(model.t[i]);
+    for (const [id, r] of res) {
+      const w = r?.hours?.[i]?.w;
+      if (!w?.thermik || !isNum(w.thermik.top)) continue;
+      const top = isNum(w.cloudBase) ? Math.min(w.thermik.top, w.cloudBase) : w.thermik.top;
+      up.run(id, zp.date, zp.hour, Math.max(0, lead), Math.round(top), isNum(w.cloudBase) ? Math.round(w.cloudBase) : null);
+      n++;
+    }
+  }
+  return n;
+}
+const SITE_AREA = Object.fromEntries(SITES.map(s => [s.id, s.area]));
+function thermalLearned() {
+  if (state.thermal && Date.now() - state.thermalAt < 3600000) return state.thermal;
+  const flights = logbookData().flights.filter(f => f.track?.thermals?.length);
+  const fc = new Map();
+  for (const d of new Set(flights.map(f => f.date))) for (const r of dbAll('SELECT site_id, hour, top FROM site_fc WHERE date=?', [d])) fc.set(`${r.site_id}|${d}|${r.hour}`, r.top);
+  state.thermal = thermalLearn(flights, fc, SITE_AREA);
+  state.thermalAt = Date.now();
+  return state.thermal;
+}
+
 /* ------------------------------------------------------------------ Flugtag-Wächter */
 async function watchTick(now = Date.now(), hourOverride = null) {
   const zp = zurichParts(now), h = hourOverride ?? zp.hour;
@@ -917,6 +954,7 @@ async function backupLogbook() {
 let lbBackupT = null;
 function backupLogbookSoon() {
   invalidate();   // Rückmeldungen nach Flügen fliessen in die Bewertung
+  state.thermalAt = 0;
   clearTimeout(lbBackupT);
   lbBackupT = setTimeout(() => backupLogbook().catch(e => console.warn('Flugbuch-Sicherung', errMsg(e))), Number(process.env.AFC_LB_BACKUP_DELAY_MS ?? 120000));
   lbBackupT.unref?.();
@@ -928,6 +966,7 @@ async function maintenance() {
     const cut = new Date(Date.now() - 30 * 86400000).toISOString();
     dbRun('DELETE FROM observations WHERE time<?', [cut]);
     dbRun('DELETE FROM fc_pred WHERE target<?', [cut]);
+    dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;
     await backup(db, path.join(backupsDir, name));
     const files = (await fs.readdir(backupsDir)).filter(f => f.endsWith('.sqlite')).sort();
@@ -961,6 +1000,7 @@ async function start() {
   setTimeout(maintenance, 60000).unref();
   if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
   if (PUSH_ON) timers.push(setInterval(() => tick('push', async () => { await pushTick(); await healthTick(); await watchTick(); }), 10 * 60000));
+  timers.push(setInterval(() => { try { snapshotSiteForecasts(); } catch (e) { console.warn('Prognose festhalten', errMsg(e)); } }, 10 * 60000));
   if (STAY_AWAKE) { awakeTick(); timers.push(setInterval(() => awakeTick(), 10 * 60000)); }
   updater.start();
 }
@@ -978,15 +1018,36 @@ function maybeBacktest(force = false) {
   const hour = zurichParts(Date.now()).hour;
   if (!force && ((last && Date.now() - Date.parse(last.at) < 6.5 * 86400000) || hour < 2 || hour > 5)) return false;
   backtestJob.running = true; backtestJob.error = null;
-  const child = spawn(process.execPath, [path.join(ROOT, 'tools', 'backtest.js'), '--days', '14', '--auto'], { cwd: ROOT, env: { ...process.env, AFC_DATA_DIR: DATA }, stdio: ['ignore', 'ignore', 'pipe'] });
-  let err = '';
-  child.stderr.on('data', d => { err = (err + d).slice(-400); });
-  child.on('exit', code => {
-    backtestJob.running = false;
-    backtestJob.error = code ? (err.trim().split('\n').pop() || `Abbruch (${code})`) : null;
-    console.log(code ? `Rückblick-Test fehlgeschlagen: ${backtestJob.error}` : 'Rückblick-Test fertig');
+  // Zuerst ohne Lernen (Vergleich), dann mit Lernen (zählt). Ist das Lernen schlechter, wird es pausiert.
+  const run = args => new Promise(res => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'tools', 'backtest.js'), '--days', '14', ...args], { cwd: ROOT, env: { ...process.env, AFC_DATA_DIR: DATA }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', d => { err = (err + d).slice(-400); });
+    child.on('error', e => res({ code: 1, err: String(e.message) }));
+    child.on('exit', code => res({ code, err }));
   });
+  (async () => {
+    const a = await run(['--vergleich', '--ohne-lernen']);
+    const b = await run(['--auto']);
+    const bad = [a, b].find(x => x.code);
+    backtestJob.error = bad ? (bad.err.trim().split('\n').pop() || `Abbruch (${bad.code})`) : null;
+    if (!bad) judgeLearning();
+    console.log(bad ? `Rückblick-Test fehlgeschlagen: ${backtestJob.error}` : 'Rückblick-Test fertig');
+  })().finally(() => { backtestJob.running = false; });
   return true;
+}
+/* Selbstprüfung: Macht das Gelernte den Rückblick-Test schlechter, wird es pausiert (data/learn-guard.json). */
+const guardFile = () => path.join(DATA, 'learn-guard.json');
+function learnGuard() { try { return JSON.parse(fsc.readFileSync(guardFile(), 'utf8')); } catch { return { off: false }; } }
+function judgeLearning() {
+  let base;
+  try { base = JSON.parse(fsc.readFileSync(path.join(DATA, 'backtest-vergleich.json'), 'utf8')); } catch { return; }
+  const withL = backtestHistory().at(-1);
+  if (!withL || !base) return;
+  const g = learnedVerdict(base, withL);
+  fsc.writeFileSync(guardFile(), JSON.stringify({ ...g, at: nowIso() }, null, 1));
+  state.learnedAt = 0; invalidate();
+  console.log('Selbstprüfung Lernen:', g.off ? 'pausiert, ' + g.reason : 'bleibt aktiv');
 }
 function learnedList() {
   return Object.entries(learnedBias()).map(([code, l]) => ({ code, name: state.stationList[code]?.name || code, ...l, used: l.n >= LEARN_MIN_N }))
