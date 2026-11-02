@@ -424,7 +424,7 @@ const ST = { data: null, busy: false };
 async function loadStatus() {
   try { const r = await fetch('/api/status', { cache: 'no-store' }); if (r.ok) ST.data = await r.json(); } catch {}
   renderUpdBanner();
-  if (S.tab === 'profile') { const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml(); }
+  if (S.tab === 'profile') refreshStatus();
 }
 function updText(u) {
   const when = u.latest?.date ? new Date(u.latest.date).toLocaleDateString('de-CH') : '';
@@ -491,7 +491,7 @@ function backtestHtml(b) {
 function statusHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
-  const o = d.openMeteo, pct = Math.min(100, Math.round(o.calls / o.limitDay * 100)), u = d.update;
+  const u = d.update;
   const upd = !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
     : u.error ? `Letzte Prüfung fehlgeschlagen (${esc(u.error)}).`
     : u.available ? `Neue Version verfügbar, automatische Tests bestanden. ${esc(updText(u))}`
@@ -499,37 +499,54 @@ function statusHtml() {
     : u.checkedAt ? `Aktuell (geprüft ${timeOf(u.checkedAt)} Uhr).` : 'Noch nicht geprüft.';
   const probs = d.problems?.length ? `<div class="lb-alert due" role="status" style="margin-bottom:12px">${d.problems.map(x => `<div><b>${esc(x.title.replace(/^AFC: /, ''))}:</b> ${esc(x.body)}</div>`).join('')}</div>` : '';
   const aw = d.awake?.enabled ? `<p class="fine" style="margin:6px 0 0">Mac wach halten: ${d.awake.active ? `aktiv bis ${timeOf(d.awake.until)} Uhr` : d.awake.error ? 'hat nicht geklappt (' + esc(d.awake.error) + ')' : 'nachts aus, ab 6 Uhr wieder aktiv'}. Zugeklappt schläft ein MacBook trotzdem.</p>` : '';
-  return `${probs}<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
+  return `${probs}<div><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
+      ${aw}
+      <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>`;
+}
+/** Technischer Teil: Open-Meteo-Verbrauch, was AFC gelernt hat, Rückblick-Test. */
+function techHtml() {
+  const d = ST.data;
+  if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
+  const o = d.openMeteo, pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
+  return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
-    <div style="margin-top:12px"><b>AFC ${esc(d.version)}</b> <span class="fine">${upd}</span>
-      ${aw}
-      <div class="btn-row" style="justify-content:flex-start;margin-top:6px">${u?.available && u.canApply ? `<button class="btn" type="button" data-act="update" ${ST.busy ? 'disabled' : ''}>Jetzt aktualisieren</button>` : ''}${u?.enabled ? '<button class="btn sec" type="button" data-act="updcheck">Nach Updates suchen</button>' : ''}</div></div>
     ${learnedHtml(d.learned, d.learnGuard)}
     ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
+}
+function refreshStatus() {
+  const a = $('#statusPanel'), b = $('#techPanel');
+  if (a) a.innerHTML = statusHtml();
+  if (b) b.innerHTML = techHtml();
 }
 function renderProfile() {
   const el = $('#v-profile');
   const log = store.get('log', []);
   const favs = [...S.fav].map(id => S.plan && siteById(id)).filter(Boolean);
   el.innerHTML = `
+    <h2 class="prof-h">Mein Fliegen</h2>
     ${pilotPanel()}
-    <div class="panel"><h3>Benachrichtigungen</h3><div id="pushPanel">${pushHtml()}</div></div>
-    <div class="panel"><h3>Darstellung</h3>
-      <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
     <div class="panel"><h3>Favoriten</h3>
       ${favs.length ? favs.map(s => `<div class="srow" style="padding-left:0;padding-right:0"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))}</span></button>${starBtn(s.id)}</div>`).join('') : '<p class="fine" style="margin:0">Noch keine Favoriten. Tippe in der Startplatz-Ansicht auf den Stern.</p>'}</div>
+    <h2 class="prof-h">App</h2>
+    <div class="panel"><h3>Benachrichtigungen</h3><div id="pushPanel">${pushHtml()}</div></div>
+    <div class="panel"><h3>AFC und Updates</h3><div id="statusPanel">${statusHtml()}</div></div>
+    <div class="panel"><h3>Darstellung</h3>
+      <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
+    <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button></div></div>
+    <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
+    <div class="panel"><h3>Verbrauch und Lernen</h3><div id="techPanel">${techHtml()}</div></div>
+    <div class="panel"><h3>Datenquellen</h3>${sourcesHtml()}</div>
     <div class="panel"><h3>Gemeldete Flüge und AFC-Score</h3>
       ${flightCheck(log)}
       ${log.length ? `<div class="tw"><table class="plain"><thead><tr><th>Datum</th><th>Startplatz</th><th>Flug</th><th>Score</th><th></th></tr></thead><tbody>${log.slice().reverse().map((r, i) => `<tr><td>${new Date(r.launchTime).toLocaleDateString('de-CH')}</td><td>${esc(r.name)}</td><td>${r.launched ? '★'.repeat(r.quality) : 'nicht geflogen'}</td><td>${num(r.afcScore) ? r.afcScore : '–'}${flightMatch(r) && flightMatch(r) !== 'passt' ? ` <span class="fine" title="${flightMatch(r)}">(${flightMatch(r)})</span>` : ''}</td><td><button type="button" class="star" data-act="logdel" data-i="${log.length - 1 - i}" aria-label="Eintrag entfernen">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="fine" style="margin:0">Noch keine Einträge. Nach einem Flug über die Startplatz-Ansicht melden.</p>'}
       <p class="fine">Gemeldete Flüge werden anonym gespeichert (ohne Namen, mit zufälliger Gerätekennung).</p></div>
-    <div class="panel"><h3>Datenquellen</h3>${sourcesHtml()}</div>
-    <div class="panel"><h3>Verbrauch und Updates</h3><div id="statusPanel">${statusHtml()}</div></div>
     <div class="panel"><h3>Datenschutz</h3>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="export">Meine Daten exportieren</button><button class="btn sec" type="button" data-act="wipe">Meine Daten löschen</button><a class="btn sec" href="/privacy">Datenschutzerklärung</a></div></div>
-    <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button></div></div>
+    </details>
     <p class="fine">AFC ${esc(S.plan?.version || '8.0')} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
+  el.querySelector('.prof-tech')?.addEventListener('toggle', e => { S.techOpen = e.target.open; });
 }
 
 /* ---- Flugbuch (lib/logbook.js, /api/logbook): Flüge, Ausrüstung, fällige Checks. Bleibt auf diesem Rechner. */
@@ -1965,14 +1982,14 @@ document.addEventListener('click', async e => {
     case 'updcheck': {
       b.disabled = true; b.textContent = 'Suche …';
       try { const r = await fetch('/api/update/check', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (ST.data && j.update) ST.data.update = j.update; } catch {}
-      store.del('updSkip'); renderUpdBanner(); const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml();
+      store.del('updSkip'); renderUpdBanner(); refreshStatus();
       break;
     }
     case 'btrun': {
       b.disabled = true;
       try { const r = await fetch('/api/backtest', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (!r.ok) throw new Error(j.error); if (ST.data) ST.data.backtest = j; toast('Rückblick-Test läuft, dauert einige Minuten'); }
       catch (err) { toast('Nicht gestartet: ' + err.message); }
-      const el = $('#statusPanel'); if (el) el.innerHTML = statusHtml();
+      refreshStatus();
       setTimeout(loadStatus, 180000);
       break;
     }

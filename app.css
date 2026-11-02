@@ -437,3 +437,15 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .stc-w b { font: 700 24px/1 var(--f-num); }
 .stc-w small { color: var(--muted); font-size: 11px; margin-top: 2px; }
 .stc-d { justify-self: end; font-weight: 600; font-size: 14px; }
+
+/* Profil: drei Bereiche, Technik eingeklappt */
+.prof-h { display: block; font: 700 15px/1.2 var(--f-num); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 18px 2px 8px; }
+#v-profile > .prof-h:first-child { margin-top: 4px; }
+.prof-tech { margin: 18px 0 12px; }
+.prof-tech > summary { list-style: none; cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 12px 40px 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; position: relative; min-height: 44px; }
+.prof-tech > summary::-webkit-details-marker { display: none; }
+.prof-tech > summary::after { content: ''; position: absolute; right: 16px; top: 50%; width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-70%) rotate(45deg); transition: transform .15s; }
+.prof-tech[open] > summary::after { transform: translateY(-30%) rotate(-135deg); }
+.prof-tech > summary .prof-h { margin: 0; color: var(--ink); }
+.prof-tech > summary .fine { margin: 0; }
+.prof-tech[open] > summary { margin-bottom: 12px; }
