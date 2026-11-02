@@ -269,7 +269,7 @@ function headlineFor(d) {
   const site = siteById(t.siteId), area = areaById(t.areaId), sc = t.best.score;
   const tone = sc >= 80 ? 'ok' : sc >= 55 ? 'warn' : 'danger';
   const title = sc >= 80 ? `${dayName(d)} sieht gut aus` : sc >= 55 ? `${dayName(d)} nur mit Vorsicht` : `${dayName(d)} besser am Boden bleiben`;
-  let text = sc >= 55 ? `Bester Start: ${site.name} (${area.name}), ${winText(t.best)}, Score ${sc}.` : `Der beste Startplatz (${site.name}) erreicht nur ${sc} von 100.`;
+  let text = sc >= 55 ? `Bester Start: ${site.name}${site.name.startsWith(area.name) ? '' : ' (' + area.name + ')'}, ${winText(t.best)}, Score ${sc}.` : `Der beste Startplatz (${site.name}) erreicht nur ${sc} von 100.`;
   const dd = p.days[d];
   if (dd.regionStatus && dd.regionStatus !== 'ok') text += ` Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}.`;
   if (d > 2) text += ' Je weiter in der Zukunft, desto unsicherer.';
