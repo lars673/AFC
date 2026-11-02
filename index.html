@@ -24,17 +24,18 @@
       <img src="/icon-192.png" alt="" width="32" height="32">
       <div>
         <h1>AFC</h1>
-        <p id="stamp" class="stamp">Lade Daten …</p>
+        <button type="button" class="stamp-btn" data-act="reload" aria-label="Prognose neu laden" title="Neu laden"><span id="stamp" class="stamp">Lade Daten …</span><svg class="stamp-r" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
     </div>
     <div class="top-actions">
-      <button class="src-dot" id="srcDot" data-act="sources" aria-label="Datenquellen anzeigen" title="Datenquellen"><span class="dot" id="srcDotI"></span><span class="src-t" id="srcDotT">Daten</span></button>
+      <button class="src-dot" id="srcDot" data-act="sources" aria-label="Datenquellen anzeigen" title="Datenquellen"><span class="dot" id="srcDotI"></span><span class="src-t" id="srcDotT" hidden>Daten</span></button>
       <button class="icon-btn" data-act="sun" id="sunBtn" aria-pressed="false" aria-label="Sonnenmodus: grosse Schrift, starker Kontrast" title="Sonnenmodus">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>
-      <button class="icon-btn" data-act="reload" aria-label="Aktualisieren" title="Aktualisieren">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <button class="icon-btn" data-act="feedback" id="fbBtn" aria-label="Rückmeldung an Lars senden" title="Rückmeldung senden" hidden>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>
+      <button class="me-btn" id="meBtn" data-act="tab" data-tab="profile" aria-label="Mein Profil" title="Mein Profil"><span class="av" id="meAv" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="9" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 20c1-3.5 3.7-5 7-5s6 1.5 7 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></button>
     </div>
   </div>
 </header>
@@ -58,10 +59,10 @@
     <div class="mapbox">
       <div id="map" aria-label="Karte der Startplätze"></div>
       <div class="map-tools">
-        <button class="map-btn" data-act="layers" aria-expanded="false" aria-controls="layerPanel">Ebenen</button>
-        <button class="map-btn" data-act="locate">Standort</button>
-        <button class="map-btn" data-act="route">Route</button>
-        <button class="map-btn" data-act="airtoggle" aria-pressed="false">Luftraum</button>
+        <button class="map-btn" data-act="layers" aria-expanded="false" aria-controls="layerPanel" title="Ebenen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5zM3 13l9 5 9-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Ebenen</span></button>
+        <button class="map-btn" data-act="locate" title="Mein Standort"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Standort</span></button>
+        <button class="map-btn" data-act="route" title="Route von A nach B"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="6" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 17c6 0 2-9 8-10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"/></svg><span>Route</span></button>
+        <button class="map-btn" data-act="airtoggle" aria-pressed="false" title="Lufträume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l8-3 8 3v7c0 4-4 7-8 8-4-1-8-4-8-8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Luftraum</span></button>
       </div>
       <div id="radarChip" class="radar-chip" hidden></div>
       <div id="layerPanel" class="layer-panel" hidden>

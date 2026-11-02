@@ -27,6 +27,7 @@ import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { learnedVerdict, thermalLearn } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
+import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, FEEDBACK_KINDS, NOFLY_REASONS } from './lib/auth.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -91,6 +92,68 @@ CREATE INDEX IF NOT EXISTS idx_pred_target ON fc_pred(target);`);
 const dbAll = (sql, p = []) => db.prepare(sql).all(...p);
 const dbGet = (sql, p = []) => db.prepare(sql).get(...p);
 const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
+
+/* ------------------------------------------------------------------ Konten (Testphase) */
+// Solange es kein Konto gibt, läuft AFC wie bisher ohne Anmeldung (ein Pilot, eigener Mac). Das erste Konto wird
+// Admin und übernimmt alle bisherigen Daten (Flugbuch, Wächter, Benachrichtigungen). Danach braucht jede Anfrage
+// eine Anmeldung; neue Piloten kommen nur über einen Einladungslink dazu.
+db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
+CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, uid TEXT NOT NULL, created TEXT, expires TEXT NOT NULL, device TEXT);
+CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'invite', note TEXT, uid TEXT, created TEXT, expires TEXT, used_by TEXT, used_at TEXT);
+CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY, uid TEXT, at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS client_errors (id INTEGER PRIMARY KEY, uid TEXT, at TEXT NOT NULL, sig TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_kv (k TEXT PRIMARY KEY, v TEXT);
+CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
+CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(at);`);
+{
+  // Flugbuch, Wächter und Benachrichtigungen bekommen eine Spalte für den Piloten ('' = vor den Konten)
+  const cols = t => dbAll(`PRAGMA table_info(${t})`).map(c => c.name);
+  const lbOld = !cols('logbook').includes('uid'), wOld = !cols('watch').includes('uid'), pOld = !cols('push_subs').includes('uid');
+  if (lbOld || wOld || pOld) {
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); fsc.copyFileSync(path.join(dataDir, 'afc.sqlite'), path.join(dataDir, `afc-vor-konten-${Date.now()}.sqlite`)); } catch (e) { console.warn('Kopie vor der Umstellung', e.message); }
+    db.exec('BEGIN');
+    try {
+      if (lbOld) db.exec(`CREATE TABLE logbook_n (uid TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated TEXT, PRIMARY KEY(uid,kind,id));
+        INSERT INTO logbook_n(uid,kind,id,data,updated) SELECT '',kind,id,data,updated FROM logbook; DROP TABLE logbook; ALTER TABLE logbook_n RENAME TO logbook;`);
+      if (wOld) db.exec(`CREATE TABLE watch_n (uid TEXT NOT NULL DEFAULT '', site_id TEXT NOT NULL, date TEXT NOT NULL, level TEXT, state TEXT, created TEXT, PRIMARY KEY(uid,site_id));
+        INSERT INTO watch_n(uid,site_id,date,level,state,created) SELECT '',site_id,date,level,state,created FROM watch; DROP TABLE watch; ALTER TABLE watch_n RENAME TO watch;`);
+      if (pOld) db.exec(`ALTER TABLE push_subs ADD COLUMN uid TEXT NOT NULL DEFAULT ''`);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+}
+const AUTH = { count: null };
+const userCount = () => (AUTH.count ??= dbGet('SELECT COUNT(*) n FROM users').n);
+const authOn = () => userCount() > 0;
+const adminUid = () => dbGet("SELECT id FROM users WHERE role='admin' ORDER BY created LIMIT 1")?.id ?? '';
+const SESSION_DAYS = 90;
+const COOKIE = 'afc_s';
+/** Angemeldeter Pilot dieser Anfrage (oder null). */
+function userOf(req) {
+  if (req._user !== undefined) return req._user;
+  let u = null;
+  const t = parseCookies(req.headers.cookie)[COOKIE];
+  if (t && authOn()) {
+    const s = dbGet('SELECT u.*, s.expires s_expires FROM sessions s JOIN users u ON u.id=s.uid WHERE s.token=?', [tokenHash(t)]);
+    if (s && s.s_expires > nowIso()) {
+      u = s;
+      if (!s.last_seen || Date.now() - Date.parse(s.last_seen) > 5 * 60000) dbRun('UPDATE users SET last_seen=? WHERE id=?', [nowIso(), s.id]);
+    }
+  }
+  return (req._user = u);
+}
+const uidOf = req => userOf(req)?.id ?? '';
+// Ohne Konten ist der eigene Mac der Admin; mit Konten nur wer als Admin angemeldet ist
+const isAdmin = req => (authOn() ? userOf(req)?.role === 'admin' : isLocal(req));
+function setSession(req, res, uid) {
+  const t = newToken();
+  dbRun('INSERT INTO sessions(token,uid,created,expires,device) VALUES(?,?,?,?,?)', [tokenHash(t), uid, nowIso(), new Date(Date.now() + SESSION_DAYS * 86400000).toISOString(), cleanText(req.headers['user-agent'], 160)]);
+  const secure = req.headers['x-forwarded-proto'] === 'https' || /\.ts\.net$/.test(String(req.headers.host || '').split(':')[0]) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${COOKIE}=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure}`);
+}
+const clearSession = res => res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+const publicUser = u => (u ? { id: u.id, name: u.name, email: u.email, role: u.role, created: u.created, photo: u.photo_at ? `/api/photo/${u.id}?v=${Date.parse(u.photo_at)}` : null } : null);
 
 /* ------------------------------------------------------------------ Zustand */
 const ingest = {
@@ -497,6 +560,248 @@ const clientId = req => {
 };
 const cleanText = (s, n) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n);
 
+/* ------------------------------------------------------------------ Konten: Anmeldung, Profil, Admin */
+const areaIdSet = new Set(AREAS.map(a => a.id));
+const loginFails = new Map();   // E-Mail -> [Zeitpunkte], gegen Passwort-Raten
+function loginBlocked(email) {
+  const now = Date.now(), l = (loginFails.get(email) || []).filter(t => now - t < 15 * 60000);
+  loginFails.set(email, l);
+  return l.length >= 8;
+}
+const inviteRow = code => {
+  const r = /^[a-z0-9]{6,20}$/.test(String(code || '')) ? dbGet('SELECT * FROM invites WHERE code=?', [code]) : null;
+  return r && !r.used_by && (!r.expires || r.expires > nowIso()) ? r : null;
+};
+function userStats(uid) {
+  const fl = dbAll("SELECT data FROM logbook WHERE uid=? AND kind='flight'", [uid]).map(r => JSON.parse(r.data));
+  const st = JSON.parse(dbGet("SELECT data FROM logbook WHERE uid=? AND kind='settings'", [uid])?.data || '{}');
+  const min = fl.reduce((t, f) => t + (f.durMin || 0), 0);
+  const y = String(new Date().getFullYear());
+  const sites = {};
+  for (const f of fl) if (f.siteName) sites[f.siteName] = (sites[f.siteName] || 0) + 1;
+  const top = Object.entries(sites).sort((a, b) => b[1] - a[1])[0];
+  return {
+    flights: fl.length + (Number(st.flightsBefore) || 0), logged: fl.length, hours: Math.round((min / 60 + (Number(st.hoursBefore) || 0)) * 10) / 10,
+    year: fl.filter(f => f.date?.startsWith(y)).length, last: fl.map(f => f.date).sort().at(-1) || null,
+    verdicts: fl.filter(f => f.afcVerdict).length, igc: fl.filter(f => f.track).length, topSite: top ? top[0] : null,
+    longest: fl.reduce((m, f) => Math.max(m, f.durMin || 0), 0), farthest: fl.reduce((m, f) => Math.max(m, f.km || 0), 0)
+  };
+}
+const kvGet = k => dbGet('SELECT v FROM app_kv WHERE k=?', [k])?.v ?? null;
+const kvSet = (k, v) => (v == null ? dbRun('DELETE FROM app_kv WHERE k=?', [k]) : dbRun('INSERT INTO app_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', [k, String(v)]));
+function meResponse(u) {
+  // Abschluss-Umfrage: sobald der Admin sie freischaltet, bis der Pilot sie beantwortet hat
+  const survey = !!kvGet('survey') && !dbGet("SELECT 1 x FROM feedback WHERE uid=? AND kind='survey'", [u.id]);
+  return { ok: true, auth: true, user: publicUser(u), profile: cleanProfile(JSON.parse(u.profile || '{}')), prefs: cleanUserPrefs(JSON.parse(u.prefs || '{}')), prefsSet: u.prefs !== '{}', stats: userStats(u.id), survey };
+}
+function deleteUserData(uid) {
+  db.exec('BEGIN');
+  try {
+    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
+    for (const r of dbAll('SELECT endpoint FROM push_subs WHERE uid=?', [uid])) { dbRun('DELETE FROM push_sent WHERE endpoint=?', [r.endpoint]); dbRun('DELETE FROM push_subs WHERE endpoint=?', [r.endpoint]); }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  AUTH.count = null;
+}
+function createUser({ email, name, pw, role }) {
+  const id = newId(), at = nowIso();
+  dbRun('INSERT INTO users(id,email,name,pw,role,created,last_seen) VALUES(?,?,?,?,?,?,?)', [id, email, name, hashPassword(pw), role, at, at]);
+  AUTH.count = null;
+  return dbGet('SELECT * FROM users WHERE id=?', [id]);
+}
+async function accountRoute(req, res, p, u) {
+  const me = userOf(req);
+  const body = async (max) => readBody(req, max);
+  const post = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
+  if (post && limited(req, 'post', 60)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+
+  if (p === '/api/auth/state' && req.method === 'GET') {
+    const inv = u.searchParams.get('invite') ? inviteRow(u.searchParams.get('invite')) : null;
+    return sendJson(req, res, 200, { ok: true, auth: authOn(), setup: !authOn(), user: publicUser(me), invite: inv ? { ok: true, kind: inv.kind, name: inv.kind === 'reset' ? dbGet('SELECT name FROM users WHERE id=?', [inv.uid])?.name : null } : u.searchParams.get('invite') ? { ok: false } : null });
+  }
+  if (p === '/api/auth/setup' && req.method === 'POST') {
+    if (authOn()) return sendJson(req, res, 409, { error: 'Es gibt schon ein Admin-Konto. Bitte anmelden.' });
+    const b = await body();
+    const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);
+    if (!name) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' });
+    if (!email) return sendJson(req, res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben' });
+    if (bad) return sendJson(req, res, 400, { error: bad });
+    await backup(db, path.join(backupsDir, `afc-vor-erstem-konto-${nowIso().replace(/[:.]/g, '-')}.sqlite`)).catch(e => console.warn('Sicherung vor dem ersten Konto', errMsg(e)));
+    const user = createUser({ email, name, pw: b.password, role: 'admin' });
+    // bisherige Daten gehören dem ersten Konto
+    for (const t of ['logbook', 'watch', 'push_subs']) dbRun(`UPDATE ${t} SET uid=? WHERE uid=''`, [user.id]);
+    if (b.prefs) dbRun('UPDATE users SET prefs=? WHERE id=?', [JSON.stringify(cleanUserPrefs(b.prefs)), user.id]);
+    setSession(req, res, user.id);
+    return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [user.id])));
+  }
+  if (p === '/api/auth/register' && req.method === 'POST') {
+    const b = await body();
+    const inv = inviteRow(b.invite);
+    if (!inv || inv.kind !== 'invite') return sendJson(req, res, 400, { error: 'Dieser Einladungslink ist nicht mehr gültig. Bitte Lars um einen neuen.' });
+    const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);
+    if (!name) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' });
+    if (!email) return sendJson(req, res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben' });
+    if (bad) return sendJson(req, res, 400, { error: bad });
+    if (dbGet('SELECT 1 x FROM users WHERE email=?', [email])) return sendJson(req, res, 409, { error: 'Mit dieser E-Mail gibt es schon ein Konto. Bitte anmelden.' });
+    const user = createUser({ email, name, pw: b.password, role: 'pilot' });
+    dbRun('UPDATE invites SET used_by=?, used_at=? WHERE code=?', [user.id, nowIso(), inv.code]);
+    if (b.prefs) dbRun('UPDATE users SET prefs=? WHERE id=?', [JSON.stringify(cleanUserPrefs(b.prefs)), user.id]);
+    setSession(req, res, user.id);
+    return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [user.id])));
+  }
+  if (p === '/api/auth/reset' && req.method === 'POST') {
+    // neues Passwort über einen Link, den der Admin erstellt hat
+    const b = await body();
+    const inv = inviteRow(b.invite);
+    if (!inv || inv.kind !== 'reset') return sendJson(req, res, 400, { error: 'Dieser Link ist nicht mehr gültig. Bitte Lars um einen neuen.' });
+    const bad = passwordProblem(b.password);
+    if (bad) return sendJson(req, res, 400, { error: bad });
+    dbRun('UPDATE users SET pw=? WHERE id=?', [hashPassword(b.password), inv.uid]);
+    dbRun('DELETE FROM sessions WHERE uid=?', [inv.uid]);
+    dbRun('UPDATE invites SET used_by=?, used_at=? WHERE code=?', [inv.uid, nowIso(), inv.code]);
+    setSession(req, res, inv.uid);
+    return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [inv.uid])));
+  }
+  if (p === '/api/auth/login' && req.method === 'POST') {
+    if (limited(req, 'login', 20)) return sendJson(req, res, 429, { error: 'Zu viele Versuche. Bitte eine Minute warten.' });
+    const b = await body();
+    const email = cleanEmail(b.email);
+    if (!email) return sendJson(req, res, 400, { error: 'Bitte die E-Mail-Adresse eingeben' });
+    if (loginBlocked(email)) return sendJson(req, res, 429, { error: 'Zu viele falsche Passwörter. Bitte in 15 Minuten nochmals versuchen.' });
+    const user = dbGet('SELECT * FROM users WHERE email=?', [email]);
+    if (!user || !verifyPassword(b.password, user.pw)) {
+      loginFails.get(email).push(Date.now());
+      return sendJson(req, res, 401, { error: 'E-Mail oder Passwort stimmt nicht' });
+    }
+    loginFails.delete(email);
+    setSession(req, res, user.id);
+    return sendJson(req, res, 200, meResponse(user));
+  }
+  if (p === '/api/auth/logout' && req.method === 'POST') {
+    const t = parseCookies(req.headers.cookie)[COOKIE];
+    if (t) dbRun('DELETE FROM sessions WHERE token=?', [tokenHash(t)]);
+    clearSession(res);
+    return sendJson(req, res, 200, { ok: true });
+  }
+
+  // ab hier nur angemeldet
+  if (!me) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
+  if (p === '/api/me' && req.method === 'GET') return sendJson(req, res, 200, meResponse(me));
+  if (p === '/api/me' && req.method === 'PUT') {
+    const b = await body(32 * 1024);
+    if (b.name !== undefined) { const n = cleanName(b.name); if (!n) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' }); dbRun('UPDATE users SET name=? WHERE id=?', [n, me.id]); }
+    if (b.profile) dbRun('UPDATE users SET profile=? WHERE id=?', [JSON.stringify(cleanProfile(b.profile, areaIdSet)), me.id]);
+    if (b.prefs) dbRun('UPDATE users SET prefs=? WHERE id=?', [JSON.stringify(cleanUserPrefs({ ...JSON.parse(me.prefs || '{}'), ...b.prefs })), me.id]);
+    return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [me.id])));
+  }
+  if (p === '/api/me/photo' && (req.method === 'PUT' || req.method === 'DELETE')) {
+    if (req.method === 'DELETE') { dbRun('DELETE FROM photos WHERE uid=?', [me.id]); dbRun('UPDATE users SET photo_at=NULL WHERE id=?', [me.id]); }
+    else {
+      const ph = cleanPhoto((await body(600 * 1024)).photo);
+      if (!ph) return sendJson(req, res, 400, { error: 'Das Bild konnte nicht gelesen werden (JPEG oder PNG, höchstens 400 KB)' });
+      dbRun('INSERT INTO photos(uid,type,data) VALUES(?,?,?) ON CONFLICT(uid) DO UPDATE SET type=excluded.type, data=excluded.data', [me.id, ph.type, ph.buf]);
+      dbRun('UPDATE users SET photo_at=? WHERE id=?', [nowIso(), me.id]);
+    }
+    return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [me.id])));
+  }
+  if (p === '/api/me/password' && req.method === 'POST') {
+    const b = await body();
+    if (!verifyPassword(b.old, me.pw)) return sendJson(req, res, 400, { error: 'Das bisherige Passwort stimmt nicht' });
+    const bad = passwordProblem(b.password);
+    if (bad) return sendJson(req, res, 400, { error: bad });
+    dbRun('UPDATE users SET pw=? WHERE id=?', [hashPassword(b.password), me.id]);
+    dbRun('DELETE FROM sessions WHERE uid=?', [me.id]);
+    setSession(req, res, me.id);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  if (p === '/api/me/export' && req.method === 'GET') {
+    const data = { app: 'AFC', type: 'meine-daten', exportedAt: nowIso(), konto: { ...publicUser(me), lastSeen: me.last_seen }, profil: cleanProfile(JSON.parse(me.profile || '{}')), einstellungen: cleanUserPrefs(JSON.parse(me.prefs || '{}')), flugbuch: logbookData(me.id), waechter: dbAll('SELECT site_id, date, level FROM watch WHERE uid=?', [me.id]), rueckmeldungen: dbAll('SELECT at, kind, data FROM feedback WHERE uid=?', [me.id]).map(r => ({ at: r.at, kind: r.kind, ...JSON.parse(r.data) })), geraete: dbAll('SELECT created, expires, device FROM sessions WHERE uid=?', [me.id]) };
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="AFC-meine-Daten-${nowIso().slice(0, 10)}.json"`, 'Cache-Control': 'no-store', ...SEC });
+    return res.end(JSON.stringify(data, null, 1));
+  }
+  if (p === '/api/me' && req.method === 'DELETE') {
+    const b = await body();
+    if (!verifyPassword(b.password, me.pw)) return sendJson(req, res, 400, { error: 'Das Passwort stimmt nicht' });
+    if (me.role === 'admin' && dbGet("SELECT COUNT(*) n FROM users WHERE role='admin'").n <= 1 && userCount() > 1) return sendJson(req, res, 400, { error: 'Du bist der einzige Admin. Lösche zuerst die anderen Konten.' });
+    await backup(db, path.join(backupsDir, `afc-vor-loeschen-${nowIso().replace(/[:.]/g, '-')}.sqlite`)).catch(() => {});
+    deleteUserData(me.id);
+    clearSession(res);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  const ph = p.match(/^\/api\/photo\/([\w-]{6,20})$/);
+  if (ph && req.method === 'GET') {
+    const r = dbGet('SELECT type, data FROM photos WHERE uid=?', [ph[1]]);
+    if (!r) return sendJson(req, res, 404, { error: 'kein Bild' });
+    res.writeHead(200, { 'Content-Type': r.type, 'Cache-Control': 'private, max-age=31536000, immutable', 'Content-Length': r.data.length, ...SEC });
+    return res.end(Buffer.from(r.data));
+  }
+  // Rückmeldungen aus der App (Idee, Fehler, «heute nicht gestartet», Umfrage)
+  if (p === '/api/feedback' && req.method === 'POST') {
+    if (limited(req, 'feedback', 20)) return sendJson(req, res, 429, { error: 'zu viele Rückmeldungen, bitte später' });
+    const b = await body(420 * 1024);
+    const f = cleanFeedback(b);
+    if (!f) return sendJson(req, res, 400, { error: 'Bitte etwas schreiben' });
+    const shot = typeof b.shot === 'string' && /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(b.shot) && b.shot.length < 400 * 1024 ? b.shot : null;
+    dbRun('INSERT INTO feedback(uid,at,kind,data) VALUES(?,?,?,?)', [me.id, nowIso(), f.kind, JSON.stringify({ ...f, shot })]);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  if (p === '/api/feedback' && req.method === 'GET') {
+    return sendJson(req, res, 200, { ok: true, items: dbAll('SELECT at, kind, data FROM feedback WHERE uid=? ORDER BY at DESC LIMIT 50', [me.id]).map(r => { const d = JSON.parse(r.data); delete d.shot; return { at: r.at, kind: r.kind, ...d }; }) });
+  }
+
+  // Admin: Einladungen, Überblick über die Testphase
+  if (p.startsWith('/api/admin/')) {
+    if (me.role !== 'admin') return sendJson(req, res, 403, { error: 'nur für den Admin' });
+    if (p === '/api/admin/overview' && req.method === 'GET') {
+      const users = dbAll('SELECT * FROM users ORDER BY created').map(x => ({ ...publicUser(x), lastSeen: x.last_seen, profile: cleanProfile(JSON.parse(x.profile || '{}')), stats: userStats(x.id), push: dbGet('SELECT COUNT(*) n FROM push_subs WHERE uid=?', [x.id]).n, feedback: dbGet('SELECT COUNT(*) n FROM feedback WHERE uid=?', [x.id]).n }));
+      const names = Object.fromEntries(users.map(x => [x.id, x.name]));
+      const invites = dbAll('SELECT * FROM invites ORDER BY created DESC LIMIT 60').map(x => ({ code: x.code, kind: x.kind, note: x.note, created: x.created, expires: x.expires, usedBy: x.used_by ? names[x.used_by] || '(gelöscht)' : null, usedAt: x.used_at, forUser: x.uid ? names[x.uid] || null : null }));
+      const feedback = dbAll('SELECT id, uid, at, kind, data, done FROM feedback ORDER BY at DESC LIMIT 200').map(r => ({ id: r.id, at: r.at, kind: r.kind, done: !!r.done, who: names[r.uid] || '(gelöscht)', ...JSON.parse(r.data) }));
+      const errors = dbAll('SELECT id, uid, at, n, data FROM client_errors ORDER BY at DESC LIMIT 60').map(r => ({ id: r.id, at: r.at, n: r.n, who: names[r.uid] || '–', ...JSON.parse(r.data) }));
+      const verdicts = {};
+      for (const r of dbAll("SELECT data FROM logbook WHERE kind='flight'")) { const v = JSON.parse(r.data).afcVerdict; if (v) verdicts[v] = (verdicts[v] || 0) + 1; }
+      return sendJson(req, res, 200, { ok: true, users, invites, feedback, errors, verdicts, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
+    }
+    if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
+    if (p === '/api/admin/invite' && req.method === 'POST') {
+      const b = await body();
+      const kind = b.kind === 'reset' ? 'reset' : 'invite';
+      const uid = kind === 'reset' ? String(b.uid || '') : null;
+      if (kind === 'reset' && !dbGet('SELECT 1 x FROM users WHERE id=?', [uid])) return sendJson(req, res, 404, { error: 'Konto nicht gefunden' });
+      const code = newCode(10), days = kind === 'reset' ? 3 : Math.min(60, Math.max(1, Number(b.days) || 30));
+      dbRun('INSERT INTO invites(code,kind,note,uid,created,expires) VALUES(?,?,?,?,?,?)', [code, kind, cleanText(b.note, 60) || null, uid, nowIso(), new Date(Date.now() + days * 86400000).toISOString()]);
+      return sendJson(req, res, 200, { ok: true, code, kind, expires: new Date(Date.now() + days * 86400000).toISOString() });
+    }
+    const di = p.match(/^\/api\/admin\/invite\/([a-z0-9]{6,20})$/);
+    if (di && req.method === 'DELETE') { dbRun('DELETE FROM invites WHERE code=? AND used_by IS NULL', [di[1]]); return sendJson(req, res, 200, { ok: true }); }
+    const fd = p.match(/^\/api\/admin\/feedback\/(\d+)$/);
+    if (fd && req.method === 'PUT') { const b = await body(); dbRun('UPDATE feedback SET done=? WHERE id=?', [b.done ? 1 : 0, Number(fd[1])]); return sendJson(req, res, 200, { ok: true }); }
+    const fs2 = p.match(/^\/api\/admin\/feedback\/(\d+)\/shot$/);
+    if (fs2 && req.method === 'GET') { const r = dbGet('SELECT data FROM feedback WHERE id=?', [Number(fs2[1])]); return sendJson(req, res, 200, { ok: true, shot: r ? JSON.parse(r.data).shot || null : null }); }
+    if (p === '/api/admin/errors' && req.method === 'DELETE') { dbRun('DELETE FROM client_errors'); return sendJson(req, res, 200, { ok: true }); }
+    const du = p.match(/^\/api\/admin\/user\/([\w-]{6,20})$/);
+    if (du && req.method === 'DELETE') {
+      if (du[1] === me.id) return sendJson(req, res, 400, { error: 'Das eigene Konto unter «Konto löschen» löschen' });
+      await backup(db, path.join(backupsDir, `afc-vor-loeschen-${nowIso().replace(/[:.]/g, '-')}.sqlite`)).catch(() => {});
+      deleteUserData(du[1]);
+      return sendJson(req, res, 200, { ok: true });
+    }
+    return sendJson(req, res, 404, { error: 'unbekannt' });
+  }
+  return sendJson(req, res, 404, { error: 'unbekannt' });
+}
+/** JavaScript-Fehler aus der App: gleiche Meldungen werden gezählt statt gespeichert. */
+function clientErrorRoute(req, res, body) {
+  const e = cleanClientError(body);
+  if (!e) return sendJson(req, res, 400, { error: 'leer' });
+  const uid = uidOf(req) || null, sig = crypto.createHash('sha1').update(e.msg + '|' + e.src + '|' + e.line).digest('hex').slice(0, 16);
+  const row = dbGet('SELECT id FROM client_errors WHERE sig=? AND COALESCE(uid,\'\')=?', [sig, uid || '']);
+  if (row) dbRun('UPDATE client_errors SET n=n+1, at=?, data=? WHERE id=?', [nowIso(), JSON.stringify(e), row.id]);
+  else dbRun('INSERT INTO client_errors(uid,at,sig,data) VALUES(?,?,?,?)', [uid, nowIso(), sig, JSON.stringify(e)]);
+  dbRun('DELETE FROM client_errors WHERE id NOT IN (SELECT id FROM client_errors ORDER BY at DESC LIMIT 300)');
+  return sendJson(req, res, 200, { ok: true });
+}
+
 /* ------------------------------------------------------------------ Statische Dateien */
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']], ['/index.html', ['index.html', 'text/html; charset=utf-8']],
@@ -560,10 +865,18 @@ const server = http.createServer(async (req, res) => {
     // Regenradar und Webcam-Bilder: eigene Grenze, weil eine Karte viele Kacheln auf einmal lädt
     if (req.method === 'GET' && (p === '/api/radar' || p.startsWith('/api/radar/') || p === '/api/camimg')) {
       if (limited(req, 'media', 600)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+      if (authOn() && !userOf(req)) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
       return mediaRoute(req, res, p, u);
     }
     if (p.startsWith('/api/')) {
       if (limited(req, 'api', 180)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+      if (p === '/api/client-error' && req.method === 'POST') {
+        if (limited(req, 'cerr', 20)) return sendJson(req, res, 429, { error: 'zu viele' });
+        return clientErrorRoute(req, res, await readBody(req, 8 * 1024));
+      }
+      if (p.startsWith('/api/auth/') || p === '/api/me' || p.startsWith('/api/me/') || p.startsWith('/api/admin/') || p.startsWith('/api/photo/') || p === '/api/feedback') return accountRoute(req, res, p, u);
+      // Mit Konten braucht alles eine Anmeldung (ausser der Version für die Anzeige vor dem Anmelden)
+      if (authOn() && !userOf(req) && p !== '/api/meta') return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
       if (req.method === 'GET' && p === '/api/plan') {
         const level = validLevel(u);
         if (!level) return sendJson(req, res, 400, { error: 'level muss careful, normal oder expert sein' });
@@ -614,14 +927,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
-        if (!isLocal(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
+        if (!isLocal(req) || !isAdmin(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
         return sendJson(req, res, 200, { ok: true, started: maybeBacktest(true), ...backtestStatus() });
       }
       if (req.method === 'POST' && p === '/api/update') {
-        if (!isLocal(req) || !AUTOSTART) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
+        if (!isLocal(req) || !AUTOSTART || !isAdmin(req)) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
         if (req.headers['x-afc-client'] === undefined) return sendJson(req, res, 400, { error: 'Kopfzeile fehlt' });
         const r = await updater.apply();
         if (!r.ok) return sendJson(req, res, 500, { error: r.error });
@@ -631,11 +946,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (req.method === 'POST' && p === '/api/update/check') {
-        if (!isLocal(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
+        if (!isLocal(req) || !isAdmin(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
         return sendJson(req, res, 200, { ok: true, update: { ...(await updater.check()), canApply: AUTOSTART } });
       }
       if (req.method === 'GET' && p === '/api/meta') {
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, publicApp: PUBLIC_APP || null, sites: RANKED.length, areas: AREAS.length, sitesChecked: SITES_FILE.meta?.checked });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, publicApp: PUBLIC_APP || null, sites: RANKED.length, areas: AREAS.length, sitesChecked: SITES_FILE.meta?.checked, areaList: AREAS.map(a => ({ id: a.id, name: a.name })) });
       }
       if (req.method === 'POST' && p === '/api/flight-report') {
         if (limited(req, 'post', 10)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
@@ -663,23 +978,24 @@ const server = http.createServer(async (req, res) => {
       // Flugtag-Wächter: «Heute fliege ich hier»
       if (p === '/api/watch') {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
-        const today = zurichParts(Date.now()).date;
+        const today = zurichParts(Date.now()).date, uid = uidOf(req);
         dbRun('DELETE FROM watch WHERE date<>?', [today]);
-        const list = () => dbAll('SELECT site_id siteId, level, created FROM watch WHERE date=?', [today]);
-        if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, watches: list(), devices: dbGet('SELECT COUNT(*) n FROM push_subs').n, from: WATCH_FROM, to: WATCH_TO });
+        const list = () => dbAll('SELECT site_id siteId, level, created FROM watch WHERE date=? AND uid=?', [today, uid]);
+        const devices = () => dbGet('SELECT COUNT(*) n FROM push_subs WHERE uid=?', [uid]).n;
+        if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, watches: list(), devices: devices(), from: WATCH_FROM, to: WATCH_TO });
         if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
         if (limited(req, 'post', 60)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
         const b = await readBody(req);
         const sid = String(b.siteId || '');
         if (!SITE_IDS.has(sid)) return sendJson(req, res, 400, { error: 'Unbekannter Startplatz' });
-        if (b.on === false) dbRun('DELETE FROM watch WHERE site_id=?', [sid]);
+        if (b.on === false) dbRun('DELETE FROM watch WHERE site_id=? AND uid=?', [sid, uid]);
         else {
-          if (!dbGet('SELECT 1 x FROM watch WHERE site_id=?', [sid]) && list().length >= WATCH_MAX) return sendJson(req, res, 400, { error: `Höchstens ${WATCH_MAX} Startplätze gleichzeitig` });
+          if (!dbGet('SELECT 1 x FROM watch WHERE site_id=? AND uid=?', [sid, uid]) && list().length >= WATCH_MAX) return sendJson(req, res, 400, { error: `Höchstens ${WATCH_MAX} Startplätze gleichzeitig` });
           const level = LEVELS[b.level] ? b.level : DEFAULT_LEVEL;
-          dbRun('INSERT INTO watch(site_id,date,level,state,created) VALUES(?,?,?,?,?) ON CONFLICT(site_id) DO UPDATE SET date=excluded.date, level=excluded.level', [sid, today, level, '{}', nowIso()]);
+          dbRun('INSERT INTO watch(uid,site_id,date,level,state,created) VALUES(?,?,?,?,?,?) ON CONFLICT(uid,site_id) DO UPDATE SET date=excluded.date, level=excluded.level', [uid, sid, today, level, '{}', nowIso()]);
           tick('watch', watchTick);   // gleich einmal prüfen
         }
-        return sendJson(req, res, 200, { ok: true, watches: list(), devices: dbGet('SELECT COUNT(*) n FROM push_subs').n });
+        return sendJson(req, res, 200, { ok: true, watches: list(), devices: devices() });
       }
       // Benachrichtigungen (Web Push) an die installierte App
       if (p.startsWith('/api/push/')) {
@@ -693,7 +1009,7 @@ const server = http.createServer(async (req, res) => {
           const sub = cleanSubscription(b.subscription);
           if (!sub) return sendJson(req, res, 400, { error: 'Ungültiges Abo' });
           const prefs = cleanPrefs(b.prefs);
-          dbRun('INSERT INTO push_subs(endpoint,keys,prefs,created) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET keys=excluded.keys, prefs=excluded.prefs', [sub.endpoint, JSON.stringify(sub.keys), JSON.stringify(prefs), nowIso()]);
+          dbRun('INSERT INTO push_subs(endpoint,keys,prefs,created,uid) VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET keys=excluded.keys, prefs=excluded.prefs, uid=excluded.uid', [sub.endpoint, JSON.stringify(sub.keys), JSON.stringify(prefs), nowIso(), uidOf(req)]);
           return sendJson(req, res, 200, { ok: true, prefs });
         }
         const row = dbGet('SELECT * FROM push_subs WHERE endpoint=?', [String(b.endpoint || '')]);
@@ -716,15 +1032,18 @@ const server = http.createServer(async (req, res) => {
       // Flugbuch (persönlich, bleibt auf diesem Rechner): Flüge, Ausrüstung, Einstellungen
       if (p === '/api/logbook' || p.startsWith('/api/logbook/')) {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
-        if (req.method === 'GET' && p === '/api/logbook') return sendJson(req, res, 200, { ok: true, ...logbookData(), backup: lbBackupStatus() });
+        const uid = uidOf(req);
+        // Sicherung auf dem Mac und in iCloud gilt dem Flugbuch des Admins; alle anderen sind in der täglichen Datenbank-Sicherung
+        if (req.method === 'GET' && p === '/api/logbook') return sendJson(req, res, 200, { ok: true, ...logbookData(uid), backup: uid === adminUid() ? lbBackupStatus() : null });
         if (req.method === 'GET' && (p === '/api/logbook/export.json' || p === '/api/logbook/export.csv')) {
-          const file = logbookFile(), csv = p.endsWith('.csv');
+          const file = logbookFile(uid), csv = p.endsWith('.csv');
           const day = file.exportedAt.slice(0, 10);
           res.writeHead(200, { 'Content-Type': csv ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="AFC-Flugbuch-${day}.${csv ? 'csv' : 'json'}"`, 'Cache-Control': 'no-store', ...SEC, ...corsHeaders(req) });
           return res.end(csv ? flightsCsv(file.flights, file.gear) : JSON.stringify(file, null, 1));
         }
         if (req.method === 'POST' && p === '/api/logbook/backup') {
           if (limited(req, 'post', 20)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+          if (uid !== adminUid()) return sendJson(req, res, 403, { error: 'Dein Flugbuch wird jede Nacht automatisch gesichert. Mit «Sicherungsdatei» bekommst du eine eigene Kopie.' });
           await backupLogbook();
           return sendJson(req, res, 200, { ok: true, backup: lbBackupStatus() });
         }
@@ -734,9 +1053,9 @@ const server = http.createServer(async (req, res) => {
           const b = cleanBackup(await readBody(req, 30 * 1024 * 1024));
           if (!b) return sendJson(req, res, 400, { error: 'Das ist keine AFC-Flugbuch-Sicherung' });
           await backup(db, path.join(backupsDir, `afc-vor-import-${nowIso().replace(/[:.]/g, '-')}.sqlite`));
-          const has = new Set(dbAll("SELECT kind||'/'||id k FROM logbook").map(r => r.k));
+          const has = new Set(dbAll("SELECT kind||'/'||id k FROM logbook WHERE uid=?", [uid]).map(r => r.k));
           const n = { added: 0, updated: 0, gear: 0 };
-          const put = (kind, id, item) => dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, id, JSON.stringify(item), nowIso()]);
+          const put = (kind, id, item) => dbRun('INSERT INTO logbook(uid,kind,id,data,updated) VALUES(?,?,?,?,?) ON CONFLICT(uid,kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [uid, kind, id, JSON.stringify(item), nowIso()]);
           db.exec('BEGIN');
           try {
             for (const f of b.flights) { n[has.has('flight/' + f.id) ? 'updated' : 'added']++; put('flight', f.id, f); }
@@ -751,12 +1070,12 @@ const server = http.createServer(async (req, res) => {
         if (!lm) return sendJson(req, res, 404, { error: 'unbekannt' });
         if (limited(req, 'post', 120)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
         const [, kind, lid] = lm;
-        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE kind=? AND id=?', [kind, lid]); backupLogbookSoon(); return sendJson(req, res, 200, { ok: true }); }
+        if (req.method === 'DELETE') { dbRun('DELETE FROM logbook WHERE uid=? AND kind=? AND id=?', [uid, kind, lid]); backupLogbookSoon(); return sendJson(req, res, 200, { ok: true }); }
         if (req.method === 'PUT') {
           const body = await readBody(req, 64 * 1024);   // Flug mit vereinfachter IGC-Spur
           const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
           if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
-          dbRun('INSERT INTO logbook(kind,id,data,updated) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
+          dbRun('INSERT INTO logbook(uid,kind,id,data,updated) VALUES(?,?,?,?,?) ON CONFLICT(uid,kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [uid, kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
           backupLogbookSoon();
           return sendJson(req, res, 200, { ok: true, item });
         }
@@ -839,12 +1158,13 @@ async function pushTick(phase = pushPhase()) {
   if (!subs.length) return 0;
   const model = currentModel();
   if (!model?.ok) return 0;
-  const lb = logbookData();
+  const lbs = {};
   const plans = {};
   let sent = 0;
   for (const row of subs) {
     const prefs = cleanPrefs(JSON.parse(row.prefs));
     const plan = plans[prefs.level] ||= model.planPayload(prefs.level);
+    const lb = lbs[row.uid] ||= logbookData(row.uid);   // Ausrüstung und Flüge des Piloten, dem das Gerät gehört
     for (const n of buildNotices({ phase, plan, prefs, gear: lb.gear, flights: lb.flights })) {
       if (dbGet('SELECT 1 x FROM push_sent WHERE endpoint=? AND key=?', [row.endpoint, n.key])) continue;
       const r = await pushTo(row, n);
@@ -882,7 +1202,7 @@ function snapshotSiteForecasts(now = Date.now()) {
 const SITE_AREA = Object.fromEntries(SITES.map(s => [s.id, s.area]));
 function thermalLearned() {
   if (state.thermal && Date.now() - state.thermalAt < 3600000) return state.thermal;
-  const flights = logbookData().flights.filter(f => f.track?.thermals?.length);
+  const flights = allFlights().filter(f => f.track?.thermals?.length);   // Flüge aller Piloten
   const fc = new Map();
   for (const d of new Set(flights.map(f => f.date))) for (const r of dbAll('SELECT site_id, hour, top FROM site_fc WHERE date=?', [d])) fc.set(`${r.site_id}|${d}|${r.hour}`, r.top);
   state.thermal = thermalLearn(flights, fc, SITE_AREA);
@@ -903,8 +1223,8 @@ async function watchTick(now = Date.now(), hourOverride = null) {
     const detail = model.siteDetail(w.site_id, w.level);
     if (!detail) continue;
     const { state, alerts } = watchCheck(detail, w.level, JSON.parse(w.state || '{}'), h, now);
-    dbRun('UPDATE watch SET state=? WHERE site_id=?', [JSON.stringify(state), w.site_id]);
-    for (const a of alerts) for (const row of subs) {
+    dbRun('UPDATE watch SET state=? WHERE site_id=? AND uid=?', [JSON.stringify(state), w.site_id, w.uid]);
+    for (const a of alerts) for (const row of subs.filter(x => x.uid === w.uid)) {
       const r = await pushTo(row, { title: a.title, body: a.body, tag: `watch-${w.site_id}-${a.type}`, url: '/?site=' + encodeURIComponent(w.site_id) });
       if (r.ok) sent++;
     }
@@ -933,7 +1253,8 @@ function healthProblems(now = Date.now()) {
 async function healthTick(now = Date.now(), hour = null) {
   const h = hour ?? zurichParts(now).hour;
   if (!PUSH_ON || h < 6 || h >= 22) return 0;
-  const subs = dbAll('SELECT * FROM push_subs').filter(r => cleanPrefs(JSON.parse(r.prefs)).health);
+  // Betriebsmeldungen des Macs nur an den Admin
+  const subs = dbAll('SELECT * FROM push_subs WHERE uid=?', [adminUid()]).filter(r => cleanPrefs(JSON.parse(r.prefs)).health);
   const probs = healthProblems(now), ids = new Set(probs.map(p => p.id)), day = zurichParts(now).date;
   const msgs = [];
   for (const p of probs) if (!healthAlerted.has(p.id) || healthAlerted.get(p.id) !== day) { msgs.push({ ...p, key: `health:${p.id}:${day}`, tag: 'health-' + p.id, url: '/?tab=profile' }); healthAlerted.set(p.id, day); }
@@ -986,11 +1307,12 @@ try {
   const c = lbBackup.cloudDir && lastBackupFile(lbBackup.cloudDir);
   if (c) lbBackup.cloud = fsc.statSync(c).mtime.toISOString();
 } catch { /* ohne Vorgeschichte weiter */ }
-function logbookData() {
-  const pick = k => dbAll('SELECT data FROM logbook WHERE kind=?', [k]).map(r => JSON.parse(r.data));
+function logbookData(uid = '') {
+  const pick = k => dbAll('SELECT data FROM logbook WHERE uid=? AND kind=?', [uid, k]).map(r => JSON.parse(r.data));
   return { flights: pick('flight').sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), gear: pick('gear'), settings: cleanSettings(pick('settings')[0] || {}) };
 }
-const logbookFile = () => ({ app: 'AFC', type: 'flugbuch', version: 1, exportedAt: nowIso(), ...logbookData() });
+const allFlights = () => dbAll("SELECT data FROM logbook WHERE kind='flight'").map(r => JSON.parse(r.data));
+const logbookFile = (uid = adminUid()) => ({ app: 'AFC', type: 'flugbuch', version: 1, exportedAt: nowIso(), ...logbookData(uid) });
 async function writeAtomic(file, text) {
   const tmp = file + '.tmp';
   await fs.writeFile(tmp, text);

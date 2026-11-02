@@ -270,6 +270,7 @@ test('Pilotenprofil: Erfahrung, Übung und Pause bestimmen die Stufe', async () 
   // kräftige Thermik ist für Einsteiger ein Hinweis, für Erfahrene nicht
   assert.equal(pilotHint({ flights: 20, hours12: 5, glider: 'A' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'warn');
   assert.equal(pilotHint({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-10-25' }, { wstar: 2.8, speed: 10, gust: 14 }, now).lvl, 'ok');
+  assert.match(pilotHint({ flights: 600, hours12: 80, glider: 'C', lastFlight: '2026-10-25', maxGust: 25 }, { wstar: 1, speed: 15, gust: 30 }, now).t, /über deiner eigenen Grenze von 25/);
 });
 
 test('Routenplaner: umfliegt zu hohes Gelände, nutzt Thermik, meldet Gegenwind', async () => {

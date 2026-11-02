@@ -6,10 +6,32 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = v => typeof v === 'number' && Number.isFinite(v);
+// Persönliche Einstellungen, die mit dem Konto auf dem Mac gespeichert werden (gleich auf jedem Gerät)
+const SYNC_KEYS = new Set(['fav', 'level', 'levelManual', 'pilot']);
 const store = {
   get(k, d) { try { const v = localStorage.getItem('afc.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem('afc.' + k, JSON.stringify(v)); } catch { /* privat/voll */ } },
-  del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } }
+  set(k, v) { try { localStorage.setItem('afc.' + k, JSON.stringify(v)); } catch { /* privat/voll */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
+  del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
+  changed: null
+};
+const APP_VER = '9.7';
+// Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
+const rawFetch = window.fetch.bind(window);
+const ERR = { n: 0, seen: new Set() };
+function reportError(msg, src, line, stack) {
+  const sig = `${msg}|${src}|${line}`;
+  if (!msg || ERR.n >= 8 || ERR.seen.has(sig) || /ResizeObserver|Script error\.?$/.test(msg)) return;
+  ERR.seen.add(sig); ERR.n++;
+  rawFetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg: String(msg).slice(0, 300), src: String(src || '').replace(location.origin, ''), line, stack: String(stack || '').slice(0, 1500), page: typeof S === 'undefined' ? '' : S.tab, ver: APP_VER, device: navigator.userAgent.slice(0, 160) }) }).catch(() => {});
+}
+window.addEventListener('error', e => { if (e.message) reportError(e.message, e.filename, e.lineno, e.error?.stack); });
+window.addEventListener('unhandledrejection', e => reportError('Promise: ' + (e.reason?.message || e.reason), '', 0, e.reason?.stack));
+// Sagt der Mac «Bitte anmelden», erscheint die Anmeldung (z.B. nach 90 Tagen oder wenn Lars das Konto entfernt hat)
+window.fetch = async (input, init) => {
+  const r = await rawFetch(input, init);
+  const url = typeof input === 'string' ? input : input?.url || '';
+  if (r.status === 401 && /^\/api\/(?!auth\/)/.test(url) && typeof ME !== 'undefined' && !ME.gate) r.clone().json().then(j => { if (j?.login) showGate('login'); }).catch(() => {});
+  return r;
 };
 /** Alter einer Messung in Minuten, ab dem Messzeitpunkt gerechnet (stimmt auch bei gespeicherten Daten ohne Empfang). */
 const ageMin = (time, fallback) => { const t = Date.parse(time || ''); return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60000)) : fallback; };
@@ -58,11 +80,11 @@ function applyTheme() {
 let loadTimer = null;
 async function loadPlan(manual) {
   clearTimeout(loadTimer);
-  $('.icon-btn[data-act="reload"]')?.classList.add('spin');
+  $('.stamp-btn')?.classList.add('spin');
   // Beim Öffnen sofort den letzten Stand zeigen (schlechter Empfang am Startplatz), deutlich als alt markiert
   if (!S.plan) {
     const c = store.get('plan');
-    if (c?.plan && c.level === S.level) { S.plan = c.plan; S.cachedAt = c.at; S.refreshing = true; S.day = Math.max(0, c.plan.dates.indexOf(todayKey())); render(); }
+    if (c?.plan && c.level === S.level) { S.plan = c.plan; S.cachedAt = c.at; S.refreshing = true; S.day = defaultDay(c.plan); render(); }
   }
   const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 15000);
   try {
@@ -88,11 +110,16 @@ async function loadPlan(manual) {
     }
   } finally {
     clearTimeout(to); S.refreshing = false;
-    $('.icon-btn[data-act="reload"]')?.classList.remove('spin');
-    if (S.plan) S.day = Math.min(S.day, S.plan.dates.length - 1);
+    $('.stamp-btn')?.classList.remove('spin');
+    if (S.plan) S.day = S.dayPicked ? Math.min(S.day, S.plan.dates.length - 1) : defaultDay(S.plan);
     render();
     pushSync();
   }
+}
+/** Welcher Tag beim Öffnen: heute, am Abend (kein Fenster mehr) morgen. Sobald man selbst einen Tag wählt, bleibt er. */
+function defaultDay(p) {
+  const t = Math.max(0, p.dates.indexOf(todayKey()));
+  return !p.days[t]?.top && t + 1 < p.dates.length ? t + 1 : t;
 }
 // Startplatz-Details bleiben für Favoriten, Wächter-Plätze und zuletzt geöffnete Plätze gespeichert,
 // damit sie am Startplatz auch ohne Empfang da sind (deutlich als alter Stand markiert).
@@ -216,8 +243,10 @@ function renderStamp() {
   const p = S.plan, st = sourceState();
   $('#srcDotI').className = 'dot ' + st[0];
   $('#srcDotT').textContent = st[1];
+  $('#srcDotT').hidden = st[0] === 'ok';
+  $('#srcDot').setAttribute('aria-label', `Datenquellen: ${st[1]}`);
   const old = p && Date.now() - Date.parse(p.fetchedAt) > 90 * 60000;
-  $('#stamp').textContent = p ? `Prognose ${old ? whenTxt(p.fetchedAt).replace(' Uhr', '') + ' (' + ageTxt(ageMin(p.fetchedAt)) + ')' : timeOf(p.fetchedAt)} · ${S.level === 'careful' ? 'Vorsichtig' : S.level === 'expert' ? 'Erfahren' : 'Normal'}` : 'Lade Daten …';
+  $('#stamp').textContent = p ? `Prognose ${old ? whenTxt(p.fetchedAt).replace(' Uhr', '') + ' (' + ageTxt(ageMin(p.fetchedAt)) + ')' : timeOf(p.fetchedAt)}` : 'Lade Daten …';
 }
 function renderBanner() {
   const b = $('#banner');
@@ -243,12 +272,13 @@ function renderBanner() {
 
 function renderDaybar() {
   const p = S.plan;
+  const today = todayKey();
   $('#daybar').innerHTML = p.dates.map((_, i) => {
     const top = p.days[i].top, site = top && siteById(top.siteId);
-    const sc = top?.best.score;
-    return `<button type="button" class="day" data-act="day" data-i="${i}" aria-pressed="${i === S.day}">
-      <span class="day-h"><span class="day-n">${dayName(i)}</span><span class="day-d">${dayDate(i)}</span></span>
-      <span class="day-s t-${cls(sc)}">${num(sc) ? sc : '–'}</span>
+    const sc = top?.best.score, past = p.dates[i] < today || (p.dates[i] === today && !top);
+    return `<button type="button" class="day${past ? ' past' : ''}" data-act="day" data-i="${i}" aria-pressed="${i === S.day}">
+      <span class="day-n">${dayName(i)}</span>
+      <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>
       ${site ? ribbon(site.days[i].scores, top.best) : '<div class="ribbon"></div>'}
     </button>`;
   }).join('');
@@ -265,7 +295,12 @@ function headlineFor(d) {
   const p = S.plan, h = p.headline;
   if (d === h.day) return { tone: h.tone, title: h.title, text: h.text };
   const t = p.days[d].top;
-  if (!t) return { tone: 'danger', title: `${dayName(d)}: keine Bewertung`, text: 'Für diesen Tag liegen noch keine Daten vor.' };
+  if (!t) {
+    const later = p.days.findIndex((x, i) => i > d && x.top);
+    const next = later > 0 ? ` ${dayName(later)} sieht ${p.days[later].top.best.score >= 80 ? 'gut' : p.days[later].top.best.score >= 55 ? 'durchzogen' : 'schwierig'} aus (bester Score ${p.days[later].top.best.score}).` : '';
+    if (S.plan.dates[d] <= todayKey()) return { tone: 'none', title: `${dayName(d)}: kein Flugfenster mehr`, text: `Der Flugtag ist vorbei.${next}`, next: later };
+    return { tone: 'none', title: `${dayName(d)}: noch keine Bewertung`, text: 'Für diesen Tag liegen noch keine auswertbaren Daten vor.' };
+  }
   const site = siteById(t.siteId), area = areaById(t.areaId), sc = t.best.score;
   const tone = sc >= 80 ? 'ok' : sc >= 55 ? 'warn' : 'danger';
   const title = sc >= 80 ? `${dayName(d)} sieht gut aus` : sc >= 55 ? `${dayName(d)} nur mit Vorsicht` : `${dayName(d)} besser am Boden bleiben`;
@@ -349,17 +384,17 @@ function renderDecide() {
   const nowH = nowHourToday();
   el.innerHTML = `
     ${watchLineHtml()}
+    ${surveyCard()}
+    <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p>${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
-    <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p></div>
-    ${levelLine()}
-    <div class="tool-row"><button type="button" class="btn sec" data-act="week"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Wochenblick</button><button type="button" class="btn sec" data-act="compare"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Vergleichen</button></div>
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
-      <div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'In der Nähe'}</button></div></div>
+      <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
+      <button type="button" class="ico-btn" data-act="week" aria-label="Wochenblick" title="Wochenblick"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><button type="button" class="ico-btn" data-act="compare" aria-label="Startplätze vergleichen" title="Vergleichen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button></div></div>
     <div class="card alist">${areas.map(areaRow).join('')}</div>
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
@@ -446,20 +481,27 @@ function renderLage() {
   const nowH = nowHourToday();
   const lc = (lvl, tip) => `<div class="bc ${lvl}" title="${esc(tip || LVL_TXT[lvl])}" aria-label="${LVL_TXT[lvl]}${tip ? ': ' + esc(tip) : ''}">${LVL_SYM[lvl]}</div>`;
   const wc = (w, lim) => (w ? `<div class="bc ${w[0] >= lim ? 'warn' : 'ok'}" aria-label="${w[0]} km/h aus ${dirLabel(w[1])}">${w[0]}<span style="margin-left:2px">${arrow(w[1])}</span></div>` : '<div class="bc mut">–</div>');
+  // [Name, Zelle, auffällig?(Stunde), immer zeigen]: in der Übersicht nur, was heute zählt; alles unter «Für Profis»
   const rows = [
-    ['Kaltfront', h => lc(h.front, h.frontWhy?.[0])],
-    ['Gewitter', h => lc(h.storm, `CAPE ${h.cape} J/kg, Regen ${h.pop} %`)],
-    ['Föhn', h => lc(h.foehn)],
-    ['Bise', h => lc(h.bise || 'ok', h.biseWhy?.[0])],
-    [phone ? 'Föhn hPa' : 'Föhndruck hPa', h => (num(h.dp) ? `<div class="bc ${h.dp >= 8 ? 'danger' : h.dp >= 4 ? 'warn' : 'mut'}" aria-label="Druck Lugano minus Zürich ${h.dp} hPa">${h.dp > 0 ? '+' : ''}${h.dp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
-    [phone ? 'Bise hPa' : 'Bisedruck hPa', h => (num(h.bdp) ? `<div class="bc ${h.bdp >= 4 ? 'danger' : h.bdp >= 2 ? 'warn' : 'mut'}" aria-label="Druck Zürich minus Genf ${h.bdp} hPa">${h.bdp > 0 ? '+' : ''}${h.bdp.toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
-    [phone ? 'Wind 2000' : 'Wind 2000 m', h => wc(h.up800, 40)],
-    [phone ? 'Wind 3000' : 'Wind 3000 m', h => wc(h.up700, 60)],
-    [phone ? 'Basis km' : 'Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
-    [phone ? 'Thermik km' : 'Thermik bis km', h => (num(h.top) ? `<div class="bc mut" aria-label="Thermik bis ${h.top} m${h.inv ? ', Inversion ab ' + h.inv + ' m' : ''}">${(h.top / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>')],
-    ['Thermik', h => `<div class="bc mut" aria-label="Thermikindex ${h.therm}">${h.therm >= 60 ? '●●●' : h.therm >= 30 ? '●●○' : h.therm > 8 ? '●○○' : '○○○'}</div>`],
-    ['Urteil', h => `<div class="bc v s-${cls(h.v)}" aria-label="Regionsurteil ${h.v}">${h.v}</div>`]
+    ['Urteil', h => `<div class="bc v s-${cls(h.v)}" aria-label="Regionsurteil ${h.v}">${h.v}</div>`, null, true],
+    ['Kaltfront', h => lc(h.front, h.frontWhy?.[0]), h => h.front !== 'ok'],
+    ['Gewitter', h => lc(h.storm, `CAPE ${h.cape} J/kg, Regen ${h.pop} %`), h => h.storm !== 'ok'],
+    ['Föhn', h => lc(h.foehn), h => h.foehn !== 'ok'],
+    ['Bise', h => lc(h.bise || 'ok', h.biseWhy?.[0]), h => h.bise && h.bise !== 'ok'],
+    [phone ? 'Föhn hPa' : 'Föhndruck hPa', h => (num(h.dp) ? `<div class="bc ${h.dp >= 8 ? 'danger' : h.dp >= 4 ? 'warn' : 'mut'}" aria-label="Druck Lugano minus Zürich ${h.dp} hPa">${h.dp > 0 ? '+' : ''}${h.dp.toFixed(1)}</div>` : '<div class="bc mut">–</div>'), h => h.dp >= 4],
+    [phone ? 'Bise hPa' : 'Bisedruck hPa', h => (num(h.bdp) ? `<div class="bc ${h.bdp >= 4 ? 'danger' : h.bdp >= 2 ? 'warn' : 'mut'}" aria-label="Druck Zürich minus Genf ${h.bdp} hPa">${h.bdp > 0 ? '+' : ''}${h.bdp.toFixed(1)}</div>` : '<div class="bc mut">–</div>'), h => h.bdp >= 2],
+    [phone ? 'Wind 2000' : 'Wind 2000 m', h => wc(h.up800, 40), h => h.up800?.[0] >= 40],
+    [phone ? 'Wind 3000' : 'Wind 3000 m', h => wc(h.up700, 60), h => h.up700?.[0] >= 60],
+    [phone ? 'Basis km' : 'Basis in km', h => (num(h.cb) ? `<div class="bc mut" aria-label="Basis ${h.cb} m">${(h.cb / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>'), null, true],
+    [phone ? 'Thermik km' : 'Thermik bis km', h => (num(h.top) ? `<div class="bc mut" aria-label="Thermik bis ${h.top} m${h.inv ? ', Inversion ab ' + h.inv + ' m' : ''}">${(h.top / 1000).toFixed(1)}</div>` : '<div class="bc mut">–</div>'), null, true],
+    ['Thermik', h => `<div class="bc mut" aria-label="Thermikindex ${h.therm}">${h.therm >= 60 ? '●●●' : h.therm >= 30 ? '●●○' : h.therm > 8 ? '●○○' : '○○○'}</div>`, null, true]
   ];
+  const short = rows.filter(([, , flag, always]) => always || hrs.some(flag));
+  const quiet = [...new Set(rows.filter(r => !short.includes(r) && !/hPa$/.test(r[0])).map(r => r[0].replace(/^Wind (\d+).*/, 'Höhenwind $1 m')))];
+  const table = list => `<div class="gridwrap" tabindex="0" role="region" aria-label="Briefing-Raster, seitlich scrollbar"><table class="brief">
+      <thead><tr><th class="rl" scope="col">Uhr</th>${hrs.map(h => `<th scope="col">${h.h === nowH ? 'jetzt' : h.h}</th>`).join('')}</tr></thead>
+      <tbody>${list.map(([name, f]) => `<tr><th class="rl" scope="row">${name}</th>${hrs.map(h => `<td>${f(h)}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></div>`;
   const whyAll = [];
   for (const h of day?.hours || []) for (const w of h.frontWhy || []) if (!whyAll.includes(w)) whyAll.push(w);
   const nowS = p.region.now;
@@ -468,12 +510,13 @@ function renderLage() {
       <h2>Lage ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <p>${esc(regionSummary(S.day))}</p>
     </div>
-    <div class="gridwrap" tabindex="0" role="region" aria-label="Briefing-Raster, seitlich scrollbar"><table class="brief">
-      <thead><tr><th class="rl" scope="col">Uhr</th>${hrs.map(h => `<th scope="col">${h.h === nowH ? 'jetzt' : h.h}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map(([name, f]) => `<tr><th class="rl" scope="row">${name}</th>${hrs.map(h => `<td>${f(h)}</td>`).join('')}</tr>`).join('')}</tbody>
-    </table></div>
+    ${table(short)}
+    ${quiet.length ? `<p class="fine lage-quiet">Unauffällig: ${esc(quiet.join(', '))}.</p>` : ''}
+    <details class="pro-more" data-k="lageOpen" ${store.get('lageOpen') ? 'open' : ''}><summary>Für Profis: alle Werte Stunde für Stunde</summary>
+    ${table(rows)}
     <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn; starke Bise an Lee-Hängen)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
     <p class="fine" style="margin:4px 0 0">Föhndruck = Luftdruck Lugano minus Zürich (Prognose): ab +4 hPa Föhn möglich, ab +8 hPa Föhn. Bisedruck = Zürich minus Genf: ab +2 hPa Bise, ab +4 hPa starke Bise.</p>
+    </details>
     ${whyAll.length ? `<div class="panel" style="margin-top:12px"><h3>Warum die Frontwarnung?</h3><ul class="why">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p></div>` : ''}
     ${isToday() && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
       <div><b>${nowS.foehnScore}</b><span>Föhn-Signal${nowS.foehn !== 'ok' ? ' (' + LVL_TXT[nowS.foehn] + ')' : ''}</span></div>
@@ -509,15 +552,18 @@ function stationCards(list) {
   const rows = list.map(x => ({ x, n: near(x) }));
   rows.sort((a, b) => (a.n && b.n ? a.n.d - b.n.d : (b.x.alt ?? 0) - (a.x.alt ?? 0)));
   const [warn, bad] = WIND_LIM[S.level] || WIND_LIM.normal;
-  const how = favs.length ? 'Nächste zu deinen Favoriten zuerst' : S.pos ? 'Nächste zu dir zuerst' : 'Hohe Stationen zuerst. Mit Favoriten kommen die Stationen in ihrer Nähe nach oben';
-  return `<p class="fine" style="margin:0 0 8px">${how}. Farbig ab Böen ${warn} km/h (Vorsicht) und ${bad} km/h (stark), passend zu deiner Erfahrung.</p>
-    <div class="stc-grid">${rows.map(({ x, n }) => {
+  const how = favs.length ? 'Nächste zu deinen Favoriten zuerst' : S.pos ? 'Nächste zu dir zuerst' : 'Hohe Stationen zuerst';
+  const card = ({ x, n }) => {
       const g = num(x.gust) ? Math.round(x.gust) : null, w = num(x.wind) ? Math.round(x.wind) : null, top = Math.max(g ?? 0, w ?? 0);
       const age = ageMin(x.time, x.age), lvl = top >= bad ? 'bad' : top >= warn ? 'warn' : 'ok', old = age > 40;
       return `<div class="stc stc-${lvl}${old ? ' old' : ''}"><div class="stc-h"><b>${esc(x.name)}</b><span>${x.alt ?? '–'} m${n && n.r.name !== 'dir' ? ` · ${Math.round(n.d)} km zu ${esc(n.r.name.split(' ')[0])}` : n ? ` · ${Math.round(n.d)} km` : ''}</span></div>
         <div class="stc-v"><span class="stc-w"><b>${w ?? '–'}</b><small>Wind</small></span><span class="stc-w"><b>${g ?? '–'}</b><small>Böen</small></span><span class="stc-d">${num(x.dir) ? arrow(x.dir) + ' ' + dirLabel(x.dir) : '–'}</span></div>
         <div class="stc-f">${num(x.temp) ? x.temp.toFixed(1) + '° · ' : ''}${old ? '<b>' + ageTxt(age) + '</b>' : ageTxt(age)}</div></div>`;
-    }).join('')}</div>
+  };
+  const first = rows.slice(0, 6), rest = rows.slice(6);
+  return `<p class="fine" style="margin:0 0 8px">${how}. Farbig ab Böen ${warn} km/h, rot ab ${bad} km/h.</p>
+    <div class="stc-grid">${first.map(card).join('')}</div>
+    ${rest.length ? `<details class="stc-more"><summary>Alle ${rows.length} Stationen zeigen</summary><div class="stc-grid">${rest.map(card).join('')}</div></details>` : ''}
     <p class="fine">Wind in km/h, 10-Minuten-Mittel der MeteoSchweiz (SwissMetNet).</p>`;
 }
 function renderDay() {
@@ -526,14 +572,16 @@ function renderDay() {
   const done = store.get(key, []);
   const st = S.plan?.stations || [];
   const q = S.plan?.quality?.stations || [];
+  const n = done.length, all = n >= CHECKS.length;
   el.innerHTML = `
-    <div class="panel"><h3>Vor dem Start</h3>
-      ${CHECKS.map((c, i) => `<label class="chk"><input type="checkbox" data-act="check" data-i="${i}" ${done.includes(i) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}
-      <p class="fine">Die Liste gilt für heute und wird morgen zurückgesetzt. <a href="https://www.skybriefing.com/" target="_blank" rel="noopener">Skybriefing</a> · <a href="https://map.geo.admin.ch/" target="_blank" rel="noopener">Karte des Bundes</a></p>
-    </div>
+    ${dayAskHtml()}
     <div class="panel"><h3>Messwerte jetzt</h3>
       ${stationCards(st)}
     </div>
+    <details class="panel chk-box" ${all ? '' : 'open'}><summary><span class="chk-h"><b>Vor dem Start</b><span class="chk-n${all ? ' ok' : ''}">${all ? '✓ alles erledigt' : `${n} von ${CHECKS.length}`}</span></span><span class="chk-bar" aria-hidden="true"><i style="width:${Math.round(n / CHECKS.length * 100)}%"></i></span></summary>
+      ${CHECKS.map((c, i) => `<label class="chk"><input type="checkbox" data-act="check" data-i="${i}" ${done.includes(i) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}
+      <p class="fine">Die Liste gilt für heute und wird morgen zurückgesetzt. <a href="https://www.skybriefing.com/" target="_blank" rel="noopener">Skybriefing</a> · <a href="https://map.geo.admin.ch/" target="_blank" rel="noopener">Karte des Bundes</a></p>
+    </details>
     <div class="panel"><h3>Wie gut war die Prognose?</h3>
       ${q.length ? `<div class="tw"><table class="plain"><thead><tr><th>Station</th><th>Wind Ø-Fehler</th><th>Böen</th><th>Richtung</th><th>Messungen</th></tr></thead><tbody>${q.map(r => `<tr><td>${esc(r.name)}</td><td>${num(r.windMae) ? r.windMae.toFixed(1) + ' km/h' : '–'}${num(r.windBias) && Math.abs(r.windBias) >= 2 ? ` <span class="srow-sub">(${r.windBias > 0 ? 'zu schwach' : 'zu stark'} prognostiziert)</span>` : ''}</td><td>${num(r.gustMae) ? r.gustMae.toFixed(1) : '–'}</td><td>${num(r.dirMae) ? Math.round(r.dirMae) + '°' : '–'}</td><td>${r.n}</td></tr>`).join('')}</tbody></table></div><p class="fine">Prognose 3 Stunden im Voraus gegen die spätere Messung, letzte 7 Tage. Je kleiner der Fehler, desto verlässlicher die Prognose an dieser Station.</p>` : '<div class="empty">Die Auswertung braucht etwa einen Tag Laufzeit, bis genug Vergleiche vorliegen.</div>'}
     </div>`;
@@ -625,6 +673,7 @@ function backtestHtml(b) {
 function statusHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
+  if (d.admin === false) return `<div><b>AFC ${esc(d.version)}</b> <span class="fine">App ${APP_VER}. Updates spielt Lars auf seinem Mac ein, die App lädt sie danach von selbst.</span></div>`;
   const u = d.update;
   const upd = !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
     : u.error ? `Letzte Prüfung fehlgeschlagen (${esc(u.error)}).`
@@ -641,7 +690,9 @@ function statusHtml() {
 function techHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
-  const o = d.openMeteo, pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
+  const o = d.openMeteo;
+  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${thermalHtml(d.thermal)}`;
+  const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
@@ -659,6 +710,9 @@ function renderProfile() {
   const log = store.get('log', []);
   const favs = [...S.fav].map(id => S.plan && siteById(id)).filter(Boolean);
   el.innerHTML = `
+    ${pilotCard()}
+    ${surveyCard()}
+    ${testPanel()}
     <h2 class="prof-h">Mein Fliegen</h2>
     ${pilotPanel()}
     <div class="panel"><h3>Favoriten</h3>
@@ -669,7 +723,8 @@ function renderProfile() {
     <div class="panel"><h3>Darstellung</h3>
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel'], ['sun', 'Sonne']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div>
       <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p></div>
-    <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button></div></div>
+    <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button>${ME.user ? '<button class="btn sec" type="button" data-act="feedback">Rückmeldung an Lars</button>' : ''}</div></div>
+    ${accountPanel()}
     <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
     <div class="panel"><h3>Verbrauch und Lernen</h3><div id="techPanel">${techHtml()}</div></div>
     <div class="panel"><h3>Datenquellen</h3>${sourcesHtml()}</div>
@@ -682,6 +737,7 @@ function renderProfile() {
     </details>
     <p class="fine">AFC ${esc(S.plan?.version || '8.0')} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
   el.querySelector('.prof-tech')?.addEventListener('toggle', e => { S.techOpen = e.target.open; });
+  if (isAdminMe() && !ADM.data && !ADM.req) ADM.req = adminLoad().then(() => { if (S.tab === 'profile') renderProfile(); }).catch(() => {}).finally(() => { ADM.req = null; });
 }
 
 /* ---- Flugbuch (lib/logbook.js, /api/logbook): Flüge, Ausrüstung, fällige Checks. Bleibt auf diesem Rechner. */
@@ -839,7 +895,20 @@ function renderBook() {
     return `${head}<button type="button" class="lb-row" data-act="lbflight" data-id="${esc(f.id)}"><span class="lb-date">${ddmm(f.date)}${f.start ? `<small>${f.start}</small>` : ''}</span><span class="lb-main"><b>${esc(route)}</b><small>${esc(sub)}${f.rating ? ' ' + stars(f.rating) : ''}</small></span><span class="lb-dur">${f.durMin ? L.fmtDur(f.durMin) : '–'}</span></button>`;
   }).join('');
   const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
-  el.innerHTML = `
+  const empty = !d.flights.length && !d.settings.flightsBefore && !d.gear.length;
+  el.innerHTML = empty ? `
+    <div class="panel lb-start">
+      <h3>Dein Flugbuch ist noch leer</h3>
+      <p>So kommen deine Flüge hinein, in ein paar Sekunden:</p>
+      <ol class="lb-steps">
+        <li><b>Flüge von früher:</b> nur die Anzahl eintragen, damit dein Total stimmt.
+          <form id="lbSettings" class="lb-inline"><label class="fld"><span>Flüge</span><input type="number" inputmode="numeric" min="0" name="flightsBefore" placeholder="z.B. 120"></label><label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" placeholder="z.B. 80"></label><button class="btn sec" type="submit">Speichern</button></form></li>
+        <li><b>IGC-Dateien laden:</b> aus FlySkyHy, XCTrack oder dem Vario. Start, Landung, Dauer und Thermik füllt AFC selbst aus.
+          <div class="btn-row" style="justify-content:flex-start;margin-top:6px"><label class="btn lb-file">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label></div></li>
+        <li><b>Oder von Hand:</b> <button class="linkbtn" type="button" data-act="lbflight">Flug eintragen</button>, und unter <button class="linkbtn" type="button" data-act="lbgear">Ausrüstung</button> Schirm, Gurtzeug und Retter erfassen.</li>
+      </ol>
+      <p class="fine">Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. Genau diese Rückmeldungen machen AFC besser.</p>
+    </div>` : `
     ${feedbackHtml()}
     ${gearAlertHtml()}
     <div class="panel">
@@ -1286,7 +1355,8 @@ const INTRO = [
   ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.'],
   ['Karte, Thermik und Soaring', 'Auf der Karte unten «Thermik» oder «Soaring» wählen. Tippe irgendwo auf die Karte, dann erklärt AFC, warum es dort steigt oder nicht. Unter «Ebenen» kannst du die Thermik-Hotspots und Flugspuren von kk7 einblenden.'],
   ['Route von A nach B', 'Auf der Karte «Route» tippen, dann Startpunkt A und Ziel B. AFC sucht eine Strecke über die Thermik, mit genug Höhe und Landeplätzen im Gleitbereich, bleibt unter Lufträumen und markiert kritische Stellen. Tippst du auf eine rote Fläche, siehst du den Luftraum mit seinen Höhen.'],
-  ['Dein Profil', 'Unter «Profil» trägst du Flüge, Stunden, Schirm und letzten Flug ein. Daraus wählt AFC deine Grenzen für Wind und Thermik und rechnet die Route mit deiner Gleitzahl. AFC ersetzt nie deine eigene Beurteilung am Startplatz.']
+  ['Dein Profil', 'Unter «Profil» trägst du Flüge, Stunden, Schirm und letzten Flug ein. Daraus wählt AFC deine Grenzen für Wind und Thermik und rechnet die Route mit deiner Gleitzahl. AFC ersetzt nie deine eigene Beurteilung am Startplatz.'],
+  ['Testphase: deine Rückmeldung zählt', 'Oben rechts beim Sprechblasen-Knopf schickst du Lars jederzeit eine Idee, einen Fehler oder ein Bildschirmfoto. Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat, und unter «Flugtag» meldest du auch Tage ohne Start. Genau das macht AFC besser.']
 ];
 function showIntro(i = 0) {
   const last = i === INTRO.length - 1, [t, x] = INTRO[i];
@@ -1299,7 +1369,7 @@ function showIntro(i = 0) {
     const v = b.dataset.intro;
     if (/^\d+$/.test(v)) return showIntro(Number(v));
     d.onclick = null; store.set('intro', INTRO_VER); closeDlg(d);
-    if (v === 'profile') setTab('profile');
+    if (v === 'profile') { setTab('profile'); if (ME.user) setTimeout(profileEdit, 300); }
   };
   d.onclose = () => store.set('intro', INTRO_VER);
 }
@@ -1500,12 +1570,13 @@ function renderSite() {
   const actionsHtml = `<div class="site-acts">
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
       <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+      ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
       ${webcamHtml(s)}
     </div>`;
   const detailHtml = hr ? `
     <div class="hr-detail">
       <div class="hr-head">${pill(hr.score, false)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
-      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint(store.get('pilot', {}), hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
+      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
       ${actionsHtml}
       <details class="why-more"><summary>Alle Gründe für den Score</summary>
       ${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
@@ -1812,7 +1883,10 @@ function drawSites() {
   for (const g of groups) {
     const top = g.m[0], s = top.s, b = top.b, c = s.blocked ? 'none' : cls(b?.score);
     const n = g.m.length;
-    const icon = L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b ? b.score : '–'}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });
+    // ohne Bewertung (z.B. am Abend) nur ein kleiner grauer Punkt statt einer Kugel mit «–»
+    const icon = !b && !s.blocked
+      ? L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-e"></div>' })
+      : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });
     const at = n > 1 ? M.map.unproject(g.p, z) : [s.lat, s.lon];
     L.marker(at, { icon, title: n > 1 ? `${n} Startplätze, bester ${s.name}: ${b ? b.score : 'keine Bewertung'}` : `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 })
       .on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : n > 1 ? mapSheet('group', g.m.map(x => x.s.id)) : mapSheet('site', s.id))).addTo(M.sites);
@@ -2328,7 +2402,7 @@ function setTab(t) {
   window.scrollTo({ top: 0 });
 }
 // «Für Profis» merkt sich, ob es offen war
-document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set('proOpen', e.target.open); }, true);
+document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set(e.target.dataset.k || 'proOpen', e.target.open); }, true);
 document.addEventListener('click', async e => {
   const dlgEl = e.target.closest('dialog');
   if (e.target.tagName === 'DIALOG') { closeDlg(e.target); return; }
@@ -2338,7 +2412,36 @@ document.addEventListener('click', async e => {
   if (!b) return;
   const a = b.dataset.act, id = b.dataset.id;
   switch (a) {
-    case 'day': S.day = Number(b.dataset.i); render(); break;
+    case 'setup': showGate('setup'); break;
+    case 'gate': showGate(b.dataset.v); break;
+    case 'gateclose': closeGate(); break;
+    case 'pweye': { const i = b.parentElement.querySelector('input'); i.type = i.type === 'password' ? 'text' : 'password'; b.setAttribute('aria-label', i.type === 'password' ? 'Passwort zeigen' : 'Passwort verbergen'); break; }
+    case 'photo': photoMenu(); break;
+    case 'profedit': profileEdit(); break;
+    case 'logout': logout(); break;
+    case 'pwchange': pwChange(); break;
+    case 'delacc': deleteAccount(); break;
+    case 'feedback': closeDlg($('#siteDlg')); feedbackForm(b.dataset.v || 'idea'); break;
+    case 'nofly': closeDlg($('#siteDlg')); noflyForm(id || [...S.fav][0]); break;
+    case 'survey': surveyForm(); break;
+    case 'invite': inviteCreate(); break;
+    case 'admin': openAdmin(); break;
+    case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); break;
+    case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(err.message); } break;
+    case 'admdel': {
+      if (!(await ask({ title: `${b.dataset.v} entfernen?`, text: 'Konto, Flugbuch, Profil und Rückmeldungen werden gelöscht (vorher legt AFC eine Sicherung an).', ok: 'Entfernen', danger: true }))) break;
+      try { await jsonPost('/api/admin/user/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast('Entfernt'); } catch (err) { toast(err.message); }
+      break;
+    }
+    case 'admsurvey': try { await jsonPost('/api/admin/survey', { on: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast(b.dataset.v === '1' ? 'Umfrage eingeschaltet' : 'Umfrage ausgeschaltet'); } catch (err) { toast(err.message); } break;
+    case 'admdone': try { await jsonPost('/api/admin/feedback/' + id, { done: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
+    case 'admshot': try { const j = await rawFetch(`/api/admin/feedback/${id}/shot`).then(r => r.json()); if (j.shot) dlg('#msgDlg', `<div class="dlg-in"><img src="${esc(j.shot)}" alt="Bildschirmfoto" style="max-width:100%;border-radius:8px"><div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Schliessen</button></div></div>`); } catch (err) { toast(err.message); } break;
+    case 'admerrclear': try { await jsonPost('/api/admin/errors', undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
+    case 'invshow': inviteShow(id, b.dataset.v); break;
+    case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
+    case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
+    case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast('Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
+    case 'day': S.day = Number(b.dataset.i); S.dayPicked = true; render(); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break;
     case 'reload': loadPlan(true); break;
     case 'sources': setTab('profile'); setTimeout(() => $$('#v-profile .panel h3').find(h => h.textContent === 'Datenquellen')?.scrollIntoView({ behavior: 'smooth' }), 80); break;
     case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); renderDecide(); break;
@@ -2347,9 +2450,9 @@ document.addEventListener('click', async e => {
     case 'groupzoom': if (M.groupBounds) { M.map.fitBounds(M.groupBounds, { padding: [60, 60], maxZoom: 16 }); $('#mapSheet').hidden = true; } break;
     case 'week': openWeek(); break;
     case 'compare': openCompare(); break;
-    case 'cmpday': S.day = Number(b.dataset.d); render(); openCompare(); break;
-    case 'wksite': S.day = Number(b.dataset.d); render(); openSite(b.dataset.id); break;
-    case 'wkday': S.day = Number(b.dataset.d); closeDlg($('#siteDlg')); render(); break;
+    case 'cmpday': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openCompare(); break;
+    case 'wksite': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openSite(b.dataset.id); break;
+    case 'wkday': S.day = Number(b.dataset.d); S.dayPicked = true; closeDlg($('#siteDlg')); render(); break;
     case 'closemsg': closeDlg($('#msgDlg')); break;
     case 'closesheet': $('#mapSheet').hidden = true; break;
     case 'fav': {
@@ -2371,7 +2474,11 @@ document.addEventListener('click', async e => {
     }
     case 'check': {
       const key = 'check.' + todayKey(), cur = new Set(store.get(key, [])), i = Number(b.dataset.i);
-      b.checked ? cur.add(i) : cur.delete(i); store.set(key, [...cur]); break;
+      b.checked ? cur.add(i) : cur.delete(i); store.set(key, [...cur]);
+      // Fortschritt nachführen, ohne die Liste neu zu zeichnen (sonst springt der Fokus)
+      const box = b.closest('.chk-box'), all = cur.size >= CHECKS.length;
+      if (box) { const t = box.querySelector('.chk-n'); t.textContent = all ? '✓ alles erledigt' : `${cur.size} von ${CHECKS.length}`; t.classList.toggle('ok', all); box.querySelector('.chk-bar i').style.width = Math.round(cur.size / CHECKS.length * 100) + '%'; }
+      break;
     }
     case 'report': closeDlg($('#siteDlg')); reportForm(id); break;
     case 'showmap': closeDlg($('#siteDlg')); setTab('map'); setTimeout(() => { const s = siteById(id); if (M.map && s) { M.map.setView([s.lat, s.lon], 14); mapSheet('site', id); } }, 200); break;
@@ -2466,6 +2573,17 @@ document.addEventListener('click', async e => {
   }
 });
 document.addEventListener('submit', e => {
+  const fid = e.target.id;
+  if (['gateForm', 'profForm', 'pwForm', 'fbForm', 'noflyForm', 'surveyForm'].includes(fid)) e.preventDefault();
+  if (fid === 'gateForm') gateSubmit(e.target);
+  if (fid === 'profForm') saveProfile(e.target);
+  if (fid === 'fbForm') sendFeedback(e.target);
+  if (fid === 'noflyForm') sendNofly(e.target);
+  if (fid === 'surveyForm') sendSurvey(e.target);
+  if (fid === 'pwForm') {
+    const f = Object.fromEntries(new FormData(e.target)), err = e.target.querySelector('.gate-err');
+    jsonPost('/api/me/password', f).then(() => { closeDlg($('#msgDlg')); toast('Passwort geändert'); }).catch(x => { err.textContent = x.message; });
+  }
   if (e.target.id === 'pilotForm') { e.preventDefault(); savePilot(e.target); }
   if (e.target.id === 'lbSettings') {
     e.preventDefault();
@@ -2480,6 +2598,9 @@ document.addEventListener('change', e => {
     store.set('cmp', [...new Set(ids)]); openCompare(); return;
   }
   if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
+  if (t.id === 'photoIn') { setPhoto(t.files[0]); t.value = ''; return; }
+  if (t.closest('#fbForm') && t.name === 'kind') { const ta = $('#fbForm textarea'); if (ta) ta.placeholder = FB_KINDS[t.value][1]; return; }
+  if (t.closest('#fbForm') && t.name === 'shot') { const l = t.closest('label'); if (l && t.files[0]) l.firstChild.textContent = 'Bild angehängt ✓ '; return; }
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
   if (t.closest('#pushForm')) {
     const f = new FormData($('#pushForm'));
@@ -2497,6 +2618,7 @@ document.addEventListener('drop', e => {
   importIgc([...e.dataTransfer.files].filter(f => /\.igc$/i.test(f.name)));
 });
 document.addEventListener('input', e => {
+  if (e.target.closest?.('#profForm')) profHint();
   if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('keydown', e => {
@@ -2506,11 +2628,482 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && Da
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (S.theme === 'auto') applyTheme(); });
 matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab === 'lage') renderLage(); });
 
+/* ---------------------------------------------------------------- Konten (Testphase) */
+// Der Mac kennt die Piloten. Ohne Konto auf dem Mac (alter Betrieb) läuft alles wie bisher ohne Anmeldung.
+const ME = { state: null, user: store.get('me')?.user || null, profile: store.get('me')?.profile || {}, prefs: {}, stats: store.get('me')?.stats || null, survey: false, gate: null };
+const isAdminMe = () => ME.user?.role === 'admin';
+const jsonPost = (url, body, method = 'POST') => rawFetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-AFC-Client': clientId }, body: body === undefined ? undefined : JSON.stringify(body) })
+  .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status); return j; });
+const PERSONAL = ['fav', 'level', 'levelManual', 'pilot', 'det', 'log', 'fbSkip', 'me', 'cmp', 'pushSig', 'logMigrated', 'open'];
+const initials = n => String(n || '').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase();
+const PERSON_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="9" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 20c1-3.5 3.7-5 7-5s6 1.5 7 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+function avatarHtml(u, cls = '') {
+  return `<span class="av ${cls}" aria-hidden="true">${u?.photo ? `<img src="${esc(u.photo)}" alt="" loading="lazy">` : u?.name ? esc(initials(u.name)) : PERSON_SVG}</span>`;
+}
+function renderMe() {
+  const b = $('#meBtn');
+  if (b) { b.innerHTML = avatarHtml(ME.user); b.setAttribute('aria-label', ME.user ? `Mein Profil (${ME.user.name})` : 'Mein Profil'); }
+  const f = $('#fbBtn'); if (f) f.hidden = !ME.user;
+}
+function setMe(j) {
+  ME.user = j.user; ME.profile = j.profile || {}; ME.prefs = j.prefs || {}; ME.stats = j.stats || null; ME.survey = !!j.survey;
+  store.set('me', { user: ME.user, profile: ME.profile, stats: ME.stats });
+  renderMe();
+}
+const prefsLocal = () => ({ fav: [...S.fav], level: S.level, levelManual: !!store.get('levelManual'), pilot: store.get('pilot', null) });
+let prefT = null;
+store.changed = () => {
+  if (!ME.user || ME.applying) return;
+  clearTimeout(prefT);
+  prefT = setTimeout(() => jsonPost('/api/me', { prefs: prefsLocal() }, 'PUT').then(j => { ME.stats = j.stats; }).catch(() => {}), 700);
+};
+/** Einstellungen vom Mac übernehmen; beim ersten Mal die Einstellungen dieses Geräts hochladen. */
+function applyServerPrefs(j) {
+  if (!j.prefsSet) { store.changed(); return; }
+  const p = j.prefs;
+  ME.applying = true;
+  try {
+    S.fav = new Set(p.fav || []); store.set('fav', [...S.fav]);
+    if (p.pilot) store.set('pilot', p.pilot); else store.del('pilot');
+    if (p.levelManual) store.set('levelManual', true); else store.del('levelManual');
+    if (p.level) { S.level = p.level; store.set('level', p.level); }
+  } finally { ME.applying = false; }
+}
+/** Beim Start: angemeldet? Einladung im Link? Ohne Verbindung mit dem gespeicherten Stand weiter. */
+async function authInit() {
+  const q = new URLSearchParams(location.search), code = q.get('invite') || q.get('reset');
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 5000);
+  try {
+    const r = await rawFetch('/api/auth/state' + (code ? '?invite=' + encodeURIComponent(code) : ''), { cache: 'no-store', signal: ctl.signal });
+    const st = await r.json();
+    ME.state = st;
+    if (code) {
+      if (st.invite?.ok) { showGate(st.invite.kind === 'reset' ? 'reset' : 'register', { code, name: st.invite.name }); return false; }
+      history.replaceState(null, '', '/');
+      if (st.auth && !st.user) { showGate('login', { msg: 'Dieser Link ist nicht mehr gültig oder wurde schon benutzt. Hast du schon ein Konto? Dann hier anmelden. Sonst bitte Lars um einen neuen Link.' }); return false; }
+    }
+    if (st.auth && !st.user) { for (const k of PERSONAL) store.del(k); ME.user = null; showGate('login'); return false; }
+    if (!st.auth) { ME.user = null; store.del('me'); renderMe(); return true; }
+    const j = await rawFetch('/api/me', { cache: 'no-store' }).then(x => x.json());
+    setMe(j); applyServerPrefs(j);
+    return true;
+  } catch { renderMe(); return true; }   // kein Empfang: mit dem gespeicherten Stand weiter
+  finally { clearTimeout(to); }
+}
+
+/* ---- Anmeldung, Einladung, neues Passwort, erstes Konto */
+function gateHtml(mode, o) {
+  const pw = (name, ac, label = 'Passwort') => `<label class="fld"><span>${label}</span><span class="pw-wrap"><input type="password" name="${name}" autocomplete="${ac}" required minlength="${ac === 'new-password' ? 8 : 1}"><button type="button" class="pw-eye" data-act="pweye" aria-label="Passwort zeigen">👁</button></span></label>`;
+  const email = `<label class="fld"><span>E-Mail</span><input type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="off" required></label>`;
+  const name = `<label class="fld"><span>Vor- und Nachname</span><input type="text" name="name" autocomplete="name" required minlength="2" maxlength="60"></label>`;
+  const T = {
+    login: ['Anmelden', 'Willkommen zurück. Melde dich mit deiner E-Mail und deinem Passwort an.', `${email}${pw('password', 'current-password')}`, 'Anmelden',
+      '<p class="fine">Passwort vergessen? Schreib Lars kurz, er schickt dir einen Link für ein neues Passwort.</p>'],
+    register: ['Willkommen bei AFC', 'Lars hat dich zur Testphase eingeladen. Erstelle dein Konto, das dauert eine Minute.', `${name}${email}${pw('password', 'new-password', 'Passwort (mindestens 8 Zeichen)')}
+      <label class="chk gate-chk"><input type="checkbox" name="privacy" required><span>Ich habe die <a href="/privacy" target="_blank" rel="noopener">Datenschutzerklärung</a> gelesen. Meine Daten bleiben auf dem Mac von Lars.</span></label>`, 'Konto erstellen',
+      '<p class="fine">Schon ein Konto? <button type="button" class="linkbtn" data-act="gate" data-v="login">Hier anmelden</button></p>'],
+    reset: ['Neues Passwort', `${o.name ? esc(o.name) + ', w' : 'W'}ähle ein neues Passwort. Danach bist du gleich angemeldet.`, pw('password', 'new-password', 'Neues Passwort (mindestens 8 Zeichen)'), 'Passwort speichern', ''],
+    setup: ['Dein Konto einrichten', 'Du wirst Admin von AFC. Dein Flugbuch, deine Favoriten und deine Einstellungen gehören danach zu diesem Konto. Erst danach kannst du Freunde einladen.', `${name}${email}${pw('password', 'new-password', 'Passwort (mindestens 8 Zeichen)')}`, 'Konto erstellen',
+      '<p class="fine"><button type="button" class="linkbtn" data-act="gateclose">Später</button></p>']
+  }[mode];
+  return `<div class="gate-in" role="dialog" aria-modal="true" aria-labelledby="gateT">
+    <div class="gate-brand"><img src="/icon-192.png" alt="" width="56" height="56"><div><b>AFC</b><span>Flugwetter Berner Oberland · Testphase</span></div></div>
+    <h1 id="gateT">${T[0]}</h1><p class="gate-lead">${T[1]}</p>
+    ${o.msg ? `<p class="gate-msg">${esc(o.msg)}</p>` : ''}
+    <form id="gateForm" data-mode="${mode}" data-code="${esc(o.code || '')}" novalidate>${T[2]}
+      <p class="gate-err" role="alert"></p>
+      <button class="btn gate-go" type="submit">${T[3]}</button></form>
+    ${T[4]}</div>`;
+}
+function showGate(mode, o = {}) {
+  let g = $('#gate');
+  if (!g) { g = document.createElement('div'); g.id = 'gate'; g.className = 'gate'; document.body.append(g); }
+  ME.gate = mode; document.body.classList.add('gated');
+  g.innerHTML = gateHtml(mode, o);
+  setTimeout(() => g.querySelector('input')?.focus(), 50);
+}
+function closeGate() { $('#gate')?.remove(); ME.gate = null; document.body.classList.remove('gated'); }
+async function gateSubmit(form) {
+  const mode = form.dataset.mode, f = Object.fromEntries(new FormData(form)), err = form.querySelector('.gate-err'), btn = form.querySelector('.gate-go');
+  err.textContent = '';
+  if ((mode === 'register' || mode === 'setup') && (f.name || '').trim().length < 2) { err.textContent = 'Bitte deinen Namen eingeben.'; return; }
+  if (mode !== 'reset' && !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test((f.email || '').trim())) { err.textContent = 'Bitte eine gültige E-Mail-Adresse eingeben.'; return; }
+  if (mode !== 'login' && (f.password || '').length < 8) { err.textContent = 'Das Passwort braucht mindestens 8 Zeichen.'; return; }
+  if (mode === 'register' && !f.privacy) { err.textContent = 'Bitte bestätige, dass du die Datenschutzerklärung gelesen hast.'; return; }
+  btn.disabled = true; btn.textContent = 'Einen Moment …';
+  try {
+    await jsonPost({ login: '/api/auth/login', register: '/api/auth/register', reset: '/api/auth/reset', setup: '/api/auth/setup' }[mode], { ...f, email: f.email?.trim(), invite: form.dataset.code || undefined, prefs: mode === 'setup' ? prefsLocal() : undefined });
+    if (mode === 'login' || mode === 'register') for (const k of PERSONAL) store.del(k);   // Gerät könnte vorher jemand anderem gehört haben
+    store.set('welcome', mode);
+    location.replace(mode === 'register' || mode === 'setup' ? '/?tab=profile' : '/');
+  } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = { login: 'Anmelden', register: 'Konto erstellen', reset: 'Passwort speichern', setup: 'Konto erstellen' }[mode]; }
+}
+async function logout() {
+  if (!(await ask({ title: 'Abmelden?', text: 'Auf diesem Gerät abmelden. Dein Flugbuch und dein Profil bleiben auf dem Mac gespeichert.', ok: 'Abmelden' }))) return;
+  if (PU.sub) await pushDisable().catch(() => {});
+  await jsonPost('/api/auth/logout').catch(() => {});
+  for (const k of PERSONAL) store.del(k);
+  location.replace('/');
+}
+function welcomeToast() {
+  const w = store.get('welcome'); if (!w) return;
+  store.del('welcome');
+  if (w === 'register') {
+    toast(`Willkommen, ${ME.user?.name?.split(' ')[0] || ''}! Fülle jetzt kurz dein Pilotenprofil aus.`);
+    // die Einführung kommt zuerst und führt am Ende ins Profil; sonst gleich das Profil öffnen
+    if ((store.get('intro') ?? 0) >= INTRO_VER) { const go = (n = 0) => (S.plan || n > 20 ? profileEdit() : setTimeout(() => go(n + 1), 500)); setTimeout(go, 600); }
+  }
+  else if (w === 'setup') toast('Konto erstellt. Jetzt kannst du unter «Testphase» Freunde einladen.');
+  else if (w === 'reset') toast('Neues Passwort gespeichert');
+  else toast(`Hoi ${ME.user?.name?.split(' ')[0] || ''}!`);
+}
+
+/* ---- Pilotenprofil (Runde 3): Karte, Bild, ausführliches Profil */
+const LICENSES = { student: 'In Ausbildung (Schülerausweis)', brevet: 'Brevet', brevetXc: 'Brevet mit Streckenflug-Erfahrung', tandem: 'Tandem-Brevet', instructor: 'Fluglehrer/in' };
+const STYLES = { thermal: 'Thermik', soaring: 'Soaring', xc: 'Strecke', glide: 'Abgleiter und Genussflüge', hike: 'Hike & Fly', acro: 'Akro', tandem: 'Tandem', skiing: 'Speedflying' };
+const PROFILE_KEYS = ['license', 'since', 'wing', 'wingArea', 'weight', 'wingMin', 'harness', 'reserve', 'styles', 'homes', 'emergName', 'emergPhone'];
+function profileDone(p) {
+  const has = k => (Array.isArray(p[k]) ? p[k].length : p[k] != null && p[k] !== '');
+  return Math.round((PROFILE_KEYS.filter(has).length + (ME.user?.photo ? 1 : 0)) / (PROFILE_KEYS.length + 1) * 100);
+}
+function wingLoad(p) {
+  const r = {};
+  if (num(p.weight) && num(p.wingArea)) r.load = p.weight / p.wingArea;
+  if (num(p.weight) && num(p.wingMin) && num(p.wingMax) && p.wingMax > p.wingMin) r.pos = (p.weight - p.wingMin) / (p.wingMax - p.wingMin);
+  return r;
+}
+function myStats() {
+  const d = LB.data, L = LG();
+  if (d && L) {
+    const st = L.logStats(d.flights, d.settings);
+    return { flights: st.total, hours: Math.round(st.totalMin / 6) / 10, year: st.yearFlights, yearLbl: st.year, last: st.last?.date || null };
+  }
+  const s = ME.stats;
+  return s ? { flights: s.flights, hours: s.hours, year: s.year, yearLbl: new Date().getFullYear(), last: s.last } : null;
+}
+function pilotCard() {
+  if (!ME.user) {
+    if (ME.state && !ME.state.auth) return `<div class="panel setup-card"><h3>Testphase: zuerst dein Konto</h3><p>Damit deine Freunde AFC testen können, braucht jeder ein eigenes Konto. Richte zuerst deines ein: dein Flugbuch, deine Favoriten und deine Einstellungen werden übernommen.</p><div class="btn-row" style="justify-content:flex-start"><button class="btn" type="button" data-act="setup">Mein Konto einrichten</button></div></div>`;
+    return '';
+  }
+  const p = ME.profile || {}, st = myStats(), wl = wingLoad(p), done = profileDone(p);
+  const areas = (p.homes || []).map(id => S.plan?.areas.find(a => a.id === id)?.name).filter(Boolean);
+  const sub = [p.license && LICENSES[p.license], p.since && `fliegt seit ${p.since}`, p.club].filter(Boolean).join(' · ');
+  return `<section class="pcard" aria-label="Pilotenkarte">
+    <div class="pcard-top">
+      <button type="button" class="pcard-av" data-act="photo" aria-label="Profilbild ${ME.user.photo ? 'ändern' : 'hinzufügen'}">${avatarHtml(ME.user, 'big')}<span class="pcard-cam" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></span></button>
+      <div class="pcard-t"><h2>${esc(ME.user.name)}</h2><p>${esc(sub || 'Pilotenprofil noch leer')}</p>
+        ${areas.length ? `<p class="pcard-homes">${areas.map(a => `<span>${esc(a)}</span>`).join('')}</p>` : ''}
+        ${(p.styles || []).length ? `<p class="pcard-styles">${p.styles.map(s => esc(STYLES[s] || s)).join(' · ')}</p>` : ''}</div>
+    </div>
+    <div class="pcard-stats">
+      <div><b>${st ? st.flights : '–'}</b><span>Flüge</span></div>
+      <div><b>${st ? Math.round(st.hours) : '–'}</b><span>Stunden</span></div>
+      <div><b>${st ? st.year : '–'}</b><span>Flüge ${st ? st.yearLbl : ''}</span></div>
+      <div><b>${num(wl.load) ? wl.load.toFixed(1) : '–'}</b><span>kg/m²${num(wl.pos) ? ` · ${wl.pos < 0 ? 'unter' : wl.pos > 1 ? 'über' : Math.round(wl.pos * 100) + ' % im'} Bereich` : ''}</span></div>
+    </div>
+    ${p.wing ? `<p class="pcard-gear">${esc([p.wing, p.wingSize].filter(Boolean).join(' '))}${p.harness ? ' · ' + esc(p.harness) : ''}${p.reserve ? ' · Retter ' + esc(p.reserve) : ''}</p>` : ''}
+    ${done < 100 ? `<div class="pcard-done"><span>Profil zu ${done} % ausgefüllt</span><span class="chk-bar" aria-hidden="true"><i style="width:${done}%"></i></span></div>` : ''}
+    <div class="btn-row" style="justify-content:flex-start"><button class="btn${done < 60 ? '' : ' sec'}" type="button" data-act="profedit">${done < 60 ? 'Profil ausfüllen' : 'Profil bearbeiten'}</button>${ME.user.photo ? '' : '<button class="btn sec" type="button" data-act="photo">Foto hinzufügen</button>'}</div>
+    <input type="file" id="photoIn" accept="image/*" hidden>
+  </section>`;
+}
+function profileEdit() {
+  if (!ME.user) return;
+  const p = ME.profile || {}, pi = store.get('pilot', {});
+  const v = x => (x == null ? '' : esc(x));
+  const areas = S.plan?.areas || [];
+  const f = (name, label, val, type = 'text', extra = '') => `<label class="fld"><span>${label}</span><input type="${type}" name="${name}" value="${v(val)}" ${extra}></label>`;
+  const n = (name, label, val, extra = '') => f(name, label, val, 'number', `inputmode="decimal" ${extra}`);
+  const y = new Date().getFullYear();
+  dlg('#msgDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="msgDlgT">Mein Pilotenprofil</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <form id="profForm" class="prof-form">
+      <fieldset><legend>Über mich</legend>
+        ${f('name', 'Name', ME.user.name, 'text', 'autocomplete="name" required maxlength="60"')}
+        <label class="fld"><span>Ausbildung</span><select name="license"><option value="">– bitte wählen –</option>${Object.entries(LICENSES).map(([k, t]) => `<option value="${k}" ${p.license === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        ${n('since', 'Fliege seit (Jahr)', p.since, `min="1970" max="${y}" placeholder="z.B. 2018"`)}
+        ${n('birthYear', 'Jahrgang (freiwillig)', p.birthYear, `min="1920" max="${y - 10}"`)}
+        ${f('club', 'Club (freiwillig)', p.club, 'text', 'maxlength="60" placeholder="z.B. GSC Interlaken"')}
+        <label class="chk"><input type="checkbox" name="shv" ${p.shv ? 'checked' : ''}><span>Mitglied beim SHV</span></label>
+      </fieldset>
+      <fieldset><legend>Ausrüstung</legend>
+        ${f('wing', 'Schirm (Marke und Modell)', p.wing, 'text', 'maxlength="60" placeholder="z.B. Advance Iota DLS"')}
+        ${f('wingSize', 'Grösse', p.wingSize, 'text', 'maxlength="12" placeholder="z.B. 25"')}
+        <label class="fld"><span>Schirmklasse</span><select name="glider">${Object.entries(P()?.GLIDERS || {}).map(([k, t]) => `<option value="${k}" ${(pi.glider || 'B') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        ${n('wingArea', 'Fläche ausgelegt (m²)', p.wingArea, 'min="10" max="45" step="0.1" placeholder="z.B. 24.5"')}
+        <div class="fld-pair">${n('wingMin', 'Gewichtsbereich von (kg)', p.wingMin, 'min="30" max="250"')}${n('wingMax', 'bis (kg)', p.wingMax, 'min="30" max="250"')}</div>
+        ${n('weight', 'Startgewicht mit Ausrüstung (kg)', p.weight, 'min="30" max="250"')}
+        <p class="fine lb-wide" id="wlHint"></p>
+        ${f('harness', 'Gurtzeug', p.harness, 'text', 'maxlength="60"')}
+        ${f('reserve', 'Retter', p.reserve, 'text', 'maxlength="60"')}
+      </fieldset>
+      <fieldset><legend>So fliege ich</legend>
+        <div class="chips" role="group" aria-label="Flugstil">${Object.entries(STYLES).map(([k, t]) => `<label class="chip"><input type="checkbox" name="styles" value="${k}" ${(p.styles || []).includes(k) ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+        <p class="fine lb-wide" style="margin:10px 0 4px">Meine Hausgebiete (bis 6)</p>
+        <div class="chips" role="group" aria-label="Hausgebiete">${areas.map(a => `<label class="chip"><input type="checkbox" name="homes" value="${esc(a.id)}" ${(p.homes || []).includes(a.id) ? 'checked' : ''}><span>${esc(a.name)}</span></label>`).join('')}</div>
+        <p class="fine lb-wide" style="margin:10px 0 0">Meine eigenen Grenzen: AFC weist dich darauf hin, wenn es mehr bläst.</p>
+        <div class="fld-pair">${n('maxWind', 'Wind höchstens (km/h)', p.maxWind, 'min="5" max="60" placeholder="z.B. 20"')}${n('maxGust', 'Böen höchstens (km/h)', p.maxGust, 'min="5" max="70" placeholder="z.B. 28"')}</div>
+      </fieldset>
+      <fieldset><legend>Notfall</legend>
+        <p class="fine lb-wide" style="margin:0">Nur für dich und Lars sichtbar, falls nach einem Flug etwas ist.</p>
+        ${f('emergName', 'Kontaktperson', p.emergName, 'text', 'maxlength="60" autocomplete="off"')}
+        ${f('emergPhone', 'Telefon der Kontaktperson', p.emergPhone, 'tel', 'maxlength="30" autocomplete="off"')}
+        ${f('phone', 'Meine Handynummer (freiwillig)', p.phone, 'tel', 'maxlength="30" autocomplete="tel"')}
+      </fieldset>
+      <fieldset><legend>Kurz über mich (freiwillig)</legend>
+        <label class="fld lb-wide"><span class="sr">Über mich</span><textarea name="bio" rows="3" maxlength="300" placeholder="z.B. Fliege meistens am Niederhorn, am liebsten am Abend.">${v(p.bio)}</textarea></label>
+      </fieldset>
+      <p class="gate-err" id="profErr" role="alert"></p>
+      <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div>
+    </form></div>`);
+  $('#msgDlg').classList.add('dlg-big');
+  $('#msgDlg').addEventListener('close', () => $('#msgDlg').classList.remove('dlg-big'), { once: true });
+  profHint();
+}
+function profFormData(form) {
+  const fd = new FormData(form), o = {};
+  for (const k of ['license', 'since', 'birthYear', 'club', 'wing', 'wingSize', 'wingArea', 'wingMin', 'wingMax', 'weight', 'harness', 'reserve', 'maxWind', 'maxGust', 'emergName', 'emergPhone', 'phone', 'bio']) o[k] = (fd.get(k) ?? '').toString().trim() || null;
+  for (const k of ['since', 'birthYear', 'wingArea', 'wingMin', 'wingMax', 'weight', 'maxWind', 'maxGust']) o[k] = o[k] == null ? null : Number(o[k]);
+  o.shv = fd.has('shv'); o.styles = fd.getAll('styles'); o.homes = fd.getAll('homes').slice(0, 6);
+  return o;
+}
+function profHint() {
+  const form = $('#profForm'), el = $('#wlHint');
+  if (!form || !el) return;
+  const p = profFormData(form), w = wingLoad(p);
+  el.textContent = num(w.load) || num(w.pos) ? `Flächenbelastung ${num(w.load) ? w.load.toFixed(2) + ' kg/m²' : '–'}${num(w.pos) ? `, ${w.pos < 0 ? 'unter dem Gewichtsbereich: Schirm reagiert träger, bei Wind heikel' : w.pos > 1 ? 'über dem Gewichtsbereich: nicht zugelassen' : w.pos < 0.35 ? `im unteren Drittel (${Math.round(w.pos * 100)} %): ruhiger, langsamer, bei Wind weniger Reserve` : w.pos > 0.75 ? `im oberen Viertel (${Math.round(w.pos * 100)} %): schneller und dynamischer` : `in der Mitte des Bereichs (${Math.round(w.pos * 100)} %)`}` : ''}.` : 'Mit Fläche, Gewichtsbereich und Startgewicht rechnet AFC deine Flächenbelastung aus.';
+}
+async function saveProfile(form) {
+  const p = profFormData(form), name = new FormData(form).get('name');
+  const err = $('#profErr'); err.textContent = '';
+  if (p.homes.length > 6) { err.textContent = 'Höchstens 6 Hausgebiete.'; return; }
+  try {
+    const glider = new FormData(form).get('glider');
+    const pi = { ...store.get('pilot', {}), glider: glider || 'B', student: p.license === 'student' };
+    store.set('pilot', pi);
+    const j = await jsonPost('/api/me', { name, profile: p, prefs: { ...prefsLocal(), pilot: pi } }, 'PUT');
+    setMe(j); closeDlg($('#msgDlg')); toast('Profil gespeichert'); S.detail.clear(); render();
+  } catch (e) { err.textContent = 'Nicht gespeichert: ' + e.message; }
+}
+/** Profilbild: auf dem Gerät quadratisch zuschneiden und verkleinern (320 px JPEG), dann hochladen. */
+async function setPhoto(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type) && !/\.(jpe?g|png|heic|webp)$/i.test(file.name)) { toast('Bitte ein Bild wählen.'); return; }
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('Bild nicht lesbar')); i.src = url; });
+    const s = Math.min(img.naturalWidth, img.naturalHeight), c = document.createElement('canvas');
+    c.width = c.height = 320;
+    c.getContext('2d').drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 320, 320);
+    URL.revokeObjectURL(url);
+    const j = await jsonPost('/api/me/photo', { photo: c.toDataURL('image/jpeg', 0.86) }, 'PUT');
+    setMe(j); toast('Profilbild gespeichert'); if (S.tab === 'profile') renderProfile();
+  } catch (e) { toast('Bild nicht gespeichert: ' + e.message); }
+}
+async function photoMenu() {
+  if (!ME.user?.photo) { $('#photoIn')?.click(); return; }
+  const r = await new Promise(res => {
+    const d = dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">Profilbild</h2><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-r="new">Neues Bild wählen</button><button class="btn sec" type="button" data-r="del">Bild entfernen</button><button class="btn sec" type="button" data-r="">Abbrechen</button></div></div>`);
+    d.onclick = e => { const b = e.target.closest('[data-r]'); if (b) { d.onclick = null; closeDlg(d); res(b.dataset.r); } };
+  });
+  if (r === 'new') $('#photoIn')?.click();
+  if (r === 'del') { try { setMe(await jsonPost('/api/me/photo', undefined, 'DELETE')); renderProfile(); toast('Bild entfernt'); } catch (e) { toast(e.message); } }
+}
+function accountPanel() {
+  if (!ME.user) return '';
+  return `<div class="panel"><h3>Konto</h3>
+    <p style="margin:0 0 8px">${esc(ME.user.email)}${isAdminMe() ? ' · <b>Admin</b>' : ''}</p>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="pwchange">Passwort ändern</button><button class="btn sec" type="button" data-act="logout">Abmelden</button></div>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px"><a class="btn sec" href="/api/me/export" download>Meine Daten herunterladen</a><button class="btn sec danger-t" type="button" data-act="delacc">Konto löschen</button></div>
+    <p class="fine">Deine Daten liegen auf dem Mac von Lars, nicht in einer Cloud. <a href="/privacy">Datenschutz</a></p></div>`;
+}
+async function pwChange() {
+  const d = dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">Passwort ändern</h2><form id="pwForm" class="prof-form">
+    <label class="fld"><span>Bisheriges Passwort</span><input type="password" name="old" autocomplete="current-password" required></label>
+    <label class="fld"><span>Neues Passwort (mindestens 8 Zeichen)</span><input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+    <p class="gate-err" role="alert"></p><div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form></div>`);
+  d.querySelector('input')?.focus();
+}
+async function deleteAccount() {
+  if (!(await ask({ title: 'Konto löschen?', text: 'Dein Konto, dein Flugbuch, deine Ausrüstung, dein Profil und deine Rückmeldungen werden auf dem Mac gelöscht. Das lässt sich nicht rückgängig machen. Tipp: vorher «Meine Daten herunterladen».', ok: 'Weiter', danger: true }))) return;
+  const pw = prompt('Zur Sicherheit: dein Passwort');
+  if (!pw) return;
+  try { await jsonPost('/api/me', { password: pw }, 'DELETE'); for (const k of PERSONAL) store.del(k); alert('Dein Konto ist gelöscht. Danke fürs Testen!'); location.replace('/'); }
+  catch (e) { toast(e.message); }
+}
+
+/* ---- Testphase: Rückmeldungen, «heute nicht gestartet», Umfrage */
+const TAB_NAMES = { decide: 'Entscheid', map: 'Karte', lage: 'Lage', day: 'Flugtag', book: 'Flugbuch', profile: 'Profil' };
+const FB_KINDS = { idea: ['Idee', 'Was fehlt dir, was würde AFC besser machen?'], bug: ['Fehler', 'Was ist passiert? Was hast du davor angetippt?'], forecast: ['Prognose', 'Wo lag AFC daneben? Startplatz, Tag, Uhrzeit, was war wirklich?'], praise: ['Lob', 'Was gefällt dir?'] };
+function feedbackForm(kind = 'idea') {
+  const site = S.detailData?.site && $('#siteDlg').open ? S.detailData.site : null;
+  dlg('#msgDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="msgDlgT">Rückmeldung an Lars</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <form id="fbForm" class="prof-form" data-site="${esc(site?.id || '')}">
+      <div class="seg seg-sm fb-kinds" role="radiogroup" aria-label="Art">${Object.entries(FB_KINDS).map(([k, [t]]) => `<label><input type="radio" name="kind" value="${k}" ${k === kind ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <label class="fld"><span class="sr">Text</span><textarea name="text" rows="5" maxlength="2000" required placeholder="${esc(FB_KINDS[kind][1])}"></textarea></label>
+      <label class="btn sec lb-file fb-shot">Bildschirmfoto anhängen<input type="file" name="shot" accept="image/*"></label>
+      <p class="fine" style="margin:0">Mitgeschickt werden: Ansicht «${esc(TAB_NAMES[S.tab] || S.tab)}»${site ? `, Startplatz ${esc(site.name)}` : ''}, Gerät und App-Version. Tipp für ein Bildschirmfoto auf dem iPhone: Seitentaste und Lauter-Taste gleichzeitig drücken.</p>
+      <p class="gate-err" role="alert"></p>
+      <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Senden</button></div>
+    </form></div>`);
+  setTimeout(() => $('#fbForm textarea')?.focus(), 60);
+}
+async function shrinkImage(file, max = 1000, q = 0.7) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', q);
+  } finally { URL.revokeObjectURL(url); }
+}
+async function sendFeedback(form) {
+  const fd = new FormData(form), err = form.querySelector('.gate-err'), btn = form.querySelector('[type=submit]');
+  const text = String(fd.get('text') || '').trim();
+  if (!text) { err.textContent = 'Bitte kurz beschreiben.'; return; }
+  btn.disabled = true; btn.textContent = 'Sende …';
+  try {
+    const f = fd.get('shot');
+    const shot = f && f.size ? await shrinkImage(f).catch(() => null) : null;
+    await jsonPost('/api/feedback', { kind: fd.get('kind'), text, page: S.tab, site: form.dataset.site || null, ver: APP_VER, device: navigator.userAgent.slice(0, 160), shot });
+    closeDlg($('#msgDlg')); toast('Danke! Lars hat deine Rückmeldung.');
+  } catch (e) { err.textContent = 'Nicht gesendet: ' + e.message; btn.disabled = false; btn.textContent = 'Senden'; }
+}
+const NOFLY = { wind: 'Zu viel Wind oder Böen', thermal: 'Thermik zu stark', weak: 'Zu schwach, nicht lohnend', cloud: 'Wolken oder Nebel am Start', rain: 'Regen oder Gewitter', foehn: 'Föhn oder Bise', time: 'Keine Zeit', feeling: 'Bauchgefühl', other: 'Anderes' };
+function noflyForm(siteId) {
+  const all = (S.plan?.sites || []).filter(x => !x.blocked);
+  const favs = [...S.fav].map(siteById).filter(Boolean);
+  const opts = [...favs, ...all.filter(x => !S.fav.has(x.id)).sort((a, b) => a.name.localeCompare(b.name))];
+  dlg('#msgDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="msgDlgT">Heute nicht gestartet</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <p style="margin:0">Warum? Gerade solche Tage zeigen, wo AFC zu optimistisch ist.</p>
+    <form id="noflyForm" class="prof-form">
+      <label class="fld"><span>Startplatz</span><select name="site">${opts.map(x => `<option value="${esc(x.id)}" ${x.id === siteId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+      <div class="chips" role="radiogroup" aria-label="Grund">${Object.entries(NOFLY).map(([k, t]) => `<label class="chip"><input type="radio" name="reason" value="${k}" required><span>${t}</span></label>`).join('')}</div>
+      <label class="fld"><span>Was war los? (freiwillig)</span><textarea name="text" rows="3" maxlength="600" placeholder="z.B. am Start 30 km/h aus West, Windsack stand waagrecht"></textarea></label>
+      <p class="gate-err" role="alert"></p>
+      <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Senden</button></div>
+    </form></div>`);
+}
+async function sendNofly(form) {
+  const fd = new FormData(form), err = form.querySelector('.gate-err');
+  if (!fd.get('reason')) { err.textContent = 'Bitte einen Grund antippen.'; return; }
+  const site = fd.get('site'), s = siteById(site), h = nowHourToday();
+  const score = s && num(h) ? s.days[S.plan.dates.indexOf(todayKey())]?.scores?.[h - S.plan.h0] : null;
+  try {
+    await jsonPost('/api/feedback', { kind: 'nofly', reason: fd.get('reason'), text: String(fd.get('text') || '').trim(), site, score: num(score) ? score : s?.days[S.plan.dates.indexOf(todayKey())]?.best?.score ?? null, page: S.tab, ver: APP_VER });
+    closeDlg($('#msgDlg')); toast('Danke! Das hilft AFC, solche Tage besser einzuschätzen.');
+  } catch (e) { err.textContent = 'Nicht gesendet: ' + e.message; }
+}
+const SURVEY = [
+  ['use', 'Wie oft hast du AFC benutzt?', ['täglich', 'mehrmals pro Woche', 'ab und zu', 'kaum']],
+  ['match', 'Wie gut passten die Bewertungen zu deinem Gefühl am Startplatz?', 5],
+  ['clear', 'Wie gut verstehst du, warum AFC etwas so bewertet?', 5],
+  ['best', 'Was hat dir am meisten geholfen?', 'text'],
+  ['miss', 'Was hat gefehlt oder gestört?', 'text'],
+  ['keep', 'Würdest du AFC weiter benutzen?', ['ja', 'vielleicht', 'nein']],
+  ['nps', 'Wie wahrscheinlich empfiehlst du AFC einem Flugkollegen? (0 = nie, 10 = sicher)', 10]
+];
+function surveyForm() {
+  const scale = (k, n) => `<div class="scale" role="radiogroup">${Array.from({ length: n === 10 ? 11 : n }, (_, i) => n === 10 ? i : i + 1).map(i => `<label><input type="radio" name="${k}" value="${i}"><span>${i}</span></label>`).join('')}</div>`;
+  dlg('#msgDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="msgDlgT">Umfrage zum Testende</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <p style="margin:0">Zwei Minuten, die Lars sehr helfen. Danke!</p>
+    <form id="surveyForm" class="prof-form">${SURVEY.map(([k, q, t]) => `<fieldset><legend>${esc(q)}</legend>${t === 'text' ? `<textarea name="${k}" rows="3" maxlength="600"></textarea>` : Array.isArray(t) ? `<div class="chips">${t.map(o => `<label class="chip"><input type="radio" name="${k}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div>` : scale(k, t)}</fieldset>`).join('')}
+      <p class="gate-err" role="alert"></p>
+      <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Später</button><button class="btn" type="submit">Senden</button></div></form></div>`);
+  $('#msgDlg').classList.add('dlg-big');
+  $('#msgDlg').addEventListener('close', () => $('#msgDlg').classList.remove('dlg-big'), { once: true });
+}
+async function sendSurvey(form) {
+  const fd = new FormData(form), answers = {};
+  for (const [k, , t] of SURVEY) { const v = fd.get(k); if (v != null && v !== '') answers[k] = typeof t === 'number' ? Number(v) : String(v); }
+  if (Object.keys(answers).length < 3) { form.querySelector('.gate-err').textContent = 'Bitte mindestens drei Fragen beantworten.'; return; }
+  try { await jsonPost('/api/feedback', { kind: 'survey', answers, ver: APP_VER }); ME.survey = false; closeDlg($('#msgDlg')); toast('Vielen Dank fürs Mitmachen!'); render(); }
+  catch (e) { form.querySelector('.gate-err').textContent = e.message; }
+}
+const surveyCard = () => (ME.survey ? `<div class="lb-ask survey-card"><div><b>Umfrage zum Testende</b> <span class="fine">Zwei Minuten, sieben Fragen. Damit wird AFC besser.</span></div><div class="lb-ask-btns"><button type="button" class="btn" data-act="survey">Jetzt ausfüllen</button></div></div>` : '');
+function dayAskHtml() {
+  if (!ME.user || !S.plan?.dates.includes(todayKey())) return '';
+  const h = Number(new Date().toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Europe/Zurich' }));
+  if (h < 9) return '';
+  return `<div class="panel day-ask"><h3>Warst du heute am Startplatz?</h3>
+    <p class="fine" style="margin:0 0 8px">Jeder Tag hilft, auch einer ohne Start.</p>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="lbflight">Geflogen: Flug eintragen</button><button class="btn sec" type="button" data-act="nofly">Nicht gestartet</button></div></div>`;
+}
+
+/* ---- Admin: Testphase im Überblick */
+const ADM = { data: null, tab: 'users' };
+async function adminLoad() { ADM.data = await rawFetch('/api/admin/overview').then(r => (r.ok ? r.json() : Promise.reject(new Error('Fehler ' + r.status)))); return ADM.data; }
+function testPanel() {
+  if (!isAdminMe()) return '';
+  const d = ADM.data;
+  const open = d ? d.feedback.filter(x => !x.done).length : null;
+  return `<div class="panel test-panel"><h3>Testphase</h3>
+    ${d ? `<div class="pcard-stats" style="margin-bottom:10px"><div><b>${d.users.length}</b><span>Piloten</span></div><div><b>${open}</b><span>neue Rück­meldungen</span></div><div><b>${d.users.reduce((t, u) => t + u.stats.verdicts, 0)}</b><span>Flüge bewertet</span></div><div><b>${d.errors.reduce((t, x) => t + x.n, 0)}</b><span>App-Fehler</span></div></div>` : '<p class="fine" style="margin:0 0 8px">Lade …</p>'}
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Freund einladen</button><button class="btn sec" type="button" data-act="admin">Übersicht öffnen</button></div></div>`;
+}
+const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
+function adminHtml() {
+  const d = ADM.data, t = ADM.tab;
+  if (!d) return '<div class="dlg-in"><div class="warm"><div class="spinner"></div>Lade …</div></div>';
+  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['inv', 'Einladen'], ['err', `Fehler ${d.errors.length}`]];
+  let body = '';
+  if (t === 'users') body = `<div class="adm-users">${d.users.map(u => `<div class="adm-u">${avatarHtml(u)}<div><b>${esc(u.name)}</b>${u.role === 'admin' ? ' <small class="tag">Admin</small>' : ''}<small>${esc(u.email)} · zuletzt ${esc(agoTxt(u.lastSeen))}</small>
+      <small>${u.stats.flights} Flüge (${u.stats.logged} im Flugbuch, ${u.stats.igc} IGC) · ${u.stats.verdicts} bewertet · ${u.feedback} Rückmeldungen · ${u.push ? 'Push an' : 'Push aus'}</small>
+      ${u.profile.license ? `<small>${esc(LICENSES[u.profile.license] || '')}${u.profile.since ? ', seit ' + u.profile.since : ''}${u.profile.wing ? ' · ' + esc(u.profile.wing) : ''}</small>` : '<small>Profil noch leer</small>'}
+      ${u.profile.emergName ? `<small>Notfall: ${esc(u.profile.emergName)} ${esc(u.profile.emergPhone || '')}</small>` : ''}
+      ${u.role !== 'admin' ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="admreset" data-id="${esc(u.id)}">Passwort-Link</button><button class="linkbtn" type="button" data-act="admdel" data-id="${esc(u.id)}" data-v="${esc(u.name)}">Entfernen</button></span>` : ''}</div></div>`).join('')}</div>
+    <h3 class="adm-h">Wie lag AFC laut den Piloten?</h3><p>${Object.keys(d.verdicts).length ? Object.entries(d.verdicts).map(([k, n]) => `${esc(LG()?.VERDICTS[k] || k)}: <b>${n}</b>`).join(' · ') : 'Noch keine Bewertungen nach Flügen.'}</p>
+    <h3 class="adm-h">Abschluss-Umfrage</h3><p class="fine" style="margin:0 0 6px">Eingeschaltet sehen alle Piloten eine kurze Umfrage, bis sie sie ausgefüllt haben.</p>
+    <button class="btn sec" type="button" data-act="admsurvey" data-v="${d.survey ? '0' : '1'}">${d.survey ? 'Umfrage ausschalten' : 'Umfrage einschalten'}</button>`;
+  if (t === 'fb') body = d.feedback.length ? `<div class="adm-fb">${d.feedback.map(f => `<div class="adm-f${f.done ? ' done' : ''}"><div class="adm-f-h"><span class="tag k-${esc(f.kind)}">${esc(d.kinds[f.kind] || f.kind)}</span><b>${esc(f.who)}</b><small>${esc(whenTxt(f.at))}</small></div>
+      ${f.kind === 'nofly' ? `<p><b>${esc(d.reasons[f.reason] || '')}</b>${f.site ? ` am ${esc(siteById(f.site)?.name || f.site)}` : ''}${num(f.score) ? `, AFC sagte ${f.score}` : ''}</p>` : ''}
+      ${f.kind === 'survey' ? `<ul class="adm-sv">${Object.entries(f.answers || {}).map(([k, v]) => `<li><small>${esc(SURVEY.find(x => x[0] === k)?.[1] || k)}</small> ${esc(v)}</li>`).join('')}</ul>` : ''}
+      ${f.text ? `<p>${esc(f.text)}</p>` : ''}
+      <small class="fine">${[f.page && 'Ansicht ' + (TAB_NAMES[f.page] || f.page), f.site && f.kind !== 'nofly' && 'Startplatz ' + (siteById(f.site)?.name || f.site), f.ver && 'Version ' + f.ver, f.device && f.device.replace(/Mozilla\/5\.0 \(|\) AppleWebKit.*$/g, '')].filter(Boolean).map(esc).join(' · ')}</small>
+      <span class="adm-act">${f.shot ? `<button class="linkbtn" type="button" data-act="admshot" data-id="${f.id}">Bild ansehen</button>` : ''}<button class="linkbtn" type="button" data-act="admdone" data-id="${f.id}" data-v="${f.done ? 0 : 1}">${f.done ? 'wieder offen' : 'erledigt'}</button></span></div>`).join('')}</div>` : '<p>Noch keine Rückmeldungen.</p>';
+  if (t === 'inv') body = `<p>Jeder Freund bekommt einen eigenen Link. Er gilt 30 Tage und nur für ein Konto.</p><button class="btn" type="button" data-act="invite">Neuen Einladungslink erstellen</button>
+    <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : 'Einladung'))}</b><small>${i.kind === 'reset' ? `Neues Passwort für ${esc(i.forUser || '?')} · ` : ''}${i.usedBy ? `benutzt von ${esc(i.usedBy)} ${esc(whenTxt(i.usedAt))}` : i.expires < new Date().toISOString() ? 'abgelaufen' : `offen bis ${esc(new Date(i.expires).toLocaleDateString('de-CH'))}`}</small>
+      ${!i.usedBy && i.expires > new Date().toISOString() ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">Löschen</button></span>` : ''}</div>`).join('')}</div>`;
+  if (t === 'err') body = d.errors.length ? `<button class="btn sec" type="button" data-act="admerrclear">Liste leeren</button><div class="adm-fb">${d.errors.map(e => `<div class="adm-f"><div class="adm-f-h"><b>${esc(e.msg)}</b><small>${e.n}× · ${esc(e.who)} · ${esc(whenTxt(e.at))}</small></div><small class="fine">${esc([e.src && e.src + ':' + e.line, e.page && 'Ansicht ' + (TAB_NAMES[e.page] || e.page), e.ver && 'Version ' + e.ver].filter(Boolean).join(' · '))}</small>${e.stack ? `<pre class="adm-stack">${esc(e.stack)}</pre>` : ''}</div>`).join('')}</div>` : '<p>Keine App-Fehler gemeldet.</p>';
+  return `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">Testphase</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
+    <div class="seg seg-sm adm-tabs" role="tablist">${tabs.map(([k, n]) => `<button type="button" data-act="admtab" data-v="${k}" aria-pressed="${t === k}">${n}</button>`).join('')}</div>
+    ${body}</div>`;
+}
+async function openAdmin(tab) {
+  if (tab) ADM.tab = tab;
+  S.panel = 'admin';
+  dlg('#siteDlg', adminHtml());
+  try { await adminLoad(); if ($('#siteDlg').open && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(e.message); }
+}
+const inviteUrl = (code, kind) => `${location.origin}/?${kind === 'reset' ? 'reset' : 'invite'}=${code}`;
+function inviteShow(code, kind = 'invite', note = '') {
+  const url = inviteUrl(code, kind);
+  const text = kind === 'reset' ? `Hier kannst du dein AFC-Passwort neu setzen (gilt 3 Tage): ${url}` : `Hoi${note ? ' ' + note : ''}! Hier ist deine Einladung zur AFC-Testphase. Zuerst Tailscale einrichten (siehe Anleitung), dann diesen Link auf dem Handy öffnen: ${url}`;
+  dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">${kind === 'reset' ? 'Link für ein neues Passwort' : 'Einladung' + (note ? ' für ' + esc(note) : '')}</h2>
+    <p>Schick diesen Link ${kind === 'reset' ? '' : 'zusammen mit der Anleitung '}per WhatsApp oder SMS. Er funktioniert nur einmal.</p>
+    <p class="inv-url"><code>${esc(url)}</code></p>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap">${navigator.share ? '<button class="btn" type="button" data-act="invshare">Teilen …</button>' : ''}<button class="btn ${navigator.share ? 'sec' : ''}" type="button" data-act="invcopy">Text kopieren</button><button class="btn sec" type="button" data-act="closemsg">Fertig</button></div></div>`);
+  ADM.share = { text, url };
+}
+async function inviteCreate() {
+  const note = prompt('Für wen ist die Einladung? (Vorname, nur für deine Übersicht)');
+  if (note === null) return;
+  try { const j = await jsonPost('/api/admin/invite', { note: note.trim() }); inviteShow(j.code, 'invite', note.trim()); adminLoad().then(() => { if (S.panel === 'admin' && $('#siteDlg').open) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {}); }
+  catch (e) { toast(e.message); }
+}
+
 /* ---------------------------------------------------------------- Start */
-(function init() {
+(async function init() {
   const t = store.get('tab');
   if (['decide', 'map', 'lage', 'day', 'book', 'profile'].includes(t)) S.tab = t;
   applyTheme();
+  renderMe();
+  // Konten: zuerst klären, wer da ist (ohne Empfang mit dem gespeicherten Stand weiter)
+  if (!(await authInit())) {
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    return;
+  }
   W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
   const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
@@ -2530,4 +3123,11 @@ matchMedia('(min-width: 900px)').addEventListener?.('change', () => { if (S.tab 
   loadWatch().then(() => { if (S.tab === 'decide') renderDecide(); });
   if (store.get('sort') === 'near') locateNear();
   if (/[?&](tab|site)=/.test(location.search)) { applyDeepLink(location.href); history.replaceState(null, '', '/'); }
+  welcomeToast();
+  // Alter Betrieb ohne Konten: einmal auf die Testphase hinweisen
+  if (ME.state && !ME.state.auth && !store.get('setupAsked') && store.get('intro')) setTimeout(async () => {
+    if ($('#msgDlg').open || $('#siteDlg').open) return;
+    store.set('setupAsked', true);
+    if (await ask({ title: 'Neu: Konten für die Testphase', text: 'Damit deine Freunde AFC testen können, bekommt jeder ein eigenes Konto mit eigenem Flugbuch und Profil. Richte zuerst dein Konto ein, deine Daten werden übernommen.', ok: 'Konto einrichten', cancel: 'Später' })) showGate('setup');
+  }, 1500);
 })();
