@@ -336,7 +336,7 @@ function stationsPayload() {
     if (!o) continue;
     const age = Math.round((Date.now() - Date.parse(o.time)) / 60000);
     if (age > 180) continue;
-    out.push({ code, name: m.name, lat: m.lat, lon: m.lon, alt: m.alt, wind: o.wind, gust: o.gust, dir: o.dir, temp: o.temp, age });
+    out.push({ code, name: m.name, lat: m.lat, lon: m.lon, alt: m.alt, wind: o.wind, gust: o.gust, dir: o.dir, temp: o.temp, age, time: o.time });
   }
   return out;
 }

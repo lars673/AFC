@@ -11,6 +11,11 @@ const store = {
   set(k, v) { try { localStorage.setItem('afc.' + k, JSON.stringify(v)); } catch { /* privat/voll */ } },
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } }
 };
+/** Alter einer Messung in Minuten, ab dem Messzeitpunkt gerechnet (stimmt auch bei gespeicherten Daten ohne Empfang). */
+const ageMin = (time, fallback) => { const t = Date.parse(time || ''); return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60000)) : fallback; };
+const ageTxt = m => (!Number.isFinite(m) ? '' : m < 60 ? `vor ${m} min` : m < 1440 ? `vor ${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `vor ${Math.floor(m / 1440)} Tagen`);
+/** «07:12 Uhr» heute, sonst «01.11. 07:12 Uhr». */
+const whenTxt = t => { const d = new Date(t); return (d.toDateString() === new Date().toDateString() ? '' : d.toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit' }) + ' ') + d.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' }) + ' Uhr'; };
 const DIR16 = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 const dirLabel = d => (num(d) ? DIR16[Math.round(((d % 360) + 360) % 360 / 22.5) % 16] : '–');
 const cls = s => (!num(s) ? 'none' : s >= 85 ? 'go' : s >= 80 ? 'ready' : s >= 70 ? 'check' : s >= 55 ? 'wait' : 'no');
@@ -32,7 +37,7 @@ const clientId = (() => {
 const S = {
   plan: null, day: 0, tab: 'decide', warming: false, offline: false, err: null, loadedAt: 0, sort: 'best', pos: null, locating: false,
   level: ['careful', 'normal', 'expert'].includes(store.get('level')) ? store.get('level') : 'normal',
-  theme: ['auto', 'light', 'dark'].includes(store.get('theme')) ? store.get('theme') : 'auto',
+  theme: ['auto', 'light', 'dark', 'sun'].includes(store.get('theme')) ? store.get('theme') : 'auto',
   fav: new Set(store.get('fav', [])), open: new Set(store.get('open', [])),
   detail: new Map(), site: null, hour: null, mapReady: false
 };
@@ -45,7 +50,8 @@ const LEVEL_INFO = {
 function applyTheme() {
   document.documentElement.dataset.theme = S.theme;
   const dark = S.theme === 'dark' || (S.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-  $('#metaTheme').content = dark ? '#08100b' : '#0f1a14';
+  $('#metaTheme').content = S.theme === 'sun' ? '#000000' : dark ? '#08100b' : '#0f1a14';
+  $('#sunBtn')?.setAttribute('aria-pressed', String(S.theme === 'sun'));
 }
 
 /* ---------------------------------------------------------------- Laden */
@@ -72,6 +78,7 @@ async function loadPlan(manual) {
       S.plan = p; S.warming = false; S.offline = false; S.err = null; S.loadedAt = Date.now(); S.cachedAt = null;
       store.set('plan', { level: S.level, at: Date.now(), plan: p });
       if (manual) toast('Aktualisiert');
+      setTimeout(prefetchDetails, 1500);
     }
   } catch (e) {
     S.offline = true; S.err = e.message || 'Netzwerkfehler';
@@ -87,16 +94,52 @@ async function loadPlan(manual) {
     pushSync();
   }
 }
-async function loadDetail(id) {
+// Startplatz-Details bleiben für Favoriten, Wächter-Plätze und zuletzt geöffnete Plätze gespeichert,
+// damit sie am Startplatz auch ohne Empfang da sind (deutlich als alter Stand markiert).
+const DET_MAX = 12;
+function detStoreGet(key) { return store.get('det', {})[key] || null; }
+function detStorePut(key, data) {
+  const all = store.get('det', {}); all[key] = { at: Date.now(), data };
+  const keep = new Set([...S.fav, ...WT.list.map(w => w.siteId)].map(id => `${S.level}:${id}`));
+  const keys = Object.keys(all).sort((a, b) => (keep.has(b) - keep.has(a)) || all[b].at - all[a].at);
+  for (const k of keys.slice(DET_MAX)) delete all[k];
+  store.set('det', all);
+  if (localStorage.getItem('afc.det') == null && keys.length > 1) store.set('det', { [key]: all[key] }); // Speicher voll: nur diesen behalten
+}
+async function loadDetail(id, { quiet = false } = {}) {
   const key = `${S.level}:${id}`;
   const c = S.detail.get(key);
   if (c && Date.now() - c.at < 3 * 60000) return c.data;
-  const r = await fetch(`/api/site/${encodeURIComponent(id)}?level=${S.level}`, { cache: 'no-cache' });
-  if (r.status === 202) throw new Error('Daten werden noch geladen, bitte gleich nochmals versuchen');
-  if (!r.ok) throw new Error(`Server antwortet mit ${r.status}`);
-  const data = await r.json();
-  S.detail.set(key, { at: Date.now(), data });
-  return data;
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), quiet ? 30000 : 10000);
+  try {
+    const r = await fetch(`/api/site/${encodeURIComponent(id)}?level=${S.level}`, { cache: 'no-cache', signal: ctl.signal });
+    if (r.status === 202) throw new Error('Daten werden noch geladen, bitte gleich nochmals versuchen');
+    if (!r.ok) throw new Error(`Server antwortet mit ${r.status}`);
+    const data = await r.json();
+    S.detail.set(key, { at: Date.now(), data });
+    detStorePut(key, data);
+    return data;
+  } catch (e) {
+    const old = detStoreGet(key);
+    if (old) {
+      // Tage an die Daten des Plans anpassen: ein Stand von gestern darf nicht als «heute» erscheinen
+      const byDate = new Map(old.data.days.map(d => [d.date, d]));
+      const days = (S.plan?.dates || []).map(dt => byDate.get(dt) || { date: dt, hours: [], best: null });
+      return { ...old.data, days, _savedAt: old.at };
+    }
+    throw e.name === 'AbortError' ? new Error('keine Antwort, schlechter Empfang?') : e;
+  } finally { clearTimeout(to); }
+}
+/** Nach dem Laden des Plans: Details der Favoriten und Wächter-Plätze im Hintergrund speichern. */
+async function prefetchDetails() {
+  if (S.offline || navigator.connection?.saveData) return;
+  const ids = [...new Set([...S.fav, ...WT.list.map(w => w.siteId)])].filter(id => S.plan && siteById(id)).slice(0, 8);
+  for (const id of ids) {
+    const k = `${S.level}:${id}`, old = detStoreGet(k);
+    if (old && Date.now() - old.at < 20 * 60000) continue;
+    S.detail.delete(k);
+    try { await loadDetail(id, { quiet: true }); } catch { break; }
+  }
 }
 
 /* ---------------------------------------------------------------- Bausteine */
@@ -173,7 +216,8 @@ function renderStamp() {
   const p = S.plan, st = sourceState();
   $('#srcDotI').className = 'dot ' + st[0];
   $('#srcDotT').textContent = st[1];
-  $('#stamp').textContent = p ? `Prognose ${timeOf(p.fetchedAt)} · ${S.level === 'careful' ? 'Vorsichtig' : S.level === 'expert' ? 'Erfahren' : 'Normal'}` : 'Lade Daten …';
+  const old = p && Date.now() - Date.parse(p.fetchedAt) > 90 * 60000;
+  $('#stamp').textContent = p ? `Prognose ${old ? whenTxt(p.fetchedAt).replace(' Uhr', '') + ' (' + ageTxt(ageMin(p.fetchedAt)) + ')' : timeOf(p.fetchedAt)} · ${S.level === 'careful' ? 'Vorsichtig' : S.level === 'expert' ? 'Erfahren' : 'Normal'}` : 'Lade Daten …';
 }
 function renderBanner() {
   const b = $('#banner');
@@ -379,10 +423,10 @@ function stationCards(list) {
   return `<p class="fine" style="margin:0 0 8px">${how}. Farbig ab Böen ${warn} km/h (Vorsicht) und ${bad} km/h (stark), passend zu deiner Erfahrung.</p>
     <div class="stc-grid">${rows.map(({ x, n }) => {
       const g = num(x.gust) ? Math.round(x.gust) : null, w = num(x.wind) ? Math.round(x.wind) : null, top = Math.max(g ?? 0, w ?? 0);
-      const lvl = top >= bad ? 'bad' : top >= warn ? 'warn' : 'ok', old = x.age > 40;
+      const age = ageMin(x.time, x.age), lvl = top >= bad ? 'bad' : top >= warn ? 'warn' : 'ok', old = age > 40;
       return `<div class="stc stc-${lvl}${old ? ' old' : ''}"><div class="stc-h"><b>${esc(x.name)}</b><span>${x.alt ?? '–'} m${n && n.r.name !== 'dir' ? ` · ${Math.round(n.d)} km zu ${esc(n.r.name.split(' ')[0])}` : n ? ` · ${Math.round(n.d)} km` : ''}</span></div>
         <div class="stc-v"><span class="stc-w"><b>${w ?? '–'}</b><small>Wind</small></span><span class="stc-w"><b>${g ?? '–'}</b><small>Böen</small></span><span class="stc-d">${num(x.dir) ? arrow(x.dir) + ' ' + dirLabel(x.dir) : '–'}</span></div>
-        <div class="stc-f">${num(x.temp) ? x.temp.toFixed(1) + '° · ' : ''}${old ? '<b>vor ' + x.age + ' min</b>' : 'vor ' + x.age + ' min'}</div></div>`;
+        <div class="stc-f">${num(x.temp) ? x.temp.toFixed(1) + '° · ' : ''}${old ? '<b>' + ageTxt(age) + '</b>' : ageTxt(age)}</div></div>`;
     }).join('')}</div>
     <p class="fine">Wind in km/h, 10-Minuten-Mittel der MeteoSchweiz (SwissMetNet).</p>`;
 }
@@ -533,7 +577,8 @@ function renderProfile() {
     <div class="panel"><h3>Benachrichtigungen</h3><div id="pushPanel">${pushHtml()}</div></div>
     <div class="panel"><h3>AFC und Updates</h3><div id="statusPanel">${statusHtml()}</div></div>
     <div class="panel"><h3>Darstellung</h3>
-      <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div></div>
+      <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel'], ['sun', 'Sonne']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div>
+      <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p></div>
     <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button></div></div>
     <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
     <div class="panel"><h3>Verbrauch und Lernen</h3><div id="techPanel">${techHtml()}</div></div>
@@ -1218,11 +1263,12 @@ function renderSite() {
   const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
+    ${d._savedAt ? `<div class="saved-note" role="status"><b>Kein Empfang: gespeicherter Stand von ${esc(whenTxt(d._savedAt))}.</b> Nicht für den Startentscheid verwenden, Wind vor Ort prüfen.</div>` : ''}
     <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
     ${table}
-    <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${nc.ageMin} min alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
+    <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
   </div>`);
 }
 function reportForm(id) {
@@ -1923,6 +1969,13 @@ document.addEventListener('click', async e => {
     case 'hour': S.hour = Number(b.dataset.h); if (S.detailData) renderSite(); break;
     case 'level': if (S.level !== b.dataset.v) { S.level = b.dataset.v; store.set('level', S.level); store.set('levelManual', true); S.detail.clear(); render(); loadPlan(); } break;
     case 'theme': S.theme = b.dataset.v; store.set('theme', S.theme); render(); break;
+    case 'sun': {
+      // Umschalten zwischen Sonnenmodus und der vorherigen Darstellung
+      if (S.theme === 'sun') S.theme = store.get('themeBeforeSun', 'auto');
+      else { store.set('themeBeforeSun', S.theme); S.theme = 'sun'; }
+      store.set('theme', S.theme); render(); toast(S.theme === 'sun' ? 'Sonnenmodus: grosse Schrift, starker Kontrast' : 'Sonnenmodus aus');
+      break;
+    }
     case 'check': {
       const key = 'check.' + todayKey(), cur = new Set(store.get(key, [])), i = Number(b.dataset.i);
       b.checked ? cur.add(i) : cur.delete(i); store.set(key, [...cur]); break;

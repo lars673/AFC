@@ -449,3 +449,23 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .prof-tech > summary .prof-h { margin: 0; color: var(--ink); }
 .prof-tech > summary .fine { margin: 0; }
 .prof-tech[open] > summary { margin-bottom: 12px; }
+
+/* Gespeicherter Stand ohne Empfang */
+.saved-note { background: var(--wait); color: var(--on-wait); border-radius: 10px; padding: 10px 12px; font-size: 14px; line-height: 1.35; }
+
+/* Sonnenmodus: draussen am Startplatz. Weiss, schwarz, kräftige Signalfarben, grössere Schrift (Karte bleibt unverändert). */
+:root[data-theme="sun"] {
+  --bg: #ffffff; --panel: #ffffff; --panel2: #f2f2f2; --line: #5d6660; --ink: #000000; --muted: #1d2520;
+  --accent: #003e56; --accent-ink: #ffffff; --top: #000000; --top-ink: #ffffff;
+  --go: #0a6a2f; --ready: #2f7d1e; --check: #b39500; --wait: #d06a00; --no: #b3141a; --none: #d6d6d6;
+  --on-go: #fff; --on-ready: #fff; --on-check: #000; --on-wait: #000; --on-no: #fff;
+  --focus: #003e56; --shadow: none;
+}
+:root[data-theme="sun"] body { font-weight: 500; }
+:root[data-theme="sun"] main > section:not(#v-map), :root[data-theme="sun"] dialog .dlg-in { zoom: 1.12; }
+:root[data-theme="sun"] .panel, :root[data-theme="sun"] .card, :root[data-theme="sun"] .stc { border-width: 2px; }
+:root[data-theme="sun"] .fine { color: var(--ink); }
+:root[data-theme="sun"] .tabs button span { font-weight: 700; }
+#sunBtn[aria-pressed="true"] { background: #ffd400; color: #000; border-color: #ffd400; }
+.src-dot { white-space: nowrap; }
+@media (max-width: 420px) { .top-actions { gap: 6px; } .icon-btn, .src-dot { padding: 0 8px; } .src-dot { gap: 6px; } }
