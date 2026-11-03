@@ -88,6 +88,23 @@ test('Rückmeldungen je Startplatz: ab 3, «zu mild» zählt doppelt, begrenzt',
   assert.equal(cleanFlight({ date: '2026-09-01', afcVerdict: 'mild' }).afcVerdict, 'mild');
 });
 
+test('Rückmeldungen nach Pilotentyp: «zu streng» gilt für die eigene und erfahrenere Stufen, «zu mild» für alle', async () => {
+  const { siteFeedbackByLevel, voterLevel } = await import('../lib/logbook.js');
+  const f = (afcVerdict, pilot) => ({ siteId: 'a', afcVerdict, date: '2026-09-01', pilot });
+  const xc = { level: 'expert', styles: ['xc'] }, schueler = { level: 'expert', license: 'student' };
+  assert.equal(voterLevel(schueler), 'careful'); assert.equal(voterLevel(null), 'normal');
+  // drei Streckenpiloten finden AFC zu streng: nur für «Erfahren» lockerer
+  let r = siteFeedbackByLevel([f('streng', xc), f('streng', xc), f('streng', xc)], NOW);
+  assert.equal(r.expert.a.adj, 4); assert.equal(r.normal.a, undefined); assert.equal(r.careful.a, undefined);
+  // drei Schüler finden AFC zu mild: gilt für alle Stufen
+  r = siteFeedbackByLevel([f('mild', schueler), f('mild', schueler), f('mild', schueler)], NOW);
+  assert.equal(r.careful.a.adj, -8); assert.equal(r.expert.a.adj, -8); assert.equal(r.expert.a.other, 3);
+  // vorsichtige Piloten finden AFC zu streng: gilt auch für Erfahrene
+  r = siteFeedbackByLevel([f('streng', { level: 'careful' }), f('streng', { level: 'careful' }), f('streng', null)], NOW);
+  assert.equal(r.careful.a.n, 2); assert.equal(r.careful.a.adj, 0); assert.equal(r.normal.a.n, 3); assert.equal(r.expert.a.adj, 4);
+  assert.equal(cleanFlight({ date: '2026-09-01', pilot: { level: 'x', styles: ['xc', 'bla'], load: 4.2 } }).pilot.styles[0], 'xc');
+});
+
 test('Rückblick: Prognose gegen IGC-Flug', async () => {
   const { flightReview, cleanFlight } = await import('../lib/logbook.js');
   const f = cleanFlight({ date: '2026-07-12', start: '11:10', durMin: 95, afcFc: { h: 11, score: 82, top: 2400, base: 2600, wstar: 1.5, from: 10, to: 16 },

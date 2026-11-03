@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '9.7';
+const APP_VER = '9.8';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3046,11 +3046,12 @@ const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
 function adminHtml() {
   const d = ADM.data, t = ADM.tab;
   if (!d) return '<div class="dlg-in"><div class="warm"><div class="spinner"></div>Lade …</div></div>';
-  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['inv', 'Einladen'], ['err', `Fehler ${d.errors.length}`]];
+  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['types', 'Typen'], ['inv', 'Einladen'], ['err', `Fehler ${d.errors.length}`]];
   let body = '';
   if (t === 'users') body = `<div class="adm-users">${d.users.map(u => `<div class="adm-u">${avatarHtml(u)}<div><b>${esc(u.name)}</b>${u.role === 'admin' ? ' <small class="tag">Admin</small>' : ''}<small>${esc(u.email)} · zuletzt ${esc(agoTxt(u.lastSeen))}</small>
       <small>${u.stats.flights} Flüge (${u.stats.logged} im Flugbuch, ${u.stats.igc} IGC) · ${u.stats.verdicts} bewertet · ${u.feedback} Rückmeldungen · ${u.push ? 'Push an' : 'Push aus'}</small>
       ${u.profile.license ? `<small>${esc(LICENSES[u.profile.license] || '')}${u.profile.since ? ', seit ' + u.profile.since : ''}${u.profile.wing ? ' · ' + esc(u.profile.wing) : ''}</small>` : '<small>Profil noch leer</small>'}
+      ${u.profile.styles?.length ? `<small>Fliegt: ${esc(u.profile.styles.map(x => d.styles?.[x] || x).join(', '))}</small>` : ''}
       ${u.profile.emergName ? `<small>Notfall: ${esc(u.profile.emergName)} ${esc(u.profile.emergPhone || '')}</small>` : ''}
       ${u.role !== 'admin' ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="admreset" data-id="${esc(u.id)}">Passwort-Link</button><button class="linkbtn" type="button" data-act="admdel" data-id="${esc(u.id)}" data-v="${esc(u.name)}">Entfernen</button></span>` : ''}</div></div>`).join('')}</div>
     <h3 class="adm-h">Wie lag AFC laut den Piloten?</h3><p>${Object.keys(d.verdicts).length ? Object.entries(d.verdicts).map(([k, n]) => `${esc(LG()?.VERDICTS[k] || k)}: <b>${n}</b>`).join(' · ') : 'Noch keine Bewertungen nach Flügen.'}</p>
@@ -3062,6 +3063,18 @@ function adminHtml() {
       ${f.text ? `<p>${esc(f.text)}</p>` : ''}
       <small class="fine">${[f.page && 'Ansicht ' + (TAB_NAMES[f.page] || f.page), f.site && f.kind !== 'nofly' && 'Startplatz ' + (siteById(f.site)?.name || f.site), f.ver && 'Version ' + f.ver, f.device && f.device.replace(/Mozilla\/5\.0 \(|\) AppleWebKit.*$/g, '')].filter(Boolean).map(esc).join(' · ')}</small>
       <span class="adm-act">${f.shot ? `<button class="linkbtn" type="button" data-act="admshot" data-id="${f.id}">Bild ansehen</button>` : ''}<button class="linkbtn" type="button" data-act="admdone" data-id="${f.id}" data-v="${f.done ? 0 : 1}">${f.done ? 'wieder offen' : 'erledigt'}</button></span></div>`).join('')}</div>` : '<p>Noch keine Rückmeldungen.</p>';
+  if (t === 'types') {
+    const g = d.groups || [], row = x => {
+      const v = x.richtig + x.streng + x.mild, nf = Object.entries(x.nofly).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      return `<div class="adm-f"><div class="adm-f-h"><b>${esc(x.label)}</b><small>${x.pilots} ${x.pilots === 1 ? 'Pilot' : 'Piloten'} · ${x.flights} Flüge</small></div>
+        <p>${v ? `Urteile: richtig <b>${x.richtig}</b> · zu streng <b>${x.streng}</b> · zu mild <b>${x.mild}</b>` : 'Noch keine Urteile nach Flügen.'}</p>
+        ${nf.length ? `<small>Nicht gestartet: ${nf.map(([k, n]) => `${esc(d.reasons[k] || k)} ${n}×`).join(', ')}</small>` : ''}
+        ${x.feedback ? `<small>${x.feedback} ${x.feedback === 1 ? 'Rückmeldung' : 'Rückmeldungen'}</small>` : ''}</div>`;
+    };
+    body = `<p class="fine" style="margin:0 0 8px">Was die verschiedenen Pilotentypen sagen. Wer mehrere Flugstile angibt, zählt bei jedem. AFC lernt getrennt nach Stufe: «zu streng» gilt nur für die eigene Stufe und erfahrenere, «zu mild» als Warnung für alle.</p>
+      <h3 class="adm-h">Nach Flugstil</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('s:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>
+      <h3 class="adm-h">Nach Stufe</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('l:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>`;
+  }
   if (t === 'inv') body = `<p>Jeder Freund bekommt einen eigenen Link. Er gilt 30 Tage und nur für ein Konto.</p><button class="btn" type="button" data-act="invite">Neuen Einladungslink erstellen</button>
     <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : 'Einladung'))}</b><small>${i.kind === 'reset' ? `Neues Passwort für ${esc(i.forUser || '?')} · ` : ''}${i.usedBy ? `benutzt von ${esc(i.usedBy)} ${esc(whenTxt(i.usedAt))}` : i.expires < new Date().toISOString() ? 'abgelaufen' : `offen bis ${esc(new Date(i.expires).toLocaleDateString('de-CH'))}`}</small>
       ${!i.usedBy && i.expires > new Date().toISOString() ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">Löschen</button></span>` : ''}</div>`).join('')}</div>`;

@@ -19,7 +19,7 @@ import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LE
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
-import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedback } from './lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedbackByLevel, cleanPilotSnap, voterLevel } from './lib/logbook.js';
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
@@ -27,7 +27,7 @@ import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { learnedVerdict, thermalLearn } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
-import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, FEEDBACK_KINDS, NOFLY_REASONS } from './lib/auth.js';
+import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = '8.0';
@@ -385,7 +385,7 @@ function currentModel() {
     state.model = new PlanModel({
       now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnGuard().off ? null : learnedBias(),
       thermLearn: thermalLearned(),
-      feedback: siteFeedback(dbAll("SELECT data FROM logbook WHERE kind='flight'").map(r => JSON.parse(r.data))),
+      feedbackByLevel: siteFeedbackByLevel(flightsWithPilot()),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
     state.model.ver = state.version;
@@ -587,6 +587,42 @@ function userStats(uid) {
     longest: fl.reduce((m, f) => Math.max(m, f.durMin || 0), 0), farthest: fl.reduce((m, f) => Math.max(m, f.km || 0), 0)
   };
 }
+/** Pilotentyp heute laut Profil: Stufe, Ausweis, Flugstil, Flächenbelastung (für jeden gespeicherten Flug). */
+function pilotSnap(uid) {
+  const u = uid ? dbGet('SELECT profile, prefs FROM users WHERE id=?', [uid]) : null;
+  if (!u) return null;
+  const pr = cleanProfile(JSON.parse(u.profile || '{}')), pf = cleanUserPrefs(JSON.parse(u.prefs || '{}'));
+  return cleanPilotSnap({ level: pf.level, license: pr.license, styles: pr.styles, load: wingLoading(pr).load });
+}
+/** Ein Flug behält den Pilotentyp vom ersten Speichern; was die App mitschickt, zählt nicht. */
+function withPilot(uid, id, item) {
+  const old = dbGet("SELECT data FROM logbook WHERE uid=? AND kind='flight' AND id=?", [uid, id]);
+  item.pilot = (old && JSON.parse(old.data).pilot) || pilotSnap(uid);
+  return item;
+}
+/** Alle Flüge mit Pilotentyp; ältere Flüge ohne Angabe bekommen das heutige Profil ihres Piloten. */
+function flightsWithPilot() {
+  const snaps = new Map();
+  return dbAll("SELECT uid, data FROM logbook WHERE kind='flight'").map(r => {
+    const f = JSON.parse(r.data);
+    if (!f.pilot) { if (!snaps.has(r.uid)) snaps.set(r.uid, pilotSnap(r.uid)); f.pilot = snaps.get(r.uid); }
+    return f;
+  });
+}
+/** Testphase nach Pilotentyp: je Flugstil und Stufe Piloten, Flüge, Urteile, Gründe fürs Nicht-Starten, Rückmeldungen. */
+function pilotGroups(users) {
+  const LV = { careful: 'Vorsichtig', normal: 'Normal', expert: 'Erfahren' };
+  const g = {}, add = (key, label) => (g[key] ||= { key, label, pilots: 0, flights: 0, richtig: 0, streng: 0, mild: 0, nofly: {}, feedback: 0 });
+  const keysOf = p => [...(p?.styles?.length ? p.styles.map(x => ['s:' + x, STYLES[x]]) : [['s:-', 'Flugstil nicht angegeben']]), ['l:' + voterLevel(p), 'Stufe ' + LV[voterLevel(p)]]];
+  const byUid = new Map(users.map(u => [u.id, pilotSnap(u.id)]));
+  for (const [, snap] of byUid) for (const [k, l] of keysOf(snap)) add(k, l).pilots++;
+  for (const f of flightsWithPilot()) for (const [k, l] of keysOf(f.pilot)) { const x = add(k, l); x.flights++; if (f.afcVerdict) x[f.afcVerdict]++; }
+  for (const r of dbAll('SELECT uid, kind, data FROM feedback')) {
+    const d = JSON.parse(r.data);
+    for (const [k, l] of keysOf(byUid.get(r.uid))) { const x = add(k, l); x.feedback++; if (r.kind === 'nofly' && d.reason) x.nofly[d.reason] = (x.nofly[d.reason] || 0) + 1; }
+  }
+  return Object.values(g).filter(x => x.pilots || x.flights).sort((a, b) => a.key.localeCompare(b.key));
+}
 const kvGet = k => dbGet('SELECT v FROM app_kv WHERE k=?', [k])?.v ?? null;
 const kvSet = (k, v) => (v == null ? dbRun('DELETE FROM app_kv WHERE k=?', [k]) : dbRun('INSERT INTO app_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', [k, String(v)]));
 function meResponse(u) {
@@ -760,7 +796,7 @@ async function accountRoute(req, res, p, u) {
       const errors = dbAll('SELECT id, uid, at, n, data FROM client_errors ORDER BY at DESC LIMIT 60').map(r => ({ id: r.id, at: r.at, n: r.n, who: names[r.uid] || '–', ...JSON.parse(r.data) }));
       const verdicts = {};
       for (const r of dbAll("SELECT data FROM logbook WHERE kind='flight'")) { const v = JSON.parse(r.data).afcVerdict; if (v) verdicts[v] = (verdicts[v] || 0) + 1; }
-      return sendJson(req, res, 200, { ok: true, users, invites, feedback, errors, verdicts, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
+      return sendJson(req, res, 200, { ok: true, users, invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
     }
     if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
     if (p === '/api/admin/invite' && req.method === 'POST') {
@@ -1058,7 +1094,7 @@ const server = http.createServer(async (req, res) => {
           const put = (kind, id, item) => dbRun('INSERT INTO logbook(uid,kind,id,data,updated) VALUES(?,?,?,?,?) ON CONFLICT(uid,kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [uid, kind, id, JSON.stringify(item), nowIso()]);
           db.exec('BEGIN');
           try {
-            for (const f of b.flights) { n[has.has('flight/' + f.id) ? 'updated' : 'added']++; put('flight', f.id, f); }
+            for (const f of b.flights) { n[has.has('flight/' + f.id) ? 'updated' : 'added']++; put('flight', f.id, withPilot(uid, f.id, f)); }
             for (const g of b.gear) { n.gear++; put('gear', g.id, g); }
             if (b.settings && !has.has('settings/main')) put('settings', 'main', b.settings);
             db.exec('COMMIT');
@@ -1074,6 +1110,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'PUT') {
           const body = await readBody(req, 64 * 1024);   // Flug mit vereinfachter IGC-Spur
           const item = kind === 'flight' ? cleanFlight({ ...body, id: lid }) : kind === 'gear' ? cleanGear({ ...body, id: lid }) : cleanSettings(body);
+          if (item && kind === 'flight') withPilot(uid, lid, item);
           if (!item) return sendJson(req, res, 400, { error: kind === 'flight' ? 'Datum fehlt' : 'Art der Ausrüstung fehlt' });
           dbRun('INSERT INTO logbook(uid,kind,id,data,updated) VALUES(?,?,?,?,?) ON CONFLICT(uid,kind,id) DO UPDATE SET data=excluded.data, updated=excluded.updated', [uid, kind, kind === 'settings' ? 'main' : lid, JSON.stringify(item), nowIso()]);
           backupLogbookSoon();

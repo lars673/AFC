@@ -95,6 +95,13 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.deepEqual(me.json.profile.homes.length <= 1, true);
     assert.deepEqual(me.json.prefs.fav, ['first-1']);
     assert.equal(me.json.stats.flights, 13);
+    // Pilotentyp wird mit dem Flug gespeichert (vom Server, nicht von der App) und bleibt beim Ändern
+    assert.equal((await call('PUT', '/api/me', { profile: { license: 'brevetXc', styles: ['xc', 'thermal'], weight: 90, wingArea: 22 }, prefs: { level: 'expert' } }, B)).status, 200);
+    let fx = await call('PUT', '/api/logbook/flight/f3', { date: '2026-10-03', siteId: 'first-1', afcVerdict: 'streng', pilot: { level: 'careful', license: 'student' } }, B);
+    assert.equal(fx.json.item.pilot.level, 'expert'); assert.deepEqual(fx.json.item.pilot.styles, ['xc', 'thermal']); assert.equal(fx.json.item.pilot.load, 4.09);
+    assert.equal((await call('PUT', '/api/me', { prefs: { level: 'normal' } }, B)).status, 200);
+    fx = await call('PUT', '/api/logbook/flight/f3', { date: '2026-10-03', siteId: 'first-1', afcVerdict: 'streng', note: 'geändert' }, B);
+    assert.equal(fx.json.item.pilot.level, 'expert', 'Typ vom ersten Speichern');
     // Profilbild
     const jpg = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70]).toString('base64');
     const ph = await call('PUT', '/api/me/photo', { photo: jpg }, B);
@@ -114,7 +121,10 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal(ov.json.users.length, 2);
     assert.equal(ov.json.feedback.length, 2);
     assert.equal(ov.json.errors[0].n, 2);
-    assert.equal(ov.json.verdicts.streng, 1);
+    const xc = ov.json.groups.find(g => g.key === 's:xc');
+    assert.equal(xc.pilots, 1); assert.equal(xc.flights, 2, 'älterer Flug ohne Typ bekommt das heutige Profil'); assert.equal(xc.streng, 2); assert.equal(xc.nofly.wind, 1);
+    assert.ok(ov.json.groups.find(g => g.key === 'l:expert').flights >= 1);
+    assert.equal(ov.json.verdicts.streng, 2);
     assert.equal(ov.json.invites[0].usedBy, 'Beat Muster');
     assert.equal((await call('PUT', '/api/admin/survey', { on: true }, A)).status, 200);
     assert.equal((await call('GET', '/api/me', null, B)).json.survey, true);
@@ -141,7 +151,7 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     // Export und Konto löschen
     const ex = await fetch(base + '/api/me/export', { headers: { ...H, Cookie: B2 } });
     const exj = await ex.json();
-    assert.equal(exj.flugbuch.flights.length, 1); assert.equal(exj.rueckmeldungen.length, 3);
+    assert.equal(exj.flugbuch.flights.length, 2); assert.equal(exj.rueckmeldungen.length, 3);
     assert.equal((await call('DELETE', '/api/me', { password: 'falsch-falsch' }, B2)).status, 400);
     assert.equal((await call('DELETE', '/api/me', { password: 'Neues-Passwort-9' }, B2)).status, 200);
     assert.equal((await call('POST', '/api/auth/login', { email: 'beat@test.ch', password: 'Neues-Passwort-9' })).status, 401);
