@@ -422,3 +422,19 @@ test('Neustart mit frischer Prognose holt nichts neu bei Open-Meteo (Kontingent 
     assert.equal(plan.sources.pressure.ok, true); assert.equal(plan.sources.ecmwf.ok, true);
   } finally { await b.stop(); }
 });
+
+test('Nachlernen aus den letzten Tagen füllt Föhn- und Bise-Daten', async () => {
+  const s = await boot('good', 18797, { AFC_BACKFILL: '1' });
+  try {
+    let st;
+    for (let i = 0; i < 60; i++) {
+      st = await (await fetch(s.base + '/api/status')).json();
+      if (st.backfill) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    assert.ok(st.backfill, s.log());
+    assert.equal(st.backfill.ok, true, JSON.stringify(st.backfill));
+    assert.ok(st.backfill.obs > 24 && st.backfill.fc > 24, JSON.stringify(st.backfill));
+    assert.ok(st.pressure.bise.n > 0, JSON.stringify(st.pressure));
+  } finally { await s.stop(); }
+});

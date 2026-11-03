@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.1';
+const APP_VER = '10.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -220,7 +220,7 @@ function render() {
   renderBanner();
   $('#daybar').hidden = !S.plan || !['decide', 'map', 'lage'].includes(S.tab);
   if (S.plan) renderDaybar();
-  for (const t of ['decide', 'map', 'lage', 'day', 'book', 'profile']) $('#v-' + t).hidden = S.tab !== t;
+  for (const t of ['decide', 'map', 'lage', 'day', 'book', 'group', 'profile']) $('#v-' + t).hidden = S.tab !== t;
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
   if (S.tab === 'decide') renderDecide();
   else if (S.tab === 'lage') renderLage();
@@ -228,6 +228,7 @@ function render() {
   else if (S.tab === 'profile') renderProfile();
   else if (S.tab === 'book') renderBook();
   else if (S.tab === 'map') renderMap();
+  else if (S.tab === 'group') renderGroup();
 }
 
 function sourceState() {
@@ -646,12 +647,15 @@ function thermalHtml(t) {
   return `<div style="margin-top:12px"><b>Aus IGC-Flügen gelernt</b> <span class="fine">Thermik-Obergrenze und Steigen gegen die Prognose zur Flugzeit, je Gebiet ab 3 Flügen. Übernommen wird nur, was die bisherigen Flüge besser erklärt hätte.</span>
     ${list.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${list.map(([a, x]) => `<li>${esc(areaName(a))}: ${x.add ? `<b>${x.add > 0 ? '+' : ''}${x.add} m</b>, ` : ''}${esc(x.why)}${climb(x.climb)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:4px 0 0">Noch keine IGC-Flüge mit Thermik, für die AFC die Prognose kennt. Ab jetzt merkt sich AFC die Prognose jeder Stunde, damit neue Flüge verglichen werden können.</p>'}</div>`;
 }
-function pressureHtml(p, models) {
+function pressureHtml(p, models, bf) {
   if (!p) return '';
+  const dd = d => { const [, m, t] = d.split('-'); return `${+t}.${+m}.`; };
+  const ev = (xs, w) => xs?.length ? `${w} an ${xs.length} ${xs.length === 1 ? 'Tag' : 'Tagen'} (${xs.slice(-6).map(x => dd(x.day)).join(', ')}${xs.length > 6 ? ' …' : ''})` : `kein ${w}`;
+  const back = bf?.ok ? `<p class="fine" style="margin:6px 0 0">Nachgelernt aus den letzten ${bf.days} Tagen (Messungen der MeteoSchweiz und Prognose-Archiv, Stand ${new Date(bf.at).toLocaleDateString('de-CH')}): ${ev(bf.bise, 'Bise')}, ${ev(bf.foehn, 'Föhn')}.</p>` : '';
   const row = (name, x) => x ? `<li><b>${name}</b>: ${x.n ? `${x.days} Tage verglichen` : 'noch keine Daten'}${x.bias ? ` · Druckunterschied ${sgn(x.bias)} hPa korrigiert` : ''} · Warngrenze ${x.warn} hPa${x.warn < x.defaultWarn ? ` (statt ${x.defaultWarn}, ${esc(x.why)})` : ''}</li>` : '';
   const ms = (models || []).filter(m => m.n);
   return `<div style="margin-top:12px"><b>Föhn, Bise und Wettermodell</b> <span class="fine">Jede Stunde vergleicht AFC den prognostizierten Druckunterschied mit dem gemessenen und prüft, ob Föhn oder Bise unter der Warngrenze kam. Grenzen werden nur gesenkt, nie automatisch angehoben.</span>
-    <ul class="fine" style="margin:4px 0 0;padding-left:18px">${row('Föhn (Lugano–Kloten)', p.foehn)}${row('Bise (Kloten–Genf)', p.bise)}</ul>
+    <ul class="fine" style="margin:4px 0 0;padding-left:18px">${row('Föhn (Lugano–Kloten)', p.foehn)}${row('Bise (Kloten–Genf)', p.bise)}</ul>${back}
     ${ms.length ? `<p class="fine" style="margin:6px 0 0">ICON gegen ECMWF (Böen, Fehler in km/h): ${ms.map(m => `${esc(m.name)} ${m.maeIcon} / ${m.maeEc}${m.weight ? ` → ECMWF zählt ${Math.round(m.weight * 100)} %` : ''}`).join(' · ')}</p>` : '<p class="fine" style="margin:6px 0 0">Modellvergleich: sammelt noch Daten.</p>'}</div>`;
 }
 function siteFbHtml(f) {
@@ -714,13 +718,13 @@ function techHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
   const o = d.openMeteo;
-  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${pressureHtml(d.pressure, d.models)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
+  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${pressureHtml(d.pressure, d.models, d.backfill)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
   const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
     ${learnedHtml(d.learned, d.learnGuard)}
-    ${pressureHtml(d.pressure, d.models)}
+    ${pressureHtml(d.pressure, d.models, d.backfill)}
     ${siteFbHtml(d.siteFeedback)}
     ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
@@ -1595,6 +1599,7 @@ function renderSite() {
   const actionsHtml = `<div class="site-acts">
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
       <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+      ${groupLineFor(s.id)}
       ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
       ${webcamHtml(s)}
     </div>`;
@@ -2424,6 +2429,7 @@ function setTab(t) {
   render();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
   if (t === 'profile') loadStatus();
+  if (t === 'group') groupLoad().catch(() => {});
   window.scrollTo({ top: 0 });
 }
 // «Für Profis» merkt sich, ob es offen war
@@ -2510,7 +2516,11 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
-    case 'tab': setTab(b.dataset.tab); break;
+    case 'tab': if (dlgEl) closeDlg(dlgEl); setTab(b.dataset.tab); break;
+    case 'grpday': G.date = b.dataset.v || null; G.data = null; renderGroup(); break;
+    case 'grplike': try { groupSet(await jsonPost(`/api/community/${id}/like${G.date ? '?date=' + G.date : ''}`)); } catch (err) { toast(err.message); } break;
+    case 'grpdel': if (await ask({ title: 'Beitrag löschen?', text: 'Antworten darauf werden auch gelöscht.', ok: 'Löschen', danger: true })) { try { groupSet(await jsonPost(`/api/community/${id}${G.date ? '?date=' + G.date : ''}`, undefined, 'DELETE')); } catch (err) { toast(err.message); } } break;
+    case 'grpshare': try { await jsonPost('/api/me', { prefs: { shareName: b.checked } }, 'PUT'); await groupLoad(); toast(b.checked ? 'Dein Name erscheint bei deinen Flügen' : 'Deine Flüge zählen ohne Namen'); } catch (err) { toast(err.message); } break;
     case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
     case 'intro': showIntro(); break;
@@ -2599,11 +2609,12 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('submit', e => {
   const fid = e.target.id;
-  if (['gateForm', 'profForm', 'pwForm', 'fbForm', 'noflyForm', 'surveyForm'].includes(fid)) e.preventDefault();
+  if (['gateForm', 'profForm', 'pwForm', 'fbForm', 'noflyForm', 'surveyForm', 'grpForm'].includes(fid) || e.target.classList?.contains('grp-reply')) e.preventDefault();
   if (fid === 'gateForm') gateSubmit(e.target);
   if (fid === 'profForm') saveProfile(e.target);
   if (fid === 'fbForm') sendFeedback(e.target);
   if (fid === 'noflyForm') sendNofly(e.target);
+  if (fid === 'grpForm' || e.target.classList?.contains('grp-reply')) groupPost(e.target);
   if (fid === 'surveyForm') sendSurvey(e.target);
   if (fid === 'pwForm') {
     const f = Object.fromEntries(new FormData(e.target)), err = e.target.querySelector('.gate-err');
@@ -2627,6 +2638,12 @@ document.addEventListener('change', e => {
   if (t.closest('#fbForm') && t.name === 'kind') { const ta = $('#fbForm textarea'); if (ta) ta.placeholder = FB_KINDS[t.value][1]; return; }
   if (t.closest('#fbForm') && t.name === 'shot') { const l = t.closest('label'); if (l && t.files[0]) l.firstChild.textContent = 'Bild angehängt ✓ '; return; }
   if (t.id === 'lbRestore') { lbRestore(t.files[0]); t.value = ''; return; }
+  if (t.closest('#grpForm')) {
+    const f = new FormData($('#grpForm'));
+    G.form = { kind: f.get('kind'), siteId: f.get('siteId'), date: f.get('date'), text: f.get('text') }; store.set('grpForm', G.form);
+    if (t.name === 'kind') { const d = $('#grpForm .grp-date'); if (d) d.hidden = t.value !== 'plan'; }
+    return;
+  }
   if (t.closest('#pushForm')) {
     const f = new FormData($('#pushForm'));
     store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), review: f.has('review'), threshold: Number(f.get('threshold')) || 75 });
@@ -2659,7 +2676,7 @@ const ME = { state: null, user: store.get('me')?.user || null, profile: store.ge
 const isAdminMe = () => ME.user?.role === 'admin';
 const jsonPost = (url, body, method = 'POST') => rawFetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-AFC-Client': clientId }, body: body === undefined ? undefined : JSON.stringify(body) })
   .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status); return j; });
-const PERSONAL = ['fav', 'level', 'levelManual', 'pilot', 'det', 'log', 'fbSkip', 'me', 'cmp', 'pushSig', 'logMigrated', 'open'];
+const PERSONAL = ['fav', 'level', 'levelManual', 'pilot', 'det', 'log', 'fbSkip', 'me', 'cmp', 'pushSig', 'logMigrated', 'open', 'grpForm', 'grpSeen'];
 const initials = n => String(n || '').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase();
 const PERSON_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="9" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 20c1-3.5 3.7-5 7-5s6 1.5 7 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 function avatarHtml(u, cls = '') {
@@ -3017,6 +3034,108 @@ function noflyForm(siteId) {
       <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Senden</button></div>
     </form></div>`);
 }
+/* ------------------------------------------------------------------ Austausch unter den Piloten */
+const G = { data: null, date: null, req: null, form: store.get('grpForm', null) };
+async function groupLoad(date = G.date) {
+  if (!ME.user) return null;
+  const r = await fetch('/api/community' + (date ? '?date=' + date : ''), { headers: { 'X-AFC-Client': clientId } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
+  groupSet(j);
+  return j;
+}
+function groupSet(j) {
+  G.data = j; G.date = j.date === j.today ? null : j.date;
+  if (S.tab === 'group') { store.set('grpSeen', new Date().toISOString()); renderGroup(); }
+  groupDot();
+}
+/** Punkt am Reiter, wenn andere etwas Neues geschrieben haben. */
+function groupDot() {
+  const b = $('.tabs [data-tab="group"]');
+  if (!b) return;
+  const seen = store.get('grpSeen', '') || '';
+  const fresh = (G.data?.posts || []).some(p => !p.mine && (p.at > seen || p.replies.some(r => !r.mine && r.at > seen)));
+  b.classList.toggle('has-new', fresh && S.tab !== 'group');
+}
+const GRP_ICON = { report: '🪂', plan: '📅', ask: '💬', warn: '⚠️' };
+/** Bester AFC-Score des Tages für einen Startplatz (aus dem geladenen Plan). */
+function afcBestOn(siteId, date) {
+  const s = siteById(siteId), i = S.plan?.dates.indexOf(date);
+  return s && i >= 0 ? s.days[i]?.best?.score ?? null : null;
+}
+const dayWord = d => { const t = todayKey(); if (d === t) return 'heute'; const y = new Date(Date.parse(t) - 86400000).toISOString().slice(0, 10), m = new Date(Date.parse(t) + 86400000).toISOString().slice(0, 10); return d === y ? 'gestern' : d === m ? 'morgen' : new Date(d + 'T12:00').toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'numeric' }); };
+function groupSiteHtml(x, reasons) {
+  const afc = afcBestOn(x.siteId, G.data.date);
+  const bits = [x.flights ? `${x.flights} ${x.flights === 1 ? 'Flug' : 'Flüge'}` : '', x.rating ? `${stars(Math.round(x.rating))} ${x.rating}` : '', x.km ? `bis ${x.km} km` : '', x.durMin ? `längster ${LG().fmtDur(x.durMin)}` : ''].filter(Boolean).join(' · ');
+  const nf = x.noflyN ? `${x.noflyN}× nicht gestartet (${Object.entries(x.nofly).map(([k, n]) => `${esc(reasons[k] || k)}${n > 1 ? ' ' + n + '×' : ''}`).join(', ')})` : '';
+  const v = x.verdicts || {}, vt = [v.richtig && `${v.richtig}× passte`, v.streng && `${v.streng}× zu streng`, v.mild && `${v.mild}× zu mild`].filter(Boolean).join(', ');
+  return `<button type="button" class="grp-site" data-act="site" data-id="${esc(x.siteId)}">
+    <span class="grp-site-main"><b>${esc(x.siteName)}</b><small>${bits || '&nbsp;'}</small>${nf ? `<small class="grp-nf">${nf}</small>` : ''}${vt ? `<small>AFC-Bewertung: ${vt}</small>` : ''}${x.names.length ? `<small>${esc(x.names.join(', '))}${x.pilots > x.names.length ? ` und ${x.pilots - x.names.length} weitere` : ''}</small>` : x.pilots > 1 ? `<small>${x.pilots} Piloten</small>` : ''}</span>
+    ${num(afc) ? `<span class="grp-afc"><small>AFC</small>${pill(afc)}</span>` : ''}</button>`;
+}
+function groupPostHtml(p) {
+  const head = `${avatarHtml(p.who, 'grp-av')}<div class="grp-meta"><b>${esc(p.who.name)}</b> <span class="fine">${whenTxt(p.at)}</span>${p.kind ? `<div class="grp-kind">${GRP_ICON[p.kind] || ''} ${esc(G.data.kinds[p.kind] || '')}${p.kind === 'plan' ? ` · <b>${esc(dayWord(p.date))}</b>` : p.date && p.date !== p.at.slice(0, 10) ? ` · ${esc(dayWord(p.date))}` : ''}${p.siteId ? ` · <button type="button" class="linkbtn" data-act="site" data-id="${esc(p.siteId)}">${esc(p.siteName || siteById(p.siteId)?.name || p.siteId)}</button>` : p.siteName ? ` · ${esc(p.siteName)}` : ''}</div>` : ''}</div>`;
+  const like = p.kind === 'plan' ? (p.liked ? 'Bin dabei ✓' : 'Bin dabei') : (p.liked ? '👍 Gefällt mir' : '👍');
+  const reps = p.replies.map(r => `<div class="grp-rep">${avatarHtml(r.who, 'grp-av sm')}<div><b>${esc(r.who.name)}</b> <span class="fine">${whenTxt(r.at)}</span><p>${esc(r.text)}</p>${r.canDel ? `<button type="button" class="linkbtn fine" data-act="grpdel" data-id="${r.id}">löschen</button>` : ''}</div></div>`).join('');
+  return `<article class="grp-post grp-${esc(p.kind || 'report')}" id="post-${p.id}"><div class="grp-head">${head}</div><p class="grp-text">${esc(p.text)}</p>
+    <div class="grp-acts"><button type="button" class="btn sec sm${p.liked ? ' on' : ''}" data-act="grplike" data-id="${p.id}" aria-pressed="${p.liked}">${like}${p.likes ? ` <b>${p.likes}</b>` : ''}</button>${p.canDel ? `<button type="button" class="linkbtn fine" data-act="grpdel" data-id="${p.id}">löschen</button>` : ''}</div>
+    ${reps ? `<div class="grp-reps">${reps}</div>` : ''}
+    <form class="grp-reply" data-parent="${p.id}"><input type="text" name="text" maxlength="600" placeholder="Antworten …" aria-label="Antwort an ${esc(p.who.name)}"><button class="btn sec sm" type="submit">Senden</button></form></article>`;
+}
+function groupFormHtml() {
+  const f = G.form || {}, kind = f.kind || 'report';
+  const all = (S.plan?.sites || []).filter(x => !x.blocked);
+  const favs = [...S.fav].map(siteById).filter(Boolean);
+  const opts = [...favs, ...all.filter(x => !S.fav.has(x.id)).sort((a, b) => a.name.localeCompare(b.name))];
+  const t = todayKey(), dates = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(t) + i * 86400000).toISOString().slice(0, 10));
+  return `<form id="grpForm" class="prof-form grp-form">
+    <div class="chips" role="radiogroup" aria-label="Art">${Object.entries(G.data.kinds).map(([k, v]) => `<label class="chip"><input type="radio" name="kind" value="${k}" ${k === kind ? 'checked' : ''}><span>${GRP_ICON[k]} ${esc(v)}</span></label>`).join('')}</div>
+    <div class="fld-pair"><label class="fld"><span>Startplatz (freiwillig)</span><select name="siteId"><option value="">–</option>${opts.map(x => `<option value="${esc(x.id)}" ${x.id === f.siteId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="fld grp-date" ${kind === 'plan' ? '' : 'hidden'}><span>Wann?</span><select name="date">${dates.map(d => `<option value="${d}" ${d === f.date ? 'selected' : ''}>${esc(dayWord(d))}</option>`).join('')}</select></label></div>
+    <label class="fld"><span>Text</span><textarea name="text" rows="3" maxlength="600" placeholder="${kind === 'plan' ? 'z.B. Ich gehe morgen um 11 Uhr an den Niesen, wer kommt mit?' : kind === 'warn' ? 'z.B. Am Start Bise mit 35 km/h Böen, wir sind wieder runtergelaufen' : kind === 'ask' ? 'z.B. Wo ging heute Nachmittag die Thermik?' : 'z.B. Super Thermik am Grat bis 2600 m, Landung ruhig'}">${esc(f.text || '')}</textarea></label>
+    <p class="gate-err" role="alert"></p>
+    <div class="btn-row"><button class="btn" type="submit">Teilen</button></div></form>`;
+}
+/** In der Startplatz-Ansicht: was die Gruppe heute dort gemeldet hat. */
+function groupLineFor(siteId) {
+  if (!isToday() || !G.data || G.data.date !== G.data.today) return '';
+  const x = G.data.sites.find(v => v.siteId === siteId), n = G.data.posts.filter(p => p.siteId === siteId && (p.date === G.data.today || p.at.slice(0, 10) === G.data.today)).length;
+  if (!x && !n) return '';
+  const t = [x?.flights ? `${x.flights} ${x.flights === 1 ? 'Flug' : 'Flüge'}${x.rating ? `, ${x.rating} von 5 Sternen` : ''}` : '', x?.noflyN ? `${x.noflyN}× nicht gestartet` : '', n ? `${n} ${n === 1 ? 'Beitrag' : 'Beiträge'}` : ''].filter(Boolean).join(' · ');
+  return `<p class="grp-line"><button class="linkbtn" type="button" data-act="tab" data-tab="group">Heute in der Gruppe: ${esc(t)}</button></p>`;
+}
+function renderGroup() {
+  const el = $('#v-group');
+  if (!ME.user) { el.innerHTML = '<div class="panel"><h3>Austausch</h3><p>Der Austausch braucht ein Konto. Lars kann dich mit einem Einladungslink dazunehmen.</p></div>'; return; }
+  if (!G.data) {
+    el.innerHTML = '<div class="warm"><div class="spinner"></div>Austausch wird geladen …</div>';
+    if (!G.req) G.req = groupLoad().catch(err => { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }).finally(() => { G.req = null; });
+    return;
+  }
+  const d = G.data, t = d.today, y = new Date(Date.parse(t) - 86400000).toISOString().slice(0, 10);
+  const plans = d.posts.filter(p => p.kind === 'plan' && p.date >= t).sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at));
+  const feed = d.posts.filter(p => !(p.kind === 'plan' && p.date >= t));
+  el.innerHTML = `
+    <div class="panel"><div class="grp-top"><h3>${d.date === t ? 'Heute' : d.date === y ? 'Gestern' : esc(dayWord(d.date))} an den Startplätzen</h3>
+      <div class="seg" role="group" aria-label="Tag"><button type="button" aria-pressed="${d.date === t}" data-act="grpday" data-v="">Heute</button><button type="button" aria-pressed="${d.date === y}" data-act="grpday" data-v="${y}">Gestern</button></div></div>
+      ${d.sites.length ? `<div class="grp-sites">${d.sites.map(x => groupSiteHtml(x, d.reasons)).join('')}</div>` : `<p class="fine" style="margin:0">${d.date === t ? 'Heute hat noch niemand einen Flug oder «nicht gestartet» eingetragen.' : 'An diesem Tag hat niemand etwas eingetragen.'}</p>`}
+      <p class="fine" style="margin:8px 0 0">Aus den Flugbüchern und «nicht gestartet» aller ${d.pilots} Piloten. Namen nur von denen, die es erlauben. <label class="grp-share"><input type="checkbox" data-act="grpshare" ${d.shareName ? 'checked' : ''}> Meinen Namen bei meinen Flügen zeigen</label></p></div>
+    ${plans.length ? `<div class="panel"><h3>Wer geht fliegen?</h3>${plans.map(groupPostHtml).join('')}</div>` : ''}
+    <div class="panel"><h3>Teilen</h3>${groupFormHtml()}</div>
+    <div class="grp-feed">${feed.length ? feed.map(groupPostHtml).join('') : '<div class="panel"><p class="fine" style="margin:0">Noch keine Beiträge. Schreib, wie dein Flug war, wo die Thermik ging oder wann du fliegen gehst.</p></div>'}</div>
+    <p class="fine" style="text-align:center">Beiträge bleiben 14 Tage sichtbar und nur für Piloten mit einem AFC-Konto.</p>`;
+}
+async function groupPost(form) {
+  const fd = new FormData(form), err = form.querySelector('.gate-err');
+  const text = String(fd.get('text') || '').trim();
+  if (!text) { if (err) err.textContent = 'Bitte etwas schreiben.'; return; }
+  const parent = Number(form.dataset.parent) || undefined, siteId = fd.get('siteId') || null;
+  const b = parent ? { text, parent } : { text, kind: fd.get('kind'), siteId, siteName: siteId ? siteById(siteId)?.name : null, date: fd.get('kind') === 'plan' ? fd.get('date') : todayKey() };
+  try {
+    groupSet(await jsonPost('/api/community', { ...b, view: G.date || undefined }));
+    if (!parent) { G.form = null; store.set('grpForm', null); toast('Geteilt'); }
+  } catch (e) { if (err) err.textContent = 'Nicht gesendet: ' + e.message; else toast('Nicht gesendet: ' + e.message); }
+}
 async function sendNofly(form) {
   const fd = new FormData(form), err = form.querySelector('.gate-err');
   if (!fd.get('reason')) { err.textContent = 'Bitte einen Grund antippen.'; return; }
@@ -3141,7 +3260,7 @@ async function inviteCreate() {
 /* ---------------------------------------------------------------- Start */
 (async function init() {
   const t = store.get('tab');
-  if (['decide', 'map', 'lage', 'day', 'book', 'profile'].includes(t)) S.tab = t;
+  if (['decide', 'map', 'lage', 'day', 'book', 'group', 'profile'].includes(t)) S.tab = t;
   applyTheme();
   renderMe();
   // Konten: zuerst klären, wer da ist (ohne Empfang mit dem gespeicherten Stand weiter)
@@ -3160,6 +3279,7 @@ async function inviteCreate() {
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
+  setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
     navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open') applyDeepLink(e.data.url); });

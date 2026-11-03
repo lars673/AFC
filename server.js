@@ -25,6 +25,8 @@ import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from './lib/learn.js';
+import { fetchRegionalHistory, eventDays } from './lib/backfill.js';
+import { cleanPost, siteDay, POST_KINDS } from './lib/community.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
@@ -109,6 +111,9 @@ CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, kind TEXT NOT NULL DE
 CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY, uid TEXT, at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS client_errors (id INTEGER PRIMARY KEY, uid TEXT, at TEXT NOT NULL, sig TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS app_kv (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, uid TEXT NOT NULL, at TEXT NOT NULL, parent INTEGER, data TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_posts_at ON posts(at);
+CREATE TABLE IF NOT EXISTS post_likes (post_id INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY(post_id, uid));
 CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
 CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(at);`);
 {
@@ -409,6 +414,31 @@ function pressureLearned() {
   state.pressure = pressureLearn(rows); state.pressureAt = Date.now();
   return state.pressure;
 }
+/**
+ * Nachlernen aus den letzten 90 Tagen (lib/backfill.js): Druckprognose aus dem Archiv von Open-Meteo und
+ * stündliche Messungen der MeteoSchweiz füllen reg_fc und reg_obs dort, wo AFC selber noch nichts gesammelt hat.
+ * Läuft nach dem Start und danach höchstens alle 3 Tage (rund 25 Open-Meteo-Aufrufe und 12 Messdateien).
+ */
+const BACKFILL_ON = process.env.AFC_BACKFILL ? process.env.AFC_BACKFILL === '1' : !process.env.AFC_OPENMETEO_URL;
+const HIST_URL = () => (process.env.AFC_HISTORY_URL || process.env.AFC_OPENMETEO_URL || 'https://historical-forecast-api.open-meteo.com').replace(/\/$/, '');
+const backfillInfo = () => { try { return JSON.parse(kvGet('backfill-regional') || 'null'); } catch { return null; } };
+async function backfillRegional(force = false) {
+  const prev = backfillInfo();
+  if (!force && prev?.ok && Date.now() - Date.parse(prev.at) < 3 * 86400000) return prev;
+  const smn = (process.env.AFC_SMN_URL || 'https://data.geo.admin.ch').replace(/\/$/, '');
+  const r = await fetchRegionalHistory({ smn, hist: HIST_URL(), days: PRESSURE_DAYS });
+  const upF = db.prepare('INSERT INTO reg_fc(target,lead,fdp,bdp) VALUES(?,?,?,?) ON CONFLICT(target) DO NOTHING');
+  const upO = db.prepare('INSERT INTO reg_obs(time,odp,obdp,foehn,bise) VALUES(?,?,?,?,?) ON CONFLICT(time) DO NOTHING');
+  let nf = 0, no = 0;
+  for (const x of r.fc) nf += Number(upF.run(x.time, 0, x.fdp, x.bdp).changes);
+  for (const x of r.obs) no += Number(upO.run(x.time, x.odp, x.obdp, x.foehn, x.bise).changes);
+  const info = { at: nowIso(), ok: r.fc.length > 0 && r.obs.length > 0, days: PRESSURE_DAYS, fc: r.fc.length, obs: r.obs.length, added: nf + no,
+    bise: eventDays(r.obs, 'bise'), foehn: eventDays(r.obs, 'foehn'), missing: r.missing, error: r.gradError };
+  kvSet('backfill-regional', JSON.stringify(info));
+  state.pressureAt = 0; invalidate();
+  console.log(`Nachlernen: ${r.fc.length} Prognose- und ${r.obs.length} Messstunden, Bise an ${info.bise.length}, Föhn an ${info.foehn.length} Tagen${r.missing.length ? `, ohne ${r.missing.join(' ')}` : ''}${r.gradError ? `, Druckprognose: ${r.gradError}` : ''}`);
+  return info;
+}
 /** Welches Wettermodell lag je Gebiet besser (lib/learn.js modelLearn), gegen die nächste Messstation. */
 function modelLearned() {
   if (state.models && Date.now() - state.modelsAt < 3600000) return state.models;
@@ -696,7 +726,7 @@ function meResponse(u) {
 function deleteUserData(uid) {
   db.exec('BEGIN');
   try {
-    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
+    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM post_likes WHERE uid=?', 'DELETE FROM posts WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
     for (const r of dbAll('SELECT endpoint FROM push_subs WHERE uid=?', [uid])) { dbRun('DELETE FROM push_sent WHERE endpoint=?', [r.endpoint]); dbRun('DELETE FROM push_subs WHERE endpoint=?', [r.endpoint]); }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -707,6 +737,29 @@ function createUser({ email, name, pw, role }) {
   dbRun('INSERT INTO users(id,email,name,pw,role,created,last_seen) VALUES(?,?,?,?,?,?,?)', [id, email, name, hashPassword(pw), role, at, at]);
   AUTH.count = null;
   return dbGet('SELECT * FROM users WHERE id=?', [id]);
+}
+/** Heutiges Datum in Zürich (JJJJ-MM-TT). */
+const zurichDay = (ms = Date.now()) => new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' });
+/** Austausch: Tagesbild je Startplatz und Beiträge der letzten 14 Tage plus kommende «Ich gehe fliegen». */
+function communityData(me, dateIn) {
+  const today = zurichDay(), date = /^\d{4}-\d{2}-\d{2}$/.test(dateIn || '') && dateIn <= today ? dateIn : today;
+  const users = new Map(dbAll('SELECT id, name, role, prefs, photo_at FROM users').map(x => [x.id, x]));
+  const who = id => { const x = users.get(id); return x ? { id: x.id, name: x.name, photo: x.photo_at ? `/api/photo/${x.id}?v=${Date.parse(x.photo_at)}` : null } : { id: null, name: '(gelöscht)', photo: null }; };
+  const shared = Object.fromEntries([...users.values()].filter(x => cleanUserPrefs(JSON.parse(x.prefs || '{}')).shareName).map(x => [x.id, x.name]));
+  const flights = dbAll("SELECT uid, data FROM logbook WHERE kind='flight'").map(r => ({ uid: r.uid, ...JSON.parse(r.data) })).filter(f => f.date === date);
+  const nofly = dbAll("SELECT uid, at, data FROM feedback WHERE kind='nofly' AND at>=?", [new Date(Date.parse(date) - 86400000).toISOString()])
+    .map(r => { const d = JSON.parse(r.data); return { uid: r.uid, siteId: d.site, reason: d.reason, date: zurichDay(Date.parse(r.at)) }; });
+  const nameOf = id => RANKED.find(s => s.id === id)?.name || SITES.find(s => s.id === id)?.name || id;
+  const since = new Date(Date.now() - 14 * 86400000).toISOString();
+  const likes = new Map(), mine = new Set();
+  for (const l of dbAll('SELECT post_id, uid FROM post_likes')) { likes.set(l.post_id, (likes.get(l.post_id) || 0) + 1); if (l.uid === me.id) mine.add(l.post_id); }
+  const rows = dbAll('SELECT id, uid, at, parent, data FROM posts WHERE at>=? OR parent IS NULL ORDER BY at', [since]);
+  const view = r => ({ id: r.id, at: r.at, ...JSON.parse(r.data), who: who(r.uid), mine: r.uid === me.id, canDel: r.uid === me.id || me.role === 'admin', likes: likes.get(r.id) || 0, liked: mine.has(r.id) });
+  const tops = rows.filter(r => !r.parent).map(view).filter(x => x.at >= since || (x.kind === 'plan' && x.date >= today));
+  const replies = new Map();
+  for (const r of rows.filter(r => r.parent)) { if (!replies.has(r.parent)) replies.set(r.parent, []); replies.get(r.parent).push(view(r)); }
+  const posts = tops.map(x => ({ ...x, replies: replies.get(x.id) || [] })).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 80);
+  return { ok: true, date, today, kinds: POST_KINDS, reasons: NOFLY_REASONS, sites: siteDay(flights, nofly, date, shared, nameOf), posts, pilots: users.size, shareName: !!shared[me.id] };
 }
 async function accountRoute(req, res, p, u) {
   const me = userOf(req);
@@ -814,7 +867,7 @@ async function accountRoute(req, res, p, u) {
     return sendJson(req, res, 200, { ok: true });
   }
   if (p === '/api/me/export' && req.method === 'GET') {
-    const data = { app: 'AFC', type: 'meine-daten', exportedAt: nowIso(), konto: { ...publicUser(me), lastSeen: me.last_seen }, profil: cleanProfile(JSON.parse(me.profile || '{}')), einstellungen: cleanUserPrefs(JSON.parse(me.prefs || '{}')), flugbuch: logbookData(me.id), waechter: dbAll('SELECT site_id, date, level FROM watch WHERE uid=?', [me.id]), rueckmeldungen: dbAll('SELECT at, kind, data FROM feedback WHERE uid=?', [me.id]).map(r => ({ at: r.at, kind: r.kind, ...JSON.parse(r.data) })), geraete: dbAll('SELECT created, expires, device FROM sessions WHERE uid=?', [me.id]) };
+    const data = { app: 'AFC', type: 'meine-daten', exportedAt: nowIso(), konto: { ...publicUser(me), lastSeen: me.last_seen }, profil: cleanProfile(JSON.parse(me.profile || '{}')), einstellungen: cleanUserPrefs(JSON.parse(me.prefs || '{}')), flugbuch: logbookData(me.id), waechter: dbAll('SELECT site_id, date, level FROM watch WHERE uid=?', [me.id]), rueckmeldungen: dbAll('SELECT at, kind, data FROM feedback WHERE uid=?', [me.id]).map(r => ({ at: r.at, kind: r.kind, ...JSON.parse(r.data) })), beitraege: dbAll('SELECT at, parent, data FROM posts WHERE uid=?', [me.id]).map(r => ({ at: r.at, antwortAuf: r.parent, ...JSON.parse(r.data) })), geraete: dbAll('SELECT created, expires, device FROM sessions WHERE uid=?', [me.id]) };
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="AFC-meine-Daten-${nowIso().slice(0, 10)}.json"`, 'Cache-Control': 'no-store', ...SEC });
     return res.end(JSON.stringify(data, null, 1));
   }
@@ -846,6 +899,34 @@ async function accountRoute(req, res, p, u) {
   }
   if (p === '/api/feedback' && req.method === 'GET') {
     return sendJson(req, res, 200, { ok: true, items: dbAll('SELECT at, kind, data FROM feedback WHERE uid=? ORDER BY at DESC LIMIT 50', [me.id]).map(r => { const d = JSON.parse(r.data); delete d.shot; return { at: r.at, kind: r.kind, ...d }; }) });
+  }
+
+  // Austausch unter den Piloten (lib/community.js): Beiträge, Antworten, «Daumen hoch», Tagesbild je Startplatz
+  if (p === '/api/community' && req.method === 'GET') return sendJson(req, res, 200, communityData(me, u.searchParams.get('date')));
+  if (p === '/api/community' && req.method === 'POST') {
+    if (limited(req, 'community', 10)) return sendJson(req, res, 429, { error: 'zu viele Beiträge, bitte kurz warten' });
+    const b = await body(8 * 1024);
+    const post = cleanPost(b, zurichDay());
+    if (!post) return sendJson(req, res, 400, { error: 'Bitte etwas schreiben' });
+    if (post.parent && !dbGet('SELECT 1 x FROM posts WHERE id=? AND parent IS NULL', [post.parent])) return sendJson(req, res, 404, { error: 'Beitrag nicht mehr da' });
+    const { parent, ...data } = post;
+    dbRun('INSERT INTO posts(uid,at,parent,data) VALUES(?,?,?,?)', [me.id, nowIso(), parent, JSON.stringify(data)]);
+    return sendJson(req, res, 200, communityData(me, b.view));
+  }
+  const cm = p.match(/^\/api\/community\/(\d{1,12})(\/like)?$/);
+  if (cm && req.method === 'POST' && cm[2]) {
+    const id = Number(cm[1]);
+    if (!dbGet('SELECT 1 x FROM posts WHERE id=?', [id])) return sendJson(req, res, 404, { error: 'Beitrag nicht mehr da' });
+    if (dbGet('SELECT 1 x FROM post_likes WHERE post_id=? AND uid=?', [id, me.id])) dbRun('DELETE FROM post_likes WHERE post_id=? AND uid=?', [id, me.id]);
+    else dbRun('INSERT INTO post_likes(post_id,uid) VALUES(?,?)', [id, me.id]);
+    return sendJson(req, res, 200, communityData(me, u.searchParams.get('date')));
+  }
+  if (cm && req.method === 'DELETE' && !cm[2]) {
+    const id = Number(cm[1]), row = dbGet('SELECT uid FROM posts WHERE id=?', [id]);
+    if (!row) return sendJson(req, res, 404, { error: 'Beitrag nicht mehr da' });
+    if (row.uid !== me.id && me.role !== 'admin') return sendJson(req, res, 403, { error: 'nur eigene Beiträge' });
+    for (const x of [id, ...dbAll('SELECT id FROM posts WHERE parent=?', [id]).map(r => r.id)]) { dbRun('DELETE FROM post_likes WHERE post_id=?', [x]); dbRun('DELETE FROM posts WHERE id=?', [x]); }
+    return sendJson(req, res, 200, communityData(me, u.searchParams.get('date')));
   }
 
   // Admin: Einladungen, Überblick über die Testphase
@@ -973,7 +1054,7 @@ const server = http.createServer(async (req, res) => {
         if (limited(req, 'cerr', 20)) return sendJson(req, res, 429, { error: 'zu viele' });
         return clientErrorRoute(req, res, await readBody(req, 8 * 1024));
       }
-      if (p.startsWith('/api/auth/') || p === '/api/me' || p.startsWith('/api/me/') || p.startsWith('/api/admin/') || p.startsWith('/api/photo/') || p === '/api/feedback') return accountRoute(req, res, p, u);
+      if (p.startsWith('/api/auth/') || p === '/api/me' || p.startsWith('/api/me/') || p.startsWith('/api/admin/') || p.startsWith('/api/photo/') || p === '/api/feedback' || p.startsWith('/api/community')) return accountRoute(req, res, p, u);
       // Mit Konten braucht alles eine Anmeldung (ausser der Version für die Anzeige vor dem Anmelden)
       if (authOn() && !userOf(req) && p !== '/api/meta') return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
       if (req.method === 'GET' && p === '/api/plan') {
@@ -1027,8 +1108,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
-        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), models: modelLearnedList() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!isLocal(req) || !isAdmin(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1479,6 +1560,7 @@ async function maintenance() {
     for (const f of files.slice(0, -14)) await fs.rm(path.join(backupsDir, f), { force: true });
   } catch (e) { console.warn('Wartung', errMsg(e)); }
   await backupLogbook().catch(e => console.warn('Flugbuch-Sicherung', errMsg(e)));
+  if (BACKFILL_ON) await backfillRegional().catch(e => console.warn('Nachlernen', errMsg(e)));
 }
 
 const timers = [];
@@ -1497,6 +1579,7 @@ async function start() {
     if (state.fcFresh) invalidate(); else await tick('fc', collectForecast);
     if (!state.wgFresh) await tick('wind', collectWindGrid);
     await tick('air', collectAirspace);
+    if (BACKFILL_ON) await backfillRegional().catch(e => console.warn('Nachlernen', errMsg(e)));
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));

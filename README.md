@@ -93,6 +93,7 @@ Seit Version 10.0 (November 2026):
   * **Talwind an der Landung:** Talstationen (unter 1100 m, bis 15 km) korrigieren Wind und Böen an der Landung; mehr Wind voll, weniger nur halb und höchstens 3 km/h.
   * **Grundwind am Start:** Bergstationen lernen auch den mittleren Wind. Zählt nur, wenn er die Bewertung verschlechtert.
   * Der wöchentliche Rückblick-Test nutzt zusätzlich die eigenen gespeicherten Prognosen aus `afc.sqlite`. In der Stufe «einfach» gelten Druck und Modell nicht.
+* **Nachlernen aus den letzten 90 Tagen** (10.2, `lib/backfill.js`): Nach dem Start und danach alle 3 Tage holt AFC die stündlichen Messungen der MeteoSchweiz (`…_h_recent.csv`, 12 Stationen) und die Druckprognose Lugano/Kloten/Genf aus dem Prognose-Archiv von Open-Meteo (rund 25 Aufrufe) und füllt damit `reg_obs` und `reg_fc`, wo AFC selber noch nichts gesammelt hat. So kennt das Föhn- und Bise-Lernen sofort die vergangenen Föhn- und Bisetage (Anzeige unter Profil > Technik). `AFC_BACKFILL=0` schaltet es ab.
 * **Aus Rückmeldungen je Startplatz:** Urteile nach Flügen zählen voll, Flüge ohne Urteil halb (unter 55 trotzdem gut geflogen = zu streng, ab 70 ordentlich = lag richtig), «nicht gestartet» wegen Wind, Thermik, Föhn, Wolken oder Regen bei 70 und mehr als «zu mild». Halbwertszeit ein Jahr, getrennt nach Stufe.
 * **Steigen aus IGC-Flügen:** `site_fc` speichert auch das prognostizierte Steigen (w*). Je Gebiet ab 3 Flügen ein Faktor (0.75–1.3) aufs Steigen, nur wenn er die übrigen Flüge besser erklärt hätte.
 * Anzeige unter Profil > Technik und Daten: Böenfehler je Station vorher und nachher, Startplätze mit Anpassung, Thermik und Steigen je Gebiet, die drei Testläufe.
@@ -194,3 +195,10 @@ npm test
 * Der Score ist eine Entscheidungshilfe, keine Flugfreigabe.
 * Es gibt keine Push-Benachrichtigungen (würden einen Zusatzdienst und Schlüsselverwaltung erfordern).
 * Die Auflagen «Hangneigung» und «Hindernisse» der Karte sind Orientierungshilfen; die Ebenennamen sind bei swisstopo/BAZL zu prüfen (siehe Hinweis im Code `app.js`, `OVERLAYS`).
+
+## Austausch unter den Piloten (10.2)
+
+Reiter «Gruppe» (`lib/community.js`, `/api/community`, Tabellen `posts` und `post_likes`, nur mit Konto):
+* **Heute an den Startplätzen:** aus den Flugbüchern aller Piloten und «nicht gestartet»: Anzahl Flüge, Sterne, weiteste Strecke, längster Flug, Urteile über die AFC-Bewertung, Gründe fürs Nicht-Starten, daneben der AFC-Score. Namen nur von Piloten, die «Meinen Namen bei meinen Flügen zeigen» eingeschaltet haben. Auch für gestern.
+* **Beiträge:** Bericht vom Flug, Ich gehe fliegen (mit Tag, bis 7 Tage voraus, oben unter «Wer geht fliegen?» mit «Bin dabei»), Frage oder Tipp, Achtung. Antworten, Daumen hoch, eigene löschen (der Admin alle). Sichtbar 14 Tage.
+* In der Startplatz-Ansicht steht «Heute in der Gruppe: …», und am Reiter erscheint ein Punkt bei neuen Beiträgen. Das Profil öffnet sich oben rechts über das eigene Bild.

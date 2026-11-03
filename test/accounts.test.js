@@ -159,3 +159,48 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.ok(fs.readdirSync(dir).some(f => f.startsWith('afc-vor-konten-')), 'Kopie vor der Umstellung');
   } finally { child.kill(); await mock.close(); }
 });
+
+test('Austausch: Beiträge, Antworten, Bin dabei, Tagesbild je Startplatz', async () => {
+  const mock = await startMock('good');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-grp-'));
+  const port = 18798, base = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' }, stdio: 'ignore' });
+  const H = { 'X-AFC-Client': 'testgeraet-12345', 'Content-Type': 'application/json' };
+  const call = async (method, p, body, cookie) => {
+    const r = await fetch(base + p, { method, headers: { ...H, ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const set = r.headers.get('set-cookie');
+    return { status: r.status, json: await r.json().catch(() => null), cookie: set ? set.split(';')[0] : null };
+  };
+  try {
+    for (let i = 0; i < 80; i++) { try { if ((await fetch(base + '/api/plan')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 250)); }
+    const A = (await call('POST', '/api/auth/setup', { name: 'Lars', email: 'lars@test.ch', password: 'Niesen-Soaring' })).cookie;
+    const inv = await call('POST', '/api/admin/invite', { note: 'Beat' }, A);
+    const B = (await call('POST', '/api/auth/register', { invite: inv.json.code, name: 'Beat', email: 'beat@test.ch', password: 'Grindelwald-1' })).cookie;
+      // Austausch: Beiträge, Antwort, «Bin dabei», Tagesbild je Startplatz, Namen nur mit Freigabe
+        const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' });
+        assert.equal((await call('GET', '/api/community')).status, 401);
+        assert.equal((await call('PUT', '/api/logbook/flight/cf1', { date: today, siteId: 'niesen-x', siteName: 'Niesen', durMin: 75, rating: 5, km: 12 }, B)).status, 200);
+        let c = await call('GET', '/api/community', null, A);
+        assert.equal(c.status, 200);
+        const ni = c.json.sites.find(x => x.siteId === 'niesen-x');
+        assert.equal(ni.flights, 1); assert.equal(ni.rating, 5); assert.deepEqual(ni.names, [], 'ohne Freigabe kein Name');
+        assert.equal((await call('PUT', '/api/me', { prefs: { shareName: true } }, B)).status, 200);
+        c = await call('GET', '/api/community', null, A);
+        assert.deepEqual(c.json.sites.find(x => x.siteId === 'niesen-x').names, ['Beat']);
+        assert.equal((await call('POST', '/api/community', { text: '  ' }, B)).status, 400);
+        const po = await call('POST', '/api/community', { kind: 'plan', text: 'Morgen 11 Uhr Niesen, wer kommt?', siteId: 'niesen-x', siteName: 'Niesen', date: '2000-01-01' }, B);
+        assert.equal(po.status, 200);
+        const plan = po.json.posts[0];
+        assert.equal(plan.kind, 'plan'); assert.equal(plan.date, today, 'Datum in der Vergangenheit wird heute'); assert.equal(plan.who.name, 'Beat'); assert.equal(plan.mine, true);
+        c = await call('POST', `/api/community/${plan.id}/like`, null, A);
+        assert.equal(c.json.posts[0].likes, 1); assert.equal(c.json.posts[0].liked, true);
+        c = await call('POST', '/api/community', { parent: plan.id, text: 'Bin dabei!' }, A);
+        assert.equal(c.json.posts[0].replies[0].who.name, 'Lars');
+        assert.equal((await call('DELETE', `/api/community/${plan.id}`, null, A)).status, 200, 'Admin darf löschen');
+        const p2 = await call('POST', '/api/community', { kind: 'warn', text: 'Bise am Start' }, A);
+        assert.equal((await call('DELETE', `/api/community/${p2.json.posts[0].id}`, null, B)).status, 403, 'fremde Beiträge nicht');
+        assert.equal(p2.json.posts.length, 1, 'gelöschter Beitrag samt Antwort weg');
+        assert.equal((await call('DELETE', '/api/logbook/flight/cf1', null, B)).status, 200);
+
+  } finally { child.kill(); await mock.close(); }
+});
