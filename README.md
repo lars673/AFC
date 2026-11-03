@@ -1,4 +1,4 @@
-# AFC 8.0 – Advance Flight Check
+# AFC 8.0 – Advanced Flight Check
 
 Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node.js (ESM, `node:sqlite`) mit einer PWA als Oberfläche. Der Server holt und rechnet alles; die App zeigt an.
 
