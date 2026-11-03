@@ -406,3 +406,19 @@ test('Regenradar über den eigenen Server, Webcam-Adressen geprüft', async () =
     }
   } finally { await s.stop(); }
 });
+
+test('Neustart mit frischer Prognose holt nichts neu bei Open-Meteo (Kontingent sparen)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-snap-'));
+  const a = await boot('good', 18791, { AFC_DATA_DIR: dir });
+  for (let i = 0; i < 80 && !(fs.existsSync(path.join(dir, 'raw.json')) && fs.existsSync(path.join(dir, 'windgrid.json'))); i++) await new Promise(r => setTimeout(r, 250));
+  await a.stop();
+  const b = await boot('good', 18792, { AFC_DATA_DIR: dir });
+  try {
+    await new Promise(r => setTimeout(r, 1500));
+    const om = b.mock.state.hits.filter(p => p.startsWith('/v1/'));
+    assert.deepEqual(om, [], 'keine Open-Meteo-Abrufe nach dem Neustart');
+    const plan = await (await fetch(b.base + '/api/plan')).json();
+    assert.equal(plan.sources.forecast.ok, true); assert.equal(plan.sources.forecast.error, null);
+    assert.equal(plan.sources.pressure.ok, true); assert.equal(plan.sources.ecmwf.ok, true);
+  } finally { await b.stop(); }
+});

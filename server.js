@@ -39,6 +39,7 @@ const TRUSTED_HOPS = Math.max(0, Number(process.env.AFC_TRUSTED_PROXY_HOPS ?? 1)
 const OBS_EVERY_MS = Number(process.env.AFC_OBS_MIN || 10) * 60000;
 const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 60) * 60000;
 const WIND_EVERY_MS = Number(process.env.AFC_WINDGRID_MIN || 180) * 60000;
+const SNAP_FRESH_FC = Math.min(30 * 60000, FC_EVERY_MS / 2), SNAP_FRESH_WIND = Math.min(90 * 60000, WIND_EVERY_MS / 2);
 const MAX_BODY = 16 * 1024;
 const DATA = process.env.AFC_DATA_DIR ? path.resolve(process.env.AFC_DATA_DIR) : path.join(ROOT, 'data');
 
@@ -1156,11 +1157,25 @@ server.headersTimeout = 35000;
 async function loadSnapshot() {
   try {
     const raw = JSON.parse(await fs.readFile(path.join(dataDir, 'raw.json'), 'utf8'));
-    if (Date.now() - raw.fetchedAt < 3 * 3600000 && raw.ref?.sea) { state.raw = raw; ingest.forecast = { ...ingest.forecast, ok: true, at: new Date(raw.fetchedAt).toISOString(), model: raw.model, error: 'aus Zwischenspeicher, wird aktualisiert' }; }
+    if (Date.now() - raw.fetchedAt < 3 * 3600000 && raw.ref?.sea) {
+      state.raw = raw;
+      // Nach einem Neustart (z. B. Update): eine höchstens 30 Minuten alte Prognose gilt als frisch und wird nicht neu geholt.
+      // Das spart das Gratis-Kontingent bei Open-Meteo (jeder Neustart kostete sonst rund 500 der 10 000 Aufrufe am Tag).
+      const fresh = Date.now() - raw.fetchedAt < SNAP_FRESH_FC, at = new Date(raw.fetchedAt).toISOString(), areas = Object.values(raw.areas || {});
+      ingest.forecast = { ...ingest.forecast, ok: true, at, model: raw.model, error: fresh ? null : 'aus Zwischenspeicher, wird aktualisiert', points: Object.keys(raw.sites || {}).length };
+      if (fresh) {
+        ingest.pressure = { ok: areas.some(a => a?.pl), at, error: null };
+        ingest.ecmwf = { ok: areas.some(a => a?.ecmwf), at, error: null };
+        state.fcFresh = true;
+      }
+    }
   } catch { /* kein Zwischenspeicher */ }
   try {
     const wg = JSON.parse(await fs.readFile(path.join(dataDir, 'windgrid.json'), 'utf8'));
-    if (Date.now() - wg.fetchedAt < 8 * 3600000 && wg.levels) { state.windgrid = wg; ingest.windgrid = { ok: true, at: new Date(wg.fetchedAt).toISOString(), error: 'aus Zwischenspeicher, wird aktualisiert' }; }
+    if (Date.now() - wg.fetchedAt < 8 * 3600000 && wg.levels) {
+      state.windgrid = wg; state.wgFresh = Date.now() - wg.fetchedAt < SNAP_FRESH_WIND;
+      ingest.windgrid = { ok: true, at: new Date(wg.fetchedAt).toISOString(), error: state.wgFresh ? null : 'aus Zwischenspeicher, wird aktualisiert' };
+    }
   } catch { /* kein Zwischenspeicher */ }
 }
 
@@ -1414,8 +1429,8 @@ async function start() {
     state.stationList = list;
     ingest.stations = { ok: true, at: nowIso(), error: null, note };
     await tick('obs', collectObservations);
-    await tick('fc', collectForecast);
-    await tick('wind', collectWindGrid);
+    if (state.fcFresh) invalidate(); else await tick('fc', collectForecast);
+    if (!state.wgFresh) await tick('wind', collectWindGrid);
     await tick('air', collectAirspace);
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));

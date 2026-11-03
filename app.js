@@ -2822,6 +2822,8 @@ function profileEdit() {
         ${f('name', 'Name', ME.user.name, 'text', 'autocomplete="name" required maxlength="60"')}
         <label class="fld"><span>Ausbildung</span><select name="license"><option value="">– bitte wählen –</option>${Object.entries(LICENSES).map(([k, t]) => `<option value="${k}" ${p.license === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
         ${n('since', 'Fliege seit (Jahr)', p.since, `min="1970" max="${y}" placeholder="z.B. 2018"`)}
+        <div class="fld-pair">${n('flights', 'Flüge total', pi.flights, 'min="0" max="20000" placeholder="z.B. 150"')}${n('hours12', 'Flugstunden letzte 12 Monate', pi.hours12, 'min="0" max="2000" placeholder="z.B. 25"')}</div>
+        <p class="fine lb-wide" style="margin:0">Daraus rechnet AFC deine Stufe (Vorsichtig, Normal, Erfahren) und damit deine Wind- und Böengrenzen.</p>
         ${n('birthYear', 'Jahrgang (freiwillig)', p.birthYear, `min="1920" max="${y - 10}"`)}
         ${f('club', 'Club (freiwillig)', p.club, 'text', 'maxlength="60" placeholder="z.B. GSC Interlaken"')}
         <label class="chk"><input type="checkbox" name="shv" ${p.shv ? 'checked' : ''}><span>Mitglied beim SHV</span></label>
@@ -2878,11 +2880,16 @@ async function saveProfile(form) {
   const err = $('#profErr'); err.textContent = '';
   if (p.homes.length > 6) { err.textContent = 'Höchstens 6 Hausgebiete.'; return; }
   try {
-    const glider = new FormData(form).get('glider');
-    const pi = { ...store.get('pilot', {}), glider: glider || 'B', student: p.license === 'student' };
-    store.set('pilot', pi);
+    const fd = new FormData(form), int = k => { const v = fd.get(k); return v === '' || v == null ? null : Math.max(0, Math.round(Number(v))); };
+    const pi = { ...store.get('pilot', {}), glider: fd.get('glider') || 'B', student: p.license === 'student', flights: int('flights'), hours12: int('hours12') };
+    store.set('pilot', pi); store.del('levelManual');
+    // Stufe wie unter «Ich als Pilot» neu rechnen: Schüler sind immer «Vorsichtig»
+    const pl = P()?.pilotLevel(pi), lvChanged = pl && pl.level !== S.level;
+    if (lvChanged) { S.level = pl.level; store.set('level', S.level); }
     const j = await jsonPost('/api/me', { name, profile: p, prefs: { ...prefsLocal(), pilot: pi } }, 'PUT');
-    setMe(j); closeDlg($('#msgDlg')); toast('Profil gespeichert'); S.detail.clear(); render();
+    setMe(j); closeDlg($('#msgDlg')); toast(pl ? `Profil gespeichert, Stufe «${LEVEL_INFO[pl.level][0]}»` : 'Profil gespeichert'); S.detail.clear();
+    lbAlignBefore().catch(() => {});
+    render(); if (lvChanged) loadPlan();
   } catch (e) { err.textContent = 'Nicht gespeichert: ' + e.message; }
 }
 /** Profilbild: auf dem Gerät quadratisch zuschneiden und verkleinern (320 px JPEG), dann hochladen. */
