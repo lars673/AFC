@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '9.9';
+const APP_VER = '10.0';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -637,20 +637,35 @@ async function applyUpdate() {
   } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + err.message); }
 }
 /** Was AFC an den Bergstationen selbst gelernt hat (Böenfehler der letzten 14 Tage). */
+const LEARN_WHEN = k => { const [b, sec] = k.split('|'); return `${{ am: 'Vormittag', mid: 'Mittag', pm: 'Nachmittag' }[b] || ''}${sec === 'ruhig' ? ', wenig Wind' : sec ? ', ' + sec + '-Wind' : ''}`; };
+const sgn = v => (v > 0 ? '+' : '') + v;
 function thermalHtml(t) {
   const list = Object.entries(t || {});
   const areaName = id => S.plan?.areas?.find(a => a.id === id)?.name || id;
-  return `<div style="margin-top:12px"><b>Aus deinen Flügen gelernt</b> <span class="fine">Thermik-Obergrenze aus IGC-Flügen gegen die Prognose zur Flugzeit, je Gebiet ab 3 Flügen. Übernommen wird nur, was die bisherigen Flüge besser erklärt hätte.</span>
-    ${list.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${list.map(([a, x]) => `<li>${esc(areaName(a))}: ${x.add ? `<b>${x.add > 0 ? '+' : ''}${x.add} m</b>, ` : ''}${esc(x.why)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:4px 0 0">Noch keine IGC-Flüge mit Thermik, für die AFC die Prognose kennt. Ab jetzt merkt sich AFC die Prognose jeder Stunde, damit neue Flüge verglichen werden können.</p>'}</div>`;
+  const climb = c => (c && c.factor !== 1 ? `, Steigen <b>×${c.factor.toFixed(2)}</b> (${c.n} Flüge)` : c?.n ? `, Steigen: ${c.n} Flüge, noch keine sichere Korrektur` : '');
+  return `<div style="margin-top:12px"><b>Aus IGC-Flügen gelernt</b> <span class="fine">Thermik-Obergrenze und Steigen gegen die Prognose zur Flugzeit, je Gebiet ab 3 Flügen. Übernommen wird nur, was die bisherigen Flüge besser erklärt hätte.</span>
+    ${list.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${list.map(([a, x]) => `<li>${esc(areaName(a))}: ${x.add ? `<b>${x.add > 0 ? '+' : ''}${x.add} m</b>, ` : ''}${esc(x.why)}${climb(x.climb)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:4px 0 0">Noch keine IGC-Flüge mit Thermik, für die AFC die Prognose kennt. Ab jetzt merkt sich AFC die Prognose jeder Stunde, damit neue Flüge verglichen werden können.</p>'}</div>`;
+}
+function siteFbHtml(f) {
+  if (!f) return '';
+  return `<div style="margin-top:12px"><b>Aus Rückmeldungen gelernt</b> <span class="fine">Urteile nach Flügen, Flüge ohne Urteil (halb) und «nicht gestartet» je Startplatz, jüngere zählen mehr. «Zu streng» gilt nur für die eigene und erfahrenere Stufen.</span>
+    ${f.sites.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${f.sites.map(x => `<li>${esc(x.name)}: <b>${sgn(x.adj)} Punkte</b> · ${x.n} Rückmeldungen${x.implicit ? ` (${x.implicit} ohne Urteil)` : ''}</li>`).join('')}</ul>`
+      : `<p class="fine" style="margin:4px 0 0">${f.records ? `${f.records} Rückmeldungen an ${f.collecting} Startplätzen, noch keine Anpassung (ab 3 je Platz).` : 'Noch keine Rückmeldungen nach Flügen.'}</p>`}</div>`;
 }
 function learnedHtml(list, guard) {
   if (!list) return '';
-  if (guard?.off) return `<div style="margin-top:12px"><b>Selbst gelernt: pausiert</b> <p class="fine" style="margin:4px 0 0">Der Rückblick-Test war ohne das Gelernte besser (${esc(guard.reason || '')}). AFC rechnet darum vorerst ohne und prüft nächste Woche wieder.</p></div>`;
-  const used = list.filter(x => x.used);
-  return `<div style="margin-top:12px"><b>Selbst gelernt</b> <span class="fine">Bergstationen, letzte 14 Tage: wie stark waren die Böen im Vergleich zur Prognose?</span>
-    ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li>${esc(x.name)}: Böen ${x.gust > 0 ? '+' : ''}${x.gust} km/h${x.gust > 0 ? ' (AFC hebt die Böen an Startplätzen in der Nähe an)' : ''} · ${x.n} Stunden</li>`).join('')}</ul>`
-      : `<p class="fine" style="margin:4px 0 0">Sammelt noch Daten (${list.length ? Math.max(...list.map(x => x.n)) : 0} von 30 Stunden). Wird mit jedem Tag genauer.</p>`}
-    ${guard?.at ? `<p class="fine" style="margin:4px 0 0">Selbstprüfung vom ${new Date(guard.at).toLocaleDateString('de-CH')} bestanden: ${esc(guard.reason || '')}.</p>` : ''}</div>`;
+  const r = guard?.runs, pc = x => (x?.n ? Math.round(x.passt / x.n * 100) + ' %' : '–');
+  const runs = r ? `<p class="fine" style="margin:4px 0 0">Rückblick-Test vom ${new Date(guard.at).toLocaleDateString('de-CH')}: ohne Lernen ${pc(r.ohne)} passt, ${r.ohne?.gefaehrlich ?? '–'} gefährlich · nur Einfaches ${pc(r.einfach)}, ${r.einfach?.gefaehrlich ?? '–'} · alles ${pc(r.voll)}, ${r.voll?.gefaehrlich ?? '–'}.</p>` : '';
+  const head = guard?.off || guard?.mode === 'off'
+    ? `<b>Selbst gelernt: pausiert</b><p class="fine" style="margin:4px 0 0">Der Rückblick-Test war ohne das Gelernte besser (${esc(guard.reason || '')}). AFC rechnet vorerst ohne und prüft nächste Woche wieder.</p>`
+    : guard?.mode === 'simple' ? `<b>Selbst gelernt: nur das Einfache aktiv</b><p class="fine" style="margin:4px 0 0">Die Details nach Tageszeit und Wind hat der Rückblick-Test nicht bestätigt. AFC nutzt nur das Mittel je Station und hebt Böen nur an.</p>`
+    : `<b>Selbst gelernt aus Messwerten</b> <span class="fine">Jede Stunde vergleicht AFC die Prognose mit den Messstationen. Je Station lernt es, wie stark die Böen danebenliegen, auch nach Tageszeit und Windrichtung. Übernommen wird nur, was Tag für Tag besser getroffen hätte.</span>`;
+  const used = list.filter(x => x.used), wait = list.filter(x => !x.used);
+  const maxN = list.length ? Math.max(...list.map(x => x.n)) : 0;
+  return `<div style="margin-top:12px">${head}
+    ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li><b>${esc(x.name)}</b>: Böenfehler ${x.mae0} → ${x.mae} km/h · im Mittel ${sgn(x.gust)} km/h${x.top?.length ? ' · ' + x.top.map(t => `${esc(LEARN_WHEN(t.k))} ${sgn(t.gust)}`).join(', ') : ''}</li>`).join('')}</ul>` : ''}
+    <p class="fine" style="margin:4px 0 0">${used.length ? `${used.length} Stationen mit Korrektur, ${wait.length} ohne (zu wenig Daten oder Prognose dort schon gut).` : `Sammelt noch Daten (${maxN} von 30 Stunden je Station). Wird mit jedem Tag genauer.`} Angewendet werden die Korrekturen der Bergstationen auf Startplätze in der Nähe.</p>
+    ${runs}</div>`;
 }
 
 /** Ergebnis des automatischen Rückblick-Tests (wöchentlich nachts, letzte 14 Tage). */
@@ -691,12 +706,13 @@ function techHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
   const o = d.openMeteo;
-  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${thermalHtml(d.thermal)}`;
+  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
   const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
     ${learnedHtml(d.learned, d.learnGuard)}
+    ${siteFbHtml(d.siteFeedback)}
     ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
 }

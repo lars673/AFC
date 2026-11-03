@@ -119,3 +119,20 @@ test('Rückblick: Prognose gegen IGC-Flug', async () => {
   assert.equal(by['Zeitfenster'].lvl, 'ok');
   assert.deepEqual(flightReview(cleanFlight({ date: '2026-07-12' })), []);
 });
+
+test('Lernen aus Flügen: ohne Urteil halb, «nicht gestartet» als Warnung, jüngere zählen mehr', async () => {
+  const { siteFeedback } = await import('../lib/logbook.js');
+  const d = '2026-09-01';
+  // zweimal «nicht starten» angezeigt, trotzdem super geflogen, plus zwei echte «zu streng»
+  let r = siteFeedback([{ siteId: 'a', date: d, afcScore: 40, rating: 5 }, { siteId: 'a', date: d, afcScore: 45, rating: 4 }, { siteId: 'a', date: d, afcVerdict: 'streng' }, { siteId: 'a', date: d, afcVerdict: 'streng' }], NOW);
+  assert.equal(r.a.n, 4); assert.equal(r.a.implicit, 2); assert.equal(r.a.adj, 4);
+  // drei Piloten nicht gestartet wegen Wind, obwohl AFC 80 zeigte: vorsichtiger
+  r = siteFeedback([0, 1, 2].map(() => ({ kind: 'nofly', siteId: 'b', date: d, reason: 'wind', afcScore: 80 })), NOW);
+  assert.equal(r.b.adj, -8);
+  // «keine Zeit» zählt nicht
+  r = siteFeedback([0, 1, 2].map(() => ({ kind: 'nofly', siteId: 'c', date: d, reason: 'time', afcScore: 80 })), NOW);
+  assert.equal(r.c, undefined);
+  // altes «zu streng», neue «zu mild»: die neuen wiegen schwerer
+  r = siteFeedback([{ siteId: 'e', date: '2025-01-10', afcVerdict: 'streng' }, { siteId: 'e', date: '2025-01-11', afcVerdict: 'streng' }, { siteId: 'e', date: d, afcVerdict: 'mild' }], NOW);
+  assert.ok(r.e.wm > r.e.ws / 2, 'neue Warnung wiegt mehr als die alten zwei');
+});

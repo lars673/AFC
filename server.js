@@ -24,7 +24,7 @@ import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
-import { learnedVerdict, thermalLearn } from './lib/learn.js';
+import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, STATION_DAYS } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
@@ -98,6 +98,7 @@ const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
 // Solange es kein Konto gibt, läuft AFC wie bisher ohne Anmeldung (ein Pilot, eigener Mac). Das erste Konto wird
 // Admin und übernimmt alle bisherigen Daten (Flugbuch, Wächter, Benachrichtigungen). Danach braucht jede Anfrage
 // eine Anmeldung; neue Piloten kommen nur über einen Einladungslink dazu.
+if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, uid TEXT NOT NULL, created TEXT, expires TEXT NOT NULL, device TEXT);
@@ -316,15 +317,22 @@ function thermalResponse(ms) {
   return p;
 }
 
-/** Prognose für jetzt+3 h je Station festhalten; später mit der Messung verglichen. */
-function storePredictions(raw) {
-  const target = new Date(Math.round((Date.now() + 3 * 3600000) / 3600000) * 3600000);
-  const tIso = target.toISOString();
-  const ins = db.prepare('INSERT OR IGNORE INTO fc_pred(code,target,issued,lead,wind,gust,dir,temp) VALUES(?,?,?,?,?,?,?,?)');
+/**
+ * Prognose je Station festhalten, später mit der Messung verglichen (Lernen aus Messwerten). Gespeichert werden die
+ * nächsten 1–6 Stunden; pro Stunde bleibt die Prognose, die am nächsten bei 3 Stunden Vorlauf lag. So fehlt keine
+ * Stunde, auch wenn ein Abruf ausfällt oder der Mac neu startet.
+ */
+function storePredictions(raw, now = Date.now()) {
+  const up = db.prepare(`INSERT INTO fc_pred(code,target,issued,lead,wind,gust,dir,temp) VALUES(?,?,?,?,?,?,?,?)
+    ON CONFLICT(code,target) DO UPDATE SET issued=excluded.issued, lead=excluded.lead, wind=excluded.wind, gust=excluded.gust, dir=excluded.dir, temp=excluded.temp
+    WHERE abs(excluded.lead - 3) < abs(fc_pred.lead - 3)`);
+  const h0 = Math.ceil(now / 3600000) * 3600000;
   for (const [code, fc] of Object.entries(raw.stations || {})) {
-    const i = fc.t.indexOf(target.getTime());
-    if (i < 0) continue;
-    ins.run(code, tIso, nowIso(), (target - Date.now()) / 3600000, fc.wind_speed_10m?.[i] ?? null, fc.wind_gusts_10m?.[i] ?? null, fc.wind_direction_10m?.[i] ?? null, fc.temperature_2m?.[i] ?? null);
+    for (let k = 0; k < 6; k++) {
+      const target = h0 + k * 3600000, i = fc.t.indexOf(target), lead = (target - now) / 3600000;
+      if (i < 0 || lead < 1) continue;
+      up.run(code, new Date(target).toISOString(), nowIso(), lead, fc.wind_speed_10m?.[i] ?? null, fc.wind_gusts_10m?.[i] ?? null, fc.wind_direction_10m?.[i] ?? null, fc.temperature_2m?.[i] ?? null);
+    }
   }
 }
 
@@ -354,26 +362,23 @@ function qualitySummary() {
 }
 
 /**
- * Selbst nachkalibrieren: Böen- und Windfehler der Bergstationen (Prognose 3 h voraus gegen Messung,
- * letzte 14 Tage, 9–17 Uhr). Plus = gemessen mehr als prognostiziert. Das Modell hebt damit die Böen an.
+ * Selbst nachkalibrieren aus Messwerten (lib/learn.js stationLearn): Prognose 3 h voraus gegen Messung, letzte 30 Tage,
+ * je Station insgesamt und je Tageszeit und Windrichtung, nur was sich Tag für Tag bewährt hätte.
  */
 function learnedBias() {
   if (state.learned && Date.now() - state.learnedAt < 3600000) return state.learned;
-  const since = new Date(Date.now() - LEARN_DAYS * 86400000).toISOString();
-  const rows = dbAll('SELECT p.code, p.target, p.wind pw, p.gust pg, o.wind ow, o.gust og FROM fc_pred p JOIN observations o ON o.code=p.code AND o.time=p.target WHERE p.target>=?', [since]);
-  const by = {};
-  for (const r of rows) {
-    const m = state.stationList[r.code];
-    if (!m || !(m.alt >= MOUNTAIN_ALT) || !isNum(r.og) || !isNum(r.pg)) continue;
-    const h = zurichParts(Date.parse(r.target)).hour;
-    if (h < 9 || h > 17) continue;
-    const b = (by[r.code] ??= { gust: [], wind: [] });
-    b.gust.push(r.og - r.pg);
-    if (isNum(r.ow) && isNum(r.pw)) b.wind.push(r.ow - r.pw);
-  }
-  state.learned = Object.fromEntries(Object.entries(by).map(([c, b]) => [c, { n: b.gust.length, gust: Math.round(mean(b.gust) * 10) / 10, wind: b.wind.length ? Math.round(mean(b.wind) * 10) / 10 : null }]));
+  const since = new Date(Date.now() - STATION_DAYS * 86400000).toISOString();
+  const rows = dbAll('SELECT p.code, p.target, p.wind pw, p.gust pg, p.dir pd, o.wind ow, o.gust og FROM fc_pred p JOIN observations o ON o.code=p.code AND o.time=p.target WHERE p.target>=?', [since])
+    .map(r => { const ms = Date.parse(r.target); return { ...r, ms, hour: zurichParts(ms).hour }; });
+  state.learned = stationLearn(rows);
   state.learnedAt = Date.now();
   return state.learned;
+}
+/** Was die Selbstprüfung erlaubt: alles, nur das Einfache, oder nichts. */
+function learnedForModel() {
+  const g = learnGuard();
+  if (g.off || g.mode === 'off') return null;
+  return g.mode === 'simple' ? simplifyLearned(learnedBias()) : learnedBias();
 }
 
 /* ------------------------------------------------------------------ Modell & Antwort-Cache */
@@ -384,9 +389,9 @@ function currentModel() {
   if (!state.raw) return null;
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
-      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnGuard().off ? null : learnedBias(),
+      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedForModel(),
       thermLearn: thermalLearned(),
-      feedbackByLevel: siteFeedbackByLevel(flightsWithPilot()),
+      feedbackByLevel: siteFeedbackByLevel(feedbackRecords()),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
     state.model.ver = state.version;
@@ -609,6 +614,12 @@ function flightsWithPilot() {
     if (!f.pilot) { if (!snaps.has(r.uid)) snaps.set(r.uid, pilotSnap(r.uid)); f.pilot = snaps.get(r.uid); }
     return f;
   });
+}
+/** Für das Lernen je Startplatz: alle Flüge plus «nicht gestartet» (Grund und AFC-Score von damals). */
+function feedbackRecords() {
+  const snaps = new Map(), snap = uid => { if (!snaps.has(uid)) snaps.set(uid, pilotSnap(uid)); return snaps.get(uid); };
+  const nofly = dbAll("SELECT uid, at, data FROM feedback WHERE kind='nofly'").map(r => { const d = JSON.parse(r.data); return { kind: 'nofly', siteId: d.site, date: r.at.slice(0, 10), reason: d.reason, afcScore: d.score, pilot: snap(r.uid) }; });
+  return [...flightsWithPilot(), ...nofly];
 }
 /** Testphase nach Pilotentyp: je Flugstil und Stufe Piloten, Flüge, Urteile, Gründe fürs Nicht-Starten, Rückmeldungen. */
 function pilotGroups(users) {
@@ -965,8 +976,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
-        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!isLocal(req) || !isAdmin(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1236,7 +1247,7 @@ function snapshotSiteForecasts(now = Date.now()) {
   if (!model?.ok) return 0;
   const res = model.compute(DEFAULT_LEVEL);
   let n = 0;
-  const up = db.prepare('INSERT INTO site_fc(site_id,date,hour,lead,top,base) VALUES(?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base WHERE excluded.lead<=site_fc.lead');
+  const up = db.prepare('INSERT INTO site_fc(site_id,date,hour,lead,top,base,wstar) VALUES(?,?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base, wstar=excluded.wstar WHERE excluded.lead<=site_fc.lead');
   for (let i = 0; i < model.n; i++) {
     const lead = (model.t[i] - now) / 3600000;
     if (lead < -0.5 || lead > 3) continue;
@@ -1245,7 +1256,7 @@ function snapshotSiteForecasts(now = Date.now()) {
       const w = r?.hours?.[i]?.w;
       if (!w?.thermik || !isNum(w.thermik.top)) continue;
       const top = isNum(w.cloudBase) ? Math.min(w.thermik.top, w.cloudBase) : w.thermik.top;
-      up.run(id, zp.date, zp.hour, Math.max(0, lead), Math.round(top), isNum(w.cloudBase) ? Math.round(w.cloudBase) : null);
+      up.run(id, zp.date, zp.hour, Math.max(0, lead), Math.round(top), isNum(w.cloudBase) ? Math.round(w.cloudBase) : null, isNum(w.thermik.wstar) ? w.thermik.wstar : null);
       n++;
     }
   }
@@ -1256,7 +1267,7 @@ function thermalLearned() {
   if (state.thermal && Date.now() - state.thermalAt < 3600000) return state.thermal;
   const flights = allFlights().filter(f => f.track?.thermals?.length);   // Flüge aller Piloten
   const fc = new Map();
-  for (const d of new Set(flights.map(f => f.date))) for (const r of dbAll('SELECT site_id, hour, top FROM site_fc WHERE date=?', [d])) fc.set(`${r.site_id}|${d}|${r.hour}`, r.top);
+  for (const d of new Set(flights.map(f => f.date))) for (const r of dbAll('SELECT site_id, hour, top, wstar FROM site_fc WHERE date=?', [d])) fc.set(`${r.site_id}|${d}|${r.hour}`, { top: r.top, wstar: r.wstar });
   state.thermal = thermalLearn(flights, fc, SITE_AREA);
   state.thermalAt = Date.now();
   return state.thermal;
@@ -1467,10 +1478,16 @@ function maybeBacktest(force = false) {
     child.on('error', e => res({ code: 1, err: String(e.message) }));
     child.on('exit', code => res({ code, err }));
   });
+  // Drei Läufe: ohne Lernen, nur das Einfache (Stationsmittel, nur anheben), alles. Behalten wird die beste Stufe,
+  // die nicht gefährlicher ist als ohne Lernen.
+  const keep = name => fs.copyFile(path.join(DATA, 'backtest-vergleich.json'), path.join(DATA, `backtest-vergleich-${name}.json`)).catch(() => {});
   (async () => {
     const a = await run(['--vergleich', '--ohne-lernen']);
-    const b = await run(['--auto']);
-    const bad = [a, b].find(x => x.code);
+    if (!a.code) await keep('ohne');
+    const c = a.code ? a : await run(['--vergleich', '--lernen-einfach']);
+    if (!c.code) await keep('einfach');
+    const b = a.code || c.code ? { code: 0 } : await run(['--auto']);
+    const bad = [a, c, b].find(x => x.code);
     backtestJob.error = bad ? (bad.err.trim().split('\n').pop() || `Abbruch (${bad.code})`) : null;
     if (!bad) judgeLearning();
     console.log(bad ? `Rückblick-Test fehlgeschlagen: ${backtestJob.error}` : 'Rückblick-Test fertig');
@@ -1481,18 +1498,28 @@ function maybeBacktest(force = false) {
 const guardFile = () => path.join(DATA, 'learn-guard.json');
 function learnGuard() { try { return JSON.parse(fsc.readFileSync(guardFile(), 'utf8')); } catch { return { off: false }; } }
 function judgeLearning() {
-  let base;
-  try { base = JSON.parse(fsc.readFileSync(path.join(DATA, 'backtest-vergleich.json'), 'utf8')); } catch { return; }
-  const withL = backtestHistory().at(-1);
+  const rd = n => { try { return JSON.parse(fsc.readFileSync(path.join(DATA, `backtest-vergleich-${n}.json`), 'utf8')); } catch { return null; } };
+  const base = rd('ohne'), simple = rd('einfach'), withL = backtestHistory().at(-1);
   if (!withL || !base) return;
-  const g = learnedVerdict(base, withL);
+  const { mode, reason } = chooseLearnMode(base, simple, withL);
+  const sum = x => (x ? { passt: x.passt, n: x.n, gefaehrlich: x.gefaehrlich, zuStreng: x.zuStreng, bergMild: x.berg?.zuMild ?? null, bergGust: x.berg?.gustBias ?? null } : null);
+  const g = { off: mode === 'off', mode, reason,
+    runs: { ohne: sum(base), einfach: sum(simple), voll: sum(withL) } };
   fsc.writeFileSync(guardFile(), JSON.stringify({ ...g, at: nowIso() }, null, 1));
   state.learnedAt = 0; invalidate();
-  console.log('Selbstprüfung Lernen:', g.off ? 'pausiert, ' + g.reason : 'bleibt aktiv');
+  console.log('Selbstprüfung Lernen:', mode === 'full' ? 'alles aktiv' : mode === 'simple' ? 'nur das Einfache aktiv' : 'pausiert, ' + g.reason);
 }
 function learnedList() {
-  return Object.entries(learnedBias()).map(([code, l]) => ({ code, name: state.stationList[code]?.name || code, ...l, used: l.n >= LEARN_MIN_N }))
-    .sort((a, b) => b.n - a.n);
+  return Object.entries(learnedBias()).map(([code, l]) => {
+    const top = l.mode !== 'bucket' ? [] : Object.entries(l.buckets || {}).filter(([, b]) => Math.abs(b.gust) >= 3 && Math.abs(b.gust - l.gust) >= 2).sort((x, y) => Math.abs(y[1].gust) - Math.abs(x[1].gust)).slice(0, 2).map(([k, b]) => ({ k, gust: b.gust, n: b.n }));
+    return { code, name: state.stationList[code]?.name || code, n: l.n, days: l.days, gust: l.gust, wind: l.wind, mode: l.mode, mae0: l.mae0, mae: l.mae, gain: l.gain, top, used: l.mode !== 'none' && l.n >= LEARN_MIN_N };
+  }).sort((a, b) => (b.gain || 0) - (a.gain || 0) || b.n - a.n);
+}
+/** Was die Rückmeldungen nach Flügen je Startplatz bewirken (Stufe Normal), für «Selbst gelernt». */
+function feedbackSummary() {
+  const fb = siteFeedbackByLevel(feedbackRecords()), names = Object.fromEntries(SITES.map(x => [x.id, x.name]));
+  const list = Object.entries(fb.normal).map(([id, x]) => ({ id, name: names[id] || id, n: x.n, adj: x.adj, implicit: x.implicit, streng: x.streng, mild: x.mild, richtig: x.richtig }));
+  return { sites: list.filter(x => x.adj).sort((a, b) => a.adj - b.adj), collecting: list.filter(x => !x.adj).length, records: list.reduce((t, x) => t + x.n, 0) };
 }
 function backtestStatus() {
   const h = backtestHistory();

@@ -83,6 +83,16 @@ AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, priv
 
 ## Selbstlernen mit Selbstprüfung
 
+Seit Version 10.0 (November 2026):
+
+* **Aus Messwerten, ohne Flüge** (`lib/learn.js` `stationLearn`): Für jede Station hält AFC die Prognose der nächsten 1–6 Stunden fest (pro Stunde die mit rund 3 h Vorlauf, Tabelle `fc_pred`) und vergleicht sie mit der Messung. Gelernt wird der Böenfehler der letzten 30 Tage (jüngere Tage zählen mehr, Halbwertszeit 7 Tage) insgesamt und je Tageszeit (Vormittag, Mittag, Nachmittag) und Windrichtung (8 Sektoren oder wenig Wind). Für jeden Tag wird aus den übrigen Tagen gelernt und geprüft, ob die Korrektur ihn besser getroffen hätte; nur dann gilt sie (`mode`: bucket, overall, none). An Startplätzen bis 20 km von einer Bergstation werden Böen um 60 % davon angehoben (höchstens 10 km/h) oder halb so stark gesenkt (höchstens 4 km/h, nie wenn die Station jetzt mehr misst).
+* **Selbstprüfung in Stufen:** Der wöchentliche Rückblick-Test läuft dreimal: ohne Lernen, nur das Einfache (`--lernen-einfach`: Stationsmittel, nur anheben) und alles. Behalten wird die beste Stufe, die nicht gefährlicher ist als ohne Lernen (`data/learn-guard.json`, `mode` full, simple, off).
+* **Aus Rückmeldungen je Startplatz:** Urteile nach Flügen zählen voll, Flüge ohne Urteil halb (unter 55 trotzdem gut geflogen = zu streng, ab 70 ordentlich = lag richtig), «nicht gestartet» wegen Wind, Thermik, Föhn, Wolken oder Regen bei 70 und mehr als «zu mild». Halbwertszeit ein Jahr, getrennt nach Stufe.
+* **Steigen aus IGC-Flügen:** `site_fc` speichert auch das prognostizierte Steigen (w*). Je Gebiet ab 3 Flügen ein Faktor (0.75–1.3) aufs Steigen, nur wenn er die übrigen Flüge besser erklärt hätte.
+* Anzeige unter Profil > Technik und Daten: Böenfehler je Station vorher und nachher, Startplätze mit Anpassung, Thermik und Steigen je Gebiet, die drei Testläufe.
+
+Früher:
+
 * **Böen an Bergstationen** (seit 04672d6): Der wöchentliche Rückblick-Test läuft jetzt zweimal, ohne und mit dem Gelernten (`--vergleich --ohne-lernen`, dann `--auto`). Gibt es mit dem Gelernten mehr gefährliche Fälle oder klar mehr «zu mild» am Berg, pausiert AFC das Gelernte bis zur nächsten Prüfung (`data/learn-guard.json`, `lib/learn.js`). Anzeige unter Profil > Technik und Daten.
 * **Thermik aus deinen IGC-Flügen:** AFC hält jede Stunde die Prognose je Startplatz fest (Thermik-Obergrenze, höchstens 3 h voraus, Tabelle `site_fc`). Ein IGC-Flug mit Thermiken wird mit der Prognose zur Flugzeit verglichen. Je Gebiet ab 3 Flügen gibt es eine Korrektur der Thermik-Obergrenze (nach oben 60 % des Medians, höchstens +500 m; nach unten 30 %, höchstens −300 m), aber nur, wenn sie jeden bisherigen Flug ohne diesen Flug besser erklärt hätte als keine Korrektur. Steht als Grund bei der Bewertung und unter Profil > «Aus deinen Flügen gelernt». Sicherheitsgrenzen ändert das nie.
 * **Rückmeldungen nach dem Flug:** siehe Flugbuch.

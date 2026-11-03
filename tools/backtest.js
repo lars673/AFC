@@ -20,6 +20,7 @@ import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js
 import { regionalFromObs } from '../lib/regional.js';
 import { biseLevel } from '../lib/scoring.js';
 import { PRESSURE_LEVELS } from '../lib/openmeteo.js';
+import { stationLearn, simplifyLearned, STATION_DAYS } from '../lib/learn.js';
 import { omTimeToMs, zurichParts, haversineKm, isNum } from '../lib/util.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -196,7 +197,7 @@ const biseAt = ms => { const r = regionalFromObs(obsAt(ms), {}, qffAt(ms), ms); 
 /** Nächste Kernstation mit Messwerten zu einem Gebiet. */
 const nearestStation = a => Object.entries(CORE_STATIONS).filter(([c]) => obs[c]).map(([c, s]) => ({ c, d: haversineKm(a.lat, a.lon, s.lat, s.lon) })).sort((x, y) => x.d - y.d)[0];
 
-// Selbst nachkalibrieren wie live: Böenfehler je Bergstation aus den 14 Tagen vor dem Testtag (9–17 Uhr).
+// Selbst nachkalibrieren wie live (lib/learn.js stationLearn): Böenfehler je Bergstation, Tageszeit und Windrichtung vor dem Testtag.
 // Live wird mit der Prognose am Stationsort verglichen; das Archiv hat nur Startplätze, darum der nächste Startplatz.
 const allMeta = Object.fromEntries(Object.values(mountain).map(m => [m.code, { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }]));
 const proxy = Object.fromEntries(Object.values(mountain).map(m => {
@@ -206,20 +207,19 @@ const proxy = Object.fromEntries(Object.values(mountain).map(m => {
 }));
 function learnedAt(d) {
   if (process.argv.includes('--ohne-lernen')) return null;
-  const out = {};
+  const rows = [];
   for (const m of Object.values(mountain)) {
     const p = proxy[m.code];
     if (!p) continue;
-    const diffs = [];
-    for (let ms = d - 14 * DAY; ms < d; ms += 3600000) {
-      const h = zurichParts(ms).hour;
-      if (h < 9 || h > 17) continue;
+    for (let ms = d - STATION_DAYS * DAY; ms < d; ms += 3600000) {
       const o = m.rows.get(ms), i = p.idx.get(ms);
-      if (o && isNum(o.gust) && i !== undefined && isNum(p.fc.wind_gusts_10m[i])) diffs.push(o.gust - p.fc.wind_gusts_10m[i]);
+      if (!o || !isNum(o.gust) || i === undefined || !isNum(p.fc.wind_gusts_10m[i])) continue;
+      rows.push({ code: m.code, ms, hour: zurichParts(ms).hour, og: o.gust, ow: o.wind, pg: p.fc.wind_gusts_10m[i], pw: p.fc.wind_speed_10m?.[i], pd: p.fc.wind_direction_10m?.[i] });
     }
-    if (diffs.length) out[m.code] = { n: diffs.length, gust: diffs.reduce((a, b) => a + b, 0) / diffs.length };
   }
-  return out;
+  const l = stationLearn(rows, d);
+  // --lernen-einfach: nur das Stationsmittel und nur anheben (zweite Stufe der Selbstprüfung)
+  return process.argv.includes('--lernen-einfach') ? simplifyLearned(l) : l;
 }
 
 const rows = [], dayLines = [], foehnDays = [], biseDays = [];
