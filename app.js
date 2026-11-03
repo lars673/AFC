@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.4';
+const APP_VER = '10.5';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1605,6 +1605,7 @@ function renderSite() {
   const actionsHtml = `<div class="site-acts">
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
       <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+      ${(siteById(s.id)?.notes || []).length ? `<ul class="site-notes">${siteById(s.id).notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       ${groupLineFor(s.id)}
       ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
       ${webcamHtml(s)}

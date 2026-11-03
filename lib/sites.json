@@ -2433,6 +2433,137 @@
    "status": null,
    "season": null,
    "source": "DHV"
+  },
+  {
+   "id": "axalp-windegg",
+   "name": "Axalp Windegg",
+   "type": "start",
+   "area": "axalp",
+   "group": "Axalp",
+   "lat": 46.7097,
+   "lon": 8.0416,
+   "alt": 1905,
+   "aspects": [
+    337.5,
+    0,
+    22.5
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "Lars (Bergstation Sessellift Windegg)",
+   "notes": [
+    "Liegt meist in der CTR/TMA Meiringen: vor jedem Flug den Luftraumstatus abfragen (0800 496 347 oder Funk 130.150 MHz). Ohne Auskunft gilt er als aktiv.",
+    "Bei Föhn und Bise nicht fliegen."
+   ],
+   "terrain": {
+    "slopeDeg": 11.1,
+    "terrainAspect": 358,
+    "relief250m": 150,
+    "relief500m": 427,
+    "horizonAngles": {
+     "0": 1.6,
+     "15": 1,
+     "30": 0,
+     "45": 0,
+     "60": 0,
+     "75": 5.5,
+     "90": 14.5,
+     "105": 16.4,
+     "120": 23.4,
+     "135": 26,
+     "150": 23.2,
+     "165": 16.6,
+     "180": 10.8,
+     "195": 7.7,
+     "210": 8.8,
+     "225": 5.3,
+     "240": 3.3,
+     "255": 1.3,
+     "270": 0,
+     "285": 0,
+     "300": 0,
+     "315": 0.3,
+     "330": 1.3,
+     "345": 0
+    },
+    "demAlt": 1906
+   }
+  },
+  {
+   "id": "axalp-schyberg",
+   "name": "Axalp Schyberg",
+   "type": "start",
+   "area": "axalp",
+   "group": "Axalp",
+   "lat": 46.7164,
+   "lon": 8.0348,
+   "alt": 1580,
+   "aspects": [
+    270,
+    292.5,
+    315
+   ],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "SHV Infotafel Oberhasli-Brienz",
+   "notes": [
+    "Liegt meist in der CTR/TMA Meiringen: vor jedem Flug den Luftraumstatus abfragen (0800 496 347 oder Funk 130.150 MHz). Ohne Auskunft gilt er als aktiv.",
+    "Bei starker Bise nicht geeignet."
+   ],
+   "terrain": {
+    "slopeDeg": 22.7,
+    "terrainAspect": 326,
+    "relief250m": 244,
+    "relief500m": 647,
+    "horizonAngles": {
+     "0": 4.5,
+     "15": 3.2,
+     "30": 2.9,
+     "45": 0.9,
+     "60": 0.8,
+     "75": 2.5,
+     "90": 10.3,
+     "105": 12.9,
+     "120": 18.8,
+     "135": 21.6,
+     "150": 23.4,
+     "165": 24.5,
+     "180": 20.4,
+     "195": 12.6,
+     "210": 11.1,
+     "225": 6.8,
+     "240": 7.1,
+     "255": 1.3,
+     "270": 0.7,
+     "285": 2.3,
+     "300": 2,
+     "315": 3.3,
+     "330": 4.2,
+     "345": 2.7
+    },
+    "demAlt": 1572
+   }
+  },
+  {
+   "id": "axalp-land-aaregg",
+   "name": "Aaregg, Brienz (am See)",
+   "type": "landing",
+   "area": "axalp",
+   "group": "Axalp",
+   "lat": 46.7408,
+   "lon": 8.0501,
+   "alt": 566,
+   "aspects": [],
+   "pg": true,
+   "status": null,
+   "season": null,
+   "source": "SHV Infotafel Oberhasli-Brienz",
+   "notes": [
+    "Hochspannungsleitung beachten.",
+    "20 Minuten zu Fuss zum Bahnhof Brienz oder Postauto ab Haltestelle Brunnen."
+   ]
   }
  ]
 }

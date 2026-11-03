@@ -798,3 +798,5 @@ body.gated > header, body.gated > nav, body.gated > main, body.gated > .banner {
 .conf-bar i { display: block; height: 100%; background: var(--go); }
 .conf.c-mittel .conf-bar i { background: var(--check); }
 .conf.c-unsicher .conf-bar i { background: var(--wait); }
+.site-notes { margin: 6px 0; padding: 8px 12px 8px 26px; border-left: 4px solid var(--wait); background: var(--panel2); border-radius: 8px; font-size: 14.5px; }
+.site-notes li + li { margin-top: 4px; }
