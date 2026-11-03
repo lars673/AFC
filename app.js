@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.3';
+const APP_VER = '10.4';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1877,7 +1877,7 @@ function initMap() {
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   if (ov.radar) setRadar(true);
   syncLayerPanel();
-  M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.mode !== 'off' && T.data) mapSheet('thermal', e.latlng); else if (airHere(e.latlng.lat, e.latlng.lng)) mapSheet('air', e.latlng); else $('#mapSheet').hidden = true; });
+  M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.modes.size && T.data) mapSheet('thermal', e.latlng); else if (airHere(e.latlng.lat, e.latlng.lng)) mapSheet('air', e.latlng); else $('#mapSheet').hidden = true; });
   updateAir();
   return true;
 }
@@ -2047,17 +2047,18 @@ function windTimeIso() {
 }
 function syncWindBar() {
   $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
-  $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === T.mode)));
+  $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(T.modes.has(b.dataset.mode))));
   const on = W.level !== 'off';
-  $('#windBar .wind-time').hidden = !on && T.mode === 'off' && !RT.res; $('#windBar .wind-legend').hidden = !on;
-  $('#windBar .thermal-legend').hidden = T.mode !== 'thermal'; $('#windBar .soar-legend').hidden = T.mode !== 'soar'; $('#windBar .lee-legend').hidden = T.mode !== 'lee';
+  $('#windBar .wind-time').hidden = !on && !T.modes.size && !RT.res; $('#windBar .wind-legend').hidden = !on;
+  $('#windBar .thermal-legend.th-legend').hidden = !T.modes.has('thermal'); $('#windBar .soar-legend').hidden = !T.modes.has('soar'); $('#windBar .lee-legend').hidden = !T.modes.has('lee');
   $('#windHour').value = W.hour;
   $('#windHourT').textContent = `${W.hour} Uhr`;
   // Zusammengeklappt: nur Zusammenfassung und Uhrzeit, damit die Karte auf dem Handy frei bleibt
   const folded = store.get('barFold', innerWidth < 600);
   $('#windBar').classList.toggle('folded', folded);
+  $('#windBar').classList.toggle('multi', T.modes.size > 1);
   $('#windBar .bar-fold').setAttribute('aria-expanded', String(!folded));
-  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T.mode === 'thermal' ? 'Thermik' : T.mode === 'soar' ? 'Soaring' : T.mode === 'lee' ? 'Lee' : null].filter(Boolean);
+  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T_MODES.filter(m => T.modes.has(m)).map(m => T_NAMES[m]).join(', ')].filter(Boolean);
   $('#barSum').textContent = parts.length ? parts.join(' · ') : 'Wind und Aufwind: aus';
 }
 async function updateWind() {
@@ -2084,7 +2085,8 @@ async function updateWind() {
 /* ---- Thermik-Wärmekarte: Schätzung aus Sonne auf dem Hang, Thermikhöhe, Geländeform und Wolken.
    Soaring-Ansicht: wo der Wind frontal auf einen steilen Hang trifft (Hangaufwind, auch ohne Thermik).
    Das Geländeraster (ca. 250 m) kommt einmal vom Server, die Wetterwerte je Stunde aus /api/thermal. */
-const T = { mode: 'off', grid: null, gridReq: null, cache: new Map(), layer: null, data: null, req: 0 };
+const T_MODES = ['thermal', 'soar', 'lee'], T_NAMES = { thermal: 'Thermik', soar: 'Soaring', lee: 'Lee' };
+const T = { modes: new Set(), layers: {}, grid: null, gridReq: null, cache: new Map(), layer: null, data: null, req: 0 };
 const D2R = Math.PI / 180;
 
 async function thermalGrid() {
@@ -2196,7 +2198,7 @@ function soarCell(d, g, k, lat, lon) {
  * ab und kann Rotoren bilden. Je höher die Krete, desto weiter reicht das Lee (etwa 8-mal ihre Höhe über der Zelle).
  * Zählt erst ab 12 km/h Wind auf Kretenhöhe, voll ab 30 km/h.
  */
-const LEE_RAMP = [[0.12, [235, 95, 40, 0]], [0.25, [235, 95, 40, 80]], [0.55, [215, 55, 40, 140]], [1, [165, 20, 70, 195]]];
+const LEE_RAMP = [[0.12, [125, 90, 200, 0]], [0.25, [125, 90, 200, 90]], [0.55, [95, 55, 175, 150]], [1, [60, 25, 120, 205]]];
 function leeCell(d, g, k, lat, lon) {
   const x = k % g.nx, y = (k - x) / g.nx, e = g.elev[k];
   const w0 = windAtAlt(d, lat, lon, e + 600);
@@ -2255,9 +2257,16 @@ function thermalWhy(lat, lon) {
   if (!g || !d) return null;
   const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
   if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return null;
-  if (T.mode === 'soar') return soarWhy(soarCell(d, g, y * g.nx + x, lat, lon));
-  if (T.mode === 'lee') return leeWhy(leeCell(d, g, y * g.nx + x, lat, lon));
-  const c = thermalCell(d, g, y * g.nx + x, lat, lon);
+  const k = y * g.nx + x, parts = [];
+  if (T.modes.has('thermal')) parts.push(thermikWhy(d, g, k, lat, lon));
+  if (T.modes.has('soar')) parts.push(soarWhy(soarCell(d, g, k, lat, lon)));
+  if (T.modes.has('lee')) parts.push(leeWhy(leeCell(d, g, k, lat, lon)));
+  if (!parts.length) return null;
+  if (parts.length === 1) return parts[0];
+  return { title: parts.map(x => x.title).join(' · '), elev: parts[0].elev, why: parts.flatMap(x => x.why.map((w, i) => (i === 0 ? `${x.title.split(' ')[0]}: ${w}` : w))) };
+}
+function thermikWhy(d, g, k, lat, lon) {
+  const c = thermalCell(d, g, k, lat, lon);
   const level = c.v >= 0.6 ? 'stark' : c.v >= 0.35 ? 'mittel' : c.v > 0.2 ? 'schwach' : 'kaum';
   const why = [];
   why.push(c.slope >= 8 ? `${dirLabel(c.aspect)}-Hang, ${c.slope}° steil, ${c.heat} W/m² Sonne auf dem Hang` : `flaches Gelände, ${c.heat} W/m² Sonne`);
@@ -2421,19 +2430,28 @@ function routeSheetHtml() {
 async function updateThermal() {
   syncWindBar();
   if (!M.map) return;
-  if (T.mode === 'off') { if (T.layer) { M.map.removeLayer(T.layer); T.layer = null; } T.data = null; return; }
-  const iso = windTimeIso(), req = ++T.req, mode = T.mode;
+  // Nicht mehr gewählte Ebenen entfernen
+  for (const m of Object.keys(T.layers)) if (!T.modes.has(m)) { M.map.removeLayer(T.layers[m]); delete T.layers[m]; }
+  if (!T.modes.size) { T.data = null; return; }
+  const iso = windTimeIso(), req = ++T.req;
   try {
     const g = await thermalGrid();
     const d = await thermalData(iso);
     if (!d) { mapMsg('Thermikkarte wird noch geladen, bitte in ein paar Minuten nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
-    d.url[mode] ??= thermalImage(d, g, mode);
-    if (req !== T.req || T.mode !== mode) return;
+    if (req !== T.req) return;
     T.data = d;
-    if (!M.map.getPane('thermal')) M.map.createPane('thermal').style.zIndex = 420;
     const b = [[g.la0 - g.dla / 2, g.lo0 - g.dlo / 2], [g.la0 + (g.ny - 0.5) * g.dla, g.lo0 + (g.nx - 0.5) * g.dlo]];
-    if (T.layer) T.layer.setUrl(d.url[mode]);
-    else T.layer = L.imageOverlay(d.url[mode], b, { pane: 'thermal', opacity: 0.75, className: 'thermal-img', interactive: false }).addTo(M.map);
+    // Thermik zuunterst, Lee zuoberst; mehrere Ebenen zusammen etwas durchsichtiger
+    const op = T.modes.size > 1 ? 0.62 : 0.75;
+    for (const [n, mode] of T_MODES.entries()) {
+      if (!T.modes.has(mode)) continue;
+      d.url[mode] ??= thermalImage(d, g, mode);
+      if (req !== T.req) return;
+      const pane = 'aw-' + mode;
+      if (!M.map.getPane(pane)) M.map.createPane(pane).style.zIndex = 420 + n;
+      if (T.layers[mode]) { T.layers[mode].setUrl(d.url[mode]); T.layers[mode].setOpacity(op); }
+      else T.layers[mode] = L.imageOverlay(d.url[mode], b, { pane, opacity: op, className: 'thermal-img', interactive: false }).addTo(M.map);
+    }
   } catch (err) { if (req === T.req) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } }
 }
 
@@ -2639,7 +2657,7 @@ document.addEventListener('click', async e => {
     }
     case 'routeoff': RT.active = false; RT.a = RT.b = RT.res = null; RT.req++; clearRoute(); mapMsg(''); $('#mapSheet').hidden = true; break;
     case 'rtmode': RT.mode = b.dataset.v; computeRoute(); break;
-    case 'thermal': T.mode = b.dataset.mode; store.set('thermal', T.mode); updateThermal(); break;
+    case 'thermal': { const m = b.dataset.mode; T.modes.has(m) ? T.modes.delete(m) : T.modes.add(m); store.set('thermal', [...T.modes]); updateThermal(); break; }
     case 'logdel': { const log = store.get('log', []); log.splice(Number(b.dataset.i), 1); store.set('log', log); renderProfile(); break; }
     case 'export': {
       try {
@@ -3327,7 +3345,7 @@ async function inviteCreate() {
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
   const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
   if (pl && !store.get('levelManual')) { S.level = pl.level; store.set('level', S.level); }
-  T.mode = ['thermal', 'soar', 'lee'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
+  { const t = store.get('thermal'); T.modes = new Set((Array.isArray(t) ? t : t === true ? ['thermal'] : [t]).filter(x => T_MODES.includes(x))); }
   render();
   loadPlan();
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});

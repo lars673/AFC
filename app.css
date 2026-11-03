@@ -198,6 +198,8 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .layer-panel label { display: flex; align-items: center; gap: 8px; min-height: 40px; font-size: 15px; }
 .layer-panel input { width: 20px; height: 20px; accent-color: var(--accent); }
 .wind-bar { position: absolute; left: 10px; bottom: 26px; z-index: 550; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.25); display: grid; gap: 6px; max-width: calc(100% - 20px); }
+.wind-bar { max-height: calc(100% - 40px); overflow-y: auto; overscroll-behavior: contain; }
+.wind-bar.multi .thermal-legend .fine { display: none; }
 .wind-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .wind-t { font-weight: 700; margin-right: 4px; }
 .wseg { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); border-radius: 8px; font-weight: 600; font-size: 14px; }
@@ -213,7 +215,7 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .thermal-legend .fine { grid-column: 1 / -1; margin: 0; }
 .thermal-img { image-rendering: auto; }
 .thermal-legend .sgrad { background: linear-gradient(90deg, rgba(80,200,220,.45), #1e96e6, #1446c8); }
-.thermal-legend .lgrad { background: linear-gradient(90deg, rgba(235,95,40,.35), #d73728, #a51446); }
+.thermal-legend .lgrad { background: linear-gradient(90deg, rgba(125,90,200,.35), #5f37af, #3c1978); }
 .thermal-legend .sstrong { display: inline-block; width: 12px; height: 6px; border-radius: 3px; background: rgb(200,40,200); margin: 0 2px 0 6px; }
 .why-list { margin: 6px 0 8px; padding-left: 18px; font-size: 14px; }
 .map-msg { position: absolute; left: 10px; right: 10px; top: 10px; z-index: 600; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--wait); padding: 10px 12px; border-radius: 8px; font-size: 14px; max-width: 520px; }
@@ -318,6 +320,7 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .rt-issues { margin: 6px 0 8px; padding-left: 22px; font-size: 14px; }
 .rt-issues li::marker { color: var(--c); font-weight: 800; }
 .bar-fold { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 0 2px; background: transparent; border: 0; font-weight: 700; color: var(--ink); }
+#barSum { min-width: 0; text-align: left; white-space: normal; line-height: 1.2; }
 .bar-chev { transition: transform .15s; }
 .wind-bar.folded .bar-chev { transform: rotate(-90deg); }
 .wind-bar.folded .bar-body { display: none; }
