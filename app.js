@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.2';
+const APP_VER = '10.3';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -279,7 +279,7 @@ function renderDaybar() {
     const sc = top?.best.score, past = p.dates[i] < today || (p.dates[i] === today && !top);
     return `<button type="button" class="day${past ? ' past' : ''}" data-act="day" data-i="${i}" aria-pressed="${i === S.day}">
       <span class="day-n">${dayName(i)}</span>
-      <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>
+      <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>${!past && p.days[i].conf && p.days[i].conf.level !== 'gut' ? `<span class="day-c c-${p.days[i].conf.level}" title="Prognose ${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}">${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}</span>` : ''}
       ${site ? ribbon(site.days[i].scores, top.best) : '<div class="ribbon"></div>'}
     </button>`;
   }).join('');
@@ -374,6 +374,12 @@ function levelLine() {
   const src = !pl ? 'Profil noch nicht ausgefüllt' : pl.level === S.level ? 'aus deinem Profil' : 'von Hand gewählt';
   return `<div class="level"><span class="lbl">Erfahrung</span><b>${LEVEL_INFO[S.level][0]}</b><span class="lbl">${src}</span><button type="button" class="linkbtn" data-act="tab" data-tab="profile">${pl ? 'ändern' : 'Profil ausfüllen'}</button></div>`;
 }
+const CONF_WORD = { gut: 'sicher', mittel: 'eher unsicher', unsicher: 'unsicher' };
+/** Wie sicher die Prognose für den gewählten Tag ist, mit Gründen (Vorlauf, ICON gegen ECMWF). */
+function confHtml(c) {
+  if (!c) return '';
+  return `<p class="conf c-${c.level}"><span class="conf-bar" aria-hidden="true"><i style="width:${c.score}%"></i></span><span><b>Prognose ${CONF_WORD[c.level]}</b> · ${esc(c.why.join(', '))}</span></p>`;
+}
 function renderDecide() {
   const el = $('#v-decide');
   if (!S.plan) { el.innerHTML = stateBox(); return; }
@@ -386,7 +392,7 @@ function renderDecide() {
   el.innerHTML = `
     ${watchLineHtml()}
     ${surveyCard()}
-    <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p>${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>
+    <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p>${confHtml(p.days[S.day]?.conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
@@ -405,7 +411,7 @@ function weekHtml() {
   const p = S.plan, nd = p.dates.length;
   const favs = [...S.fav].map(siteById).filter(Boolean);
   const cell = (b, d, act, id) => `<td><button type="button" class="wk-c s-${cls(b?.score)}" data-act="${act}" data-id="${esc(id)}" data-d="${d}" aria-label="${esc(dayName(d))}: ${b ? b.score + ', ' + winText(b) : 'kein Fenster'}"><b>${b ? b.score : '–'}</b><small>${b ? b.from + '–' + b.to : ''}</small></button></td>`;
-  const head = `<tr><th></th>${p.dates.map((_, d) => `<th scope="col" class="${d === S.day ? 'sel' : ''}">${esc(dayName(d))}<small>${dayDate(d)}</small></th>`).join('')}</tr>`;
+  const head = `<tr><th></th>${p.dates.map((_, d) => `<th scope="col" class="${d === S.day ? 'sel' : ''}">${esc(dayName(d))}<small>${dayDate(d)}</small>${p.days[d]?.conf && p.days[d].conf.level !== 'gut' ? `<small class="day-c c-${p.days[d].conf.level}">${CONF_WORD[p.days[d].conf.level]}</small>` : ''}</th>`).join('')}</tr>`;
   const favRows = favs.map(x => `<tr><th scope="row">${esc(x.name)}</th>${x.days.slice(0, nd).map((dd, d) => cell(dd.best, d, 'wksite', x.id)).join('')}</tr>`).join('');
   const areas = [...p.areas].sort((a, b) => {
     const sum = z => z.days.reduce((t, x) => t + (x?.best.score ?? 0), 0);
@@ -420,7 +426,7 @@ function weekHtml() {
     <div class="wk-wrap"><table class="wk"><thead>${head}</thead>
       ${favRows ? `<tbody><tr class="wk-sec"><th colspan="${nd + 1}">Meine Startplätze</th></tr>${favRows}</tbody>` : ''}
       <tbody><tr class="wk-sec"><th colspan="${nd + 1}">Gebiete (bester Startplatz)</th></tr>${areaRows}</tbody></table></div>
-    <p class="fine">Je weiter voraus, desto unsicherer: ab dem dritten Tag ist der Score eher eine Tendenz.</p></div>`;
+    <p class="fine">Je weiter voraus, desto unsicherer. «Eher unsicher» und «unsicher» kommen aus dem Vorlauf und daraus, wie stark ICON und ECMWF bei Wind, Regen und Wolken auseinanderliegen.</p></div>`;
 }
 
 /* ---- Startplätze vergleichen: bis zu drei Plätze Stunde für Stunde */
@@ -1875,8 +1881,14 @@ function initMap() {
   updateAir();
   return true;
 }
-function arrowIcon(dir, label) {
-  return L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk-s">${arrow(dir)}<span>${esc(label)}</span></div>` });
+function arrowIcon(dir, label, cls = '') {
+  return L.divIcon({ className: '', iconSize: [44, 34], iconAnchor: [22, 17], html: `<div class="mk-s ${cls}">${arrow(dir)}<span>${esc(label)}</span></div>` });
+}
+/** Live-Wind einer Station: «Wind/Böen», Farbe nach den Böen, blass wenn die Messung älter als 40 Minuten ist. */
+function stationIcon(st) {
+  const g = num(st.gust) ? Math.round(st.gust) : null, age = ageMin(st.time, st.age);
+  const c = g == null ? '' : g >= 35 ? 'g-hi' : g >= 25 ? 'g-mid' : 'g-ok';
+  return arrowIcon(st.dir, g != null ? `${Math.round(st.wind)}/${g}` : String(Math.round(st.wind)), c + (age > 40 ? ' old' : ''));
 }
 function renderMap() {
   syncWindBar();
@@ -1894,7 +1906,7 @@ function renderMap() {
   }
   if (showOv('stations')) for (const st of S.plan.stations || []) {
     if (!num(st.wind)) continue;
-    L.marker([st.lat, st.lon], { icon: arrowIcon(st.dir, Math.round(st.wind)), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}`, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: st.lat, lng: st.lon }) : mapSheet('station', st.code))).addTo(M.group);
+    L.marker([st.lat, st.lon], { icon: stationIcon(st), title: `${st.name}: ${Math.round(st.wind)} km/h aus ${dirLabel(st.dir)}${num(st.gust) ? `, Böen ${Math.round(st.gust)}` : ''}`, keyboard: true }).on('click', () => (RT.active ? routeClick({ lat: st.lat, lng: st.lon }) : mapSheet('station', st.code))).addTo(M.group);
   }
 }
 /**
@@ -2038,14 +2050,14 @@ function syncWindBar() {
   $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === T.mode)));
   const on = W.level !== 'off';
   $('#windBar .wind-time').hidden = !on && T.mode === 'off' && !RT.res; $('#windBar .wind-legend').hidden = !on;
-  $('#windBar .thermal-legend').hidden = T.mode !== 'thermal'; $('#windBar .soar-legend').hidden = T.mode !== 'soar';
+  $('#windBar .thermal-legend').hidden = T.mode !== 'thermal'; $('#windBar .soar-legend').hidden = T.mode !== 'soar'; $('#windBar .lee-legend').hidden = T.mode !== 'lee';
   $('#windHour').value = W.hour;
   $('#windHourT').textContent = `${W.hour} Uhr`;
   // Zusammengeklappt: nur Zusammenfassung und Uhrzeit, damit die Karte auf dem Handy frei bleibt
   const folded = store.get('barFold', innerWidth < 600);
   $('#windBar').classList.toggle('folded', folded);
   $('#windBar .bar-fold').setAttribute('aria-expanded', String(!folded));
-  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T.mode === 'thermal' ? 'Thermik' : T.mode === 'soar' ? 'Soaring' : null].filter(Boolean);
+  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T.mode === 'thermal' ? 'Thermik' : T.mode === 'soar' ? 'Soaring' : T.mode === 'lee' ? 'Lee' : null].filter(Boolean);
   $('#barSum').textContent = parts.length ? parts.join(' · ') : 'Wind und Aufwind: aus';
 }
 async function updateWind() {
@@ -2179,6 +2191,47 @@ function soarCell(d, g, k, lat, lon) {
   return { v: Math.min(1, fWind * fSlope * fForm), strong, elev, slope, aspect, form, speed, into, from };
 }
 
+/**
+ * Lee einer Rasterzelle: Gibt es gegen den Wind (bis 6 km) eine Krete, die deutlich höher liegt, sinkt die Luft dahinter
+ * ab und kann Rotoren bilden. Je höher die Krete, desto weiter reicht das Lee (etwa 8-mal ihre Höhe über der Zelle).
+ * Zählt erst ab 12 km/h Wind auf Kretenhöhe, voll ab 30 km/h.
+ */
+const LEE_RAMP = [[0.12, [235, 95, 40, 0]], [0.25, [235, 95, 40, 80]], [0.55, [215, 55, 40, 140]], [1, [165, 20, 70, 195]]];
+function leeCell(d, g, k, lat, lon) {
+  const x = k % g.nx, y = (k - x) / g.nx, e = g.elev[k];
+  const w0 = windAtAlt(d, lat, lon, e + 600);
+  if (!w0) return { v: 0, elev: e, speed: null };
+  const from = (Math.atan2(-w0[0], -w0[1]) / D2R + 360) % 360, sp0 = Math.hypot(w0[0], w0[1]);
+  if (sp0 < 8) return { v: 0, elev: e, speed: sp0, from };
+  const kx = g.dlo * 111.32 * Math.cos(lat * D2R), ky = g.dla * 111.32, sx = Math.sin(from * D2R), sy = Math.cos(from * D2R);
+  let best = { v: 0 };
+  for (let s = 1; s <= 24; s++) {
+    const dist = s * 0.25, px = Math.round(x + sx * dist / kx), py = Math.round(y + sy * dist / ky);
+    if (px < 0 || py < 0 || px >= g.nx || py >= g.ny) break;
+    const h = g.elev[py * g.nx + px], dh = h - e;
+    if (dh < 120 || dh / (dist * 1000) < 0.1) continue;
+    const reach = dh / 1000 * 8;
+    if (dist > reach) continue;
+    const w = windAtAlt(d, lat, lon, h), sp = w ? Math.hypot(w[0], w[1]) : sp0;
+    const fWind = Math.min(1, Math.max(0, (sp - 12) / 18));
+    const v = fWind * Math.min(1, dh / 500) * Math.sqrt(1 - dist / reach);
+    if (v > best.v) best = { v, dh, dist, sp };
+  }
+  return { ...best, v: Math.min(1, best.v), elev: e, speed: sp0, from };
+}
+function leeWhy(c) {
+  const level = c.v >= 0.55 ? 'stark' : c.v >= 0.25 ? 'deutlich' : c.v > 0.12 ? 'leicht' : 'kaum';
+  const why = [];
+  if (c.speed == null) return { title: 'Lee', elev: c.elev, why: ['keine Winddaten'] };
+  why.push(`Wind ${Math.round(c.speed)} km/h aus ${dirLabel(c.from)}`);
+  if (c.dh) {
+    why.push(`${dirLabel(c.from)} von hier liegt in ${c.dist.toFixed(1).replace('.0', '')} km eine Krete, rund ${Math.round(c.dh / 50) * 50} m höher`);
+    why.push(`Wind auf Kretenhöhe ${Math.round(c.sp)} km/h: ${c.v >= 0.25 ? 'absinkende Luft, Turbulenz und Rotor möglich, hier nicht tief fliegen und nicht landen' : 'schwaches Lee, Turbulenz möglich'}`);
+  } else why.push(c.speed < 8 ? 'wenig Wind: kaum Lee' : 'gegen den Wind keine höhere Krete in der Nähe');
+  why.push('Grobe Schätzung aus Gelände und Modellwind, Talwind und Thermik sind nicht eingerechnet');
+  return { title: 'Lee ' + level, elev: c.elev, why };
+}
+
 function thermalImage(d, g, mode) {
   const c = document.createElement('canvas'); c.width = g.nx; c.height = g.ny;
   const ctx = c.getContext('2d'), img = ctx.createImageData(g.nx, g.ny);
@@ -2186,7 +2239,8 @@ function thermalImage(d, g, mode) {
     const lat = g.la0 + y * g.dla, row = (g.ny - 1 - y) * g.nx;      // Bild beginnt im Norden
     for (let x = 0; x < g.nx; x++) {
       let col;
-      if (mode === 'soar') { const c = soarCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo); col = c.strong ? SOAR_STRONG : rampRgba(SOAR_RAMP, c.v); }
+      if (mode === 'lee') col = rampRgba(LEE_RAMP, leeCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo).v);
+      else if (mode === 'soar') { const c = soarCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo); col = c.strong ? SOAR_STRONG : rampRgba(SOAR_RAMP, c.v); }
       else col = rampRgba(THERMAL_RAMP, thermalCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo).v);
       if (col) img.data.set(col, (row + x) * 4);
     }
@@ -2202,6 +2256,7 @@ function thermalWhy(lat, lon) {
   const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
   if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return null;
   if (T.mode === 'soar') return soarWhy(soarCell(d, g, y * g.nx + x, lat, lon));
+  if (T.mode === 'lee') return leeWhy(leeCell(d, g, y * g.nx + x, lat, lon));
   const c = thermalCell(d, g, y * g.nx + x, lat, lon);
   const level = c.v >= 0.6 ? 'stark' : c.v >= 0.35 ? 'mittel' : c.v > 0.2 ? 'schwach' : 'kaum';
   const why = [];
@@ -3272,7 +3327,7 @@ async function inviteCreate() {
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
   const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
   if (pl && !store.get('levelManual')) { S.level = pl.level; store.set('level', S.level); }
-  T.mode = ['thermal', 'soar'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
+  T.mode = ['thermal', 'soar', 'lee'].includes(store.get('thermal')) ? store.get('thermal') : store.get('thermal') === true ? 'thermal' : 'off';
   render();
   loadPlan();
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});

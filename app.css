@@ -213,6 +213,7 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .thermal-legend .fine { grid-column: 1 / -1; margin: 0; }
 .thermal-img { image-rendering: auto; }
 .thermal-legend .sgrad { background: linear-gradient(90deg, rgba(80,200,220,.45), #1e96e6, #1446c8); }
+.thermal-legend .lgrad { background: linear-gradient(90deg, rgba(235,95,40,.35), #d73728, #a51446); }
 .thermal-legend .sstrong { display: inline-block; width: 12px; height: 6px; border-radius: 3px; background: rgb(200,40,200); margin: 0 2px 0 6px; }
 .why-list { margin: 6px 0 8px; padding-left: 18px; font-size: 14px; }
 .map-msg { position: absolute; left: 10px; right: 10px; top: 10px; z-index: 600; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--wait); padding: 10px 12px; border-radius: 8px; font-size: 14px; max-width: 520px; }
@@ -226,6 +227,9 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .mk-l { width: 14px; height: 14px; border-radius: 3px; background: #4a5a8c; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.5); transform: rotate(45deg); }
 .mk-s { display: grid; justify-items: center; gap: 0; font: 700 12px/1 var(--f-num); color: #101c15; text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; }
 .mk-s svg { width: 22px; height: 22px; }
+.mk-s.g-ok svg { color: #167a3f; } .mk-s.g-mid svg { color: #c06a0c; } .mk-s.g-hi svg { color: #bf2f2f; }
+.mk-s.g-hi span { color: #9c1d1d; }
+.mk-s.old { opacity: .5; }
 .mk-me { width: 16px; height: 16px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(26,115,232,.4); }
 .leaflet-container { font-family: var(--f-body); }
 
@@ -781,3 +785,13 @@ body.gated > header, body.gated > nav, body.gated > main, body.gated > .banner {
 .grp-reply input { flex: 1; min-width: 0; min-height: 38px; border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 6px 10px; }
 .grp-form .fld-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .grp-line { margin: 4px 0; }
+
+/* Sicherheit der Prognose je Tag */
+.day-c { font-size: 11px; font-weight: 600; line-height: 1.1; color: var(--muted); }
+.day-c.c-unsicher { color: #a85e0f; }
+.wk th small.day-c { display: block; }
+.headline p.conf { display: flex; gap: 8px; align-items: center; font-size: 14.5px; margin-top: 8px; color: var(--muted); }
+.conf-bar { flex: none; width: 46px; height: 7px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.conf-bar i { display: block; height: 100%; background: var(--go); }
+.conf.c-mittel .conf-bar i { background: var(--check); }
+.conf.c-unsicher .conf-bar i { background: var(--wait); }

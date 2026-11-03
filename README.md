@@ -202,3 +202,9 @@ Reiter «Gruppe» (`lib/community.js`, `/api/community`, Tabellen `posts` und `p
 * **Heute an den Startplätzen:** aus den Flugbüchern aller Piloten und «nicht gestartet»: Anzahl Flüge, Sterne, weiteste Strecke, längster Flug, Urteile über die AFC-Bewertung, Gründe fürs Nicht-Starten, daneben der AFC-Score. Namen nur von Piloten, die «Meinen Namen bei meinen Flügen zeigen» eingeschaltet haben. Auch für gestern.
 * **Beiträge:** Bericht vom Flug, Ich gehe fliegen (mit Tag, bis 7 Tage voraus, oben unter «Wer geht fliegen?» mit «Bin dabei»), Frage oder Tipp, Achtung. Antworten, Daumen hoch, eigene löschen (der Admin alle). Sichtbar 14 Tage.
 * In der Startplatz-Ansicht steht «Heute in der Gruppe: …», und am Reiter erscheint ein Punkt bei neuen Beiträgen. Das Profil öffnet sich oben rechts über das eigene Bild.
+
+## Ideen aus Burnair und der SHV-App (10.3)
+
+* **Prognose-Sicherheit je Tag** (`lib/plan.js` `dayConfidence`): aus dem Vorlauf und wie stark ICON und ECMWF bei Wind, Regen und Bewölkung (9–17 Uhr, alle Gebiete) auseinanderliegen. «gut», «mittel» (eher unsicher) oder «unsicher» mit Gründen, im Entscheid unter der Schlagzeile, in der Tagesleiste und im Wochenblick. Ändert den Score nicht. ECMWF wird dafür zusätzlich mit Niederschlag und Bewölkung geholt (gleiche Anzahl Open-Meteo-Aufrufe).
+* **Lee-Karte:** Karte > Wind-Leiste > «Lee». Hinter einer Krete, die gegen den Wind bis 6 km entfernt deutlich höher liegt (ab 120 m, Lee reicht etwa 8-mal ihre Höhe), ab 12 km/h Wind auf Kretenhöhe. Antippen erklärt warum. Wie alle Ebenen von Haus aus aus.
+* **Live-Wind der Stationen:** Pfeile zeigen jetzt «Wind/Böen», Farbe nach den Böen (ab 25 orange, ab 35 rot), blass bei Messungen über 40 Minuten. Ebene «Messstationen» lässt sich ausschalten.

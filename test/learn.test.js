@@ -127,3 +127,13 @@ test('Talwind und Grundwind im Modell: gelernt mehr Wind nur zur Vorsicht', asyn
   const v2 = PlanModel.prototype.valleyAt.call({}, down, se, 0, 15);
   assert.equal(v2.speed, 7);   // höchstens 3 km/h weniger
 });
+
+test('Prognose-Sicherheit je Tag: Vorlauf und Uneinigkeit der Modelle', async () => {
+  const { dayConfidence } = await import('../lib/plan.js');
+  assert.equal(dayConfidence({ lead: 0, wind: [1, 2], rain: [0, 0], cloud: [10] }).level, 'gut');
+  const m = dayConfidence({ lead: 3, wind: [4, 5, 6], rain: [0], cloud: [20] });
+  assert.equal(m.level, 'mittel'); assert.ok(m.why.includes('3 Tage voraus'));
+  const u = dayConfidence({ lead: 2, wind: [9, 10], rain: [1, 1, 0], cloud: [60] });
+  assert.equal(u.level, 'unsicher'); assert.ok(u.why.some(x => /Regen/.test(x)));
+  assert.ok(dayConfidence({ lead: 1 }).why.includes('kein Vergleichsmodell'));
+});
