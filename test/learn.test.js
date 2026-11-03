@@ -86,3 +86,44 @@ test('Gelernte Böen im Modell: anheben bis 10, senken halb und höchstens 4, «
   assert.equal(la({ ...base, mode: 'none' }), null);
   assert.equal(la(base, 10, 270).add, 0.6);              // keine Gruppe: Stationsmittel
 });
+
+test('Föhn und Bise nachschärfen: Druckfehler lernen, Warngrenze sinkt nach 2 verpassten Tagen, nie höher', async () => {
+  const { pressureLearn } = await import('../lib/learn.js');
+  const NOW = Date.UTC(2026, 10, 1), rows = [];
+  for (let d = 1; d <= 20; d++) for (let h = 6; h <= 18; h++) {
+    const ms = NOW - d * 86400000 + h * 3600000, bise = d === 3 || d === 9;
+    // Modell unterschätzt den Bisedruck um 0.8 hPa; an zwei Tagen Bise gemessen bei Prognose 0.8 hPa
+    rows.push({ ms, fdp: 1, odp: 1, foehnObs: 0, bdp: bise ? 0.8 : 0.2, obdp: (bise ? 0.8 : 0.2) + 0.8, biseObs: bise && h > 9 ? 65 : 5 });
+  }
+  const r = pressureLearn(rows, NOW);
+  assert.ok(r.bise.bias > 0.5 && r.bise.bias <= 0.8, 'Bias ' + r.bise.bias);
+  assert.equal(r.bise.missed, 2);
+  assert.equal(r.bise.warn, 1.5);   // 0.8 + Bias → gut 1.5, abgerundet auf 1.5
+  assert.equal(r.foehn.warn, 4); assert.equal(r.foehn.bias, 0);
+  // ein einzelner verpasster Tag reicht nicht
+  const one = pressureLearn(rows.filter(x => Math.floor((NOW - x.ms) / 86400000) !== 8), NOW);
+  assert.equal(one.bise.warn, 2);
+});
+
+test('Wettermodell: ECMWF klar besser bekommt Gewicht, knapp besser nicht', async () => {
+  const { modelLearn } = await import('../lib/learn.js');
+  const NOW = Date.UTC(2026, 10, 1), rows = [];
+  for (let d = 1; d <= 10; d++) for (let h = 9; h <= 17; h++) {
+    const ms = NOW - d * 86400000 + h * 3600000;
+    rows.push({ area: 'a', ms, og: 30, ig: 22, eg: 28 });   // ICON 8 zu tief, ECMWF 2
+    rows.push({ area: 'b', ms, og: 30, ig: 27, eg: 27.2 });
+  }
+  const r = modelLearn(rows, NOW);
+  assert.equal(r.a.weight, 0.5); assert.equal(r.b.weight, 0);
+});
+
+test('Talwind und Grundwind im Modell: gelernt mehr Wind nur zur Vorsicht', async () => {
+  const { PlanModel } = await import('../lib/plan.js');
+  const vs = { name: 'Interlaken', l: { n: 100, mode: 'overall', gust: 6, buckets: {}, wind: { mode: 'overall', avg: 5, buckets: {} } } };
+  const se = { wind_speed_10m: [10], wind_gusts_10m: [18], wind_direction_10m: [250] };
+  const v = PlanModel.prototype.valleyAt.call({}, vs, se, 0, 15);
+  assert.equal(v.speed, 13); assert.equal(v.gust, 21.6); assert.equal(v.learned.name, 'Interlaken');
+  const down = { name: 'X', l: { n: 100, mode: 'overall', gust: -20, buckets: {}, wind: { mode: 'overall', avg: -20, buckets: {} } } };
+  const v2 = PlanModel.prototype.valleyAt.call({}, down, se, 0, 15);
+  assert.equal(v2.speed, 7);   // höchstens 3 km/h weniger
+});

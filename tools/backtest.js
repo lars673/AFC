@@ -20,7 +20,8 @@ import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js
 import { regionalFromObs } from '../lib/regional.js';
 import { biseLevel } from '../lib/scoring.js';
 import { PRESSURE_LEVELS } from '../lib/openmeteo.js';
-import { stationLearn, simplifyLearned, STATION_DAYS } from '../lib/learn.js';
+import { stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from '../lib/learn.js';
+import { existsSync } from 'node:fs';
 import { omTimeToMs, zurichParts, haversineKm, isNum } from '../lib/util.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -205,6 +206,32 @@ const proxy = Object.fromEntries(Object.values(mountain).map(m => {
   const fc = s ? raw.sites[s.id] : null;
   return [m.code, fc?.wind_gusts_10m ? { fc, idx: new Map(fc.t.map((t, i) => [t, i])) } : null];
 }));
+// Eigene gespeicherte Daten des Servers (data/afc.sqlite): Prognose und Messung je Station, Föhn-/Bisedruck,
+// beide Modelle. Damit hat das Lernen im Rückblick-Test dieselbe Vorgeschichte wie live (bis 30 bzw. 90 Tage).
+const own = await (async () => {
+  const file = path.join(OUT, 'afc.sqlite');
+  if (!existsSync(file) || process.argv.includes('--ohne-eigene')) return null;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(file, { readOnly: true });
+    const q = (sql, p = []) => { try { return db.prepare(sql).all(...p); } catch { return []; } };
+    const since = new Date(from - PRESSURE_DAYS * DAY).toISOString();
+    const st = q('SELECT p.code, p.target, p.wind pw, p.gust pg, p.dir pd, o.wind ow, o.gust og FROM fc_pred p JOIN observations o ON o.code=p.code AND o.time=p.target WHERE p.target>=?', [since]).map(r => { const ms = Date.parse(r.target); return { ...r, ms, hour: zurichParts(ms).hour }; });
+    const reg = q('SELECT f.target, f.fdp, f.bdp, o.odp, o.obdp, o.foehn foehnObs, o.bise biseObs FROM reg_fc f JOIN reg_obs o ON o.time=f.target WHERE f.target>=?', [since]).map(r => ({ ...r, ms: Date.parse(r.target) }));
+    // Stationsliste für Talstationen und den Modellvergleich (nächste Station je Gebiet)
+    let meta = {};
+    try { meta = (await loadStationList()).list; } catch { /* ohne Netz: nur Bergstationen */ }
+    const mod = [];
+    for (const a of areas) {
+      const near = Object.entries(meta).filter(([, m]) => isNum(m.lat)).map(([code, m]) => ({ code, d: haversineKm(a.lat, a.lon, m.lat, m.lon) })).filter(x => x.d <= 15).sort((x, y) => x.d - y.d)[0];
+      if (near) for (const r of q('SELECT m.target, m.ig, m.eg, o.gust og FROM model_fc m JOIN observations o ON o.code=? AND o.time=m.target WHERE m.area=? AND m.target>=?', [near.code, a.id, since])) mod.push({ ...r, area: a.id, code: near.code, ms: Date.parse(r.target) });
+    }
+    db.close();
+    const ownMeta = Object.fromEntries(Object.entries(meta).map(([c, m]) => [c, { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }]));
+    return { st, reg, mod, ownMeta, keys: new Set(st.map(r => r.code + '|' + r.ms)) };
+  } catch { return null; }
+})();
+
 function learnedAt(d) {
   if (process.argv.includes('--ohne-lernen')) return null;
   const rows = [];
@@ -213,10 +240,11 @@ function learnedAt(d) {
     if (!p) continue;
     for (let ms = d - STATION_DAYS * DAY; ms < d; ms += 3600000) {
       const o = m.rows.get(ms), i = p.idx.get(ms);
-      if (!o || !isNum(o.gust) || i === undefined || !isNum(p.fc.wind_gusts_10m[i])) continue;
+      if (!o || !isNum(o.gust) || i === undefined || !isNum(p.fc.wind_gusts_10m[i]) || own?.keys.has(m.code + '|' + ms)) continue;
       rows.push({ code: m.code, ms, hour: zurichParts(ms).hour, og: o.gust, ow: o.wind, pg: p.fc.wind_gusts_10m[i], pw: p.fc.wind_speed_10m?.[i], pd: p.fc.wind_direction_10m?.[i] });
     }
   }
+  if (own) for (const r of own.st) if (r.ms < d && r.ms >= d - STATION_DAYS * DAY) rows.push(r);
   const l = stationLearn(rows, d);
   // --lernen-einfach: nur das Stationsmittel und nur anheben (zweite Stufe der Selbstprüfung)
   return process.argv.includes('--lernen-einfach') ? simplifyLearned(l) : l;
@@ -234,7 +262,10 @@ for (let d = from; d <= to; d += DAY) {
     const o = m.rows.get(nowMs);
     if (o && isNum(o.wind)) { mObs[m.code] = { time: new Date(nowMs).toISOString(), wind: o.wind, gust: o.gust, dir: o.dir }; mMeta[m.code] = { name: m.name, lat: m.lat, lon: m.lon, alt: m.alt }; }
   }
-  const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: { ...allMeta, ...mMeta }, learned: learnedAt(d), regional, trend: null, sites, fetchedAt: d });
+  // Föhn-/Bisedruck und Modellwahl nur im vollen Lauf (nicht --lernen-einfach, nicht --ohne-lernen)
+  const full = own && !process.argv.includes('--ohne-lernen') && !process.argv.includes('--lernen-einfach');
+  const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: { ...allMeta, ...mMeta, ...(own ? own.ownMeta : {}) }, learned: learnedAt(d), regional, trend: null, sites, fetchedAt: d,
+    pressureLearn: full ? pressureLearn(own.reg, d) : null, modelLearn: full ? modelLearn(own.mod, d) : null });
   if (!model.ok) continue;
   const plan = model.planPayload('normal');
   const di = plan.dates.indexOf(date);

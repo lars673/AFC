@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 
-import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts } from './lib/util.js';
+import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts, haversineKm } from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
@@ -24,7 +24,7 @@ import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
-import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, STATION_DAYS } from './lib/learn.js';
+import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from './lib/learn.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { httpGet } from './lib/http.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
@@ -98,6 +98,9 @@ const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
 // Solange es kein Konto gibt, läuft AFC wie bisher ohne Anmeldung (ein Pilot, eigener Mac). Das erste Konto wird
 // Admin und übernimmt alle bisherigen Daten (Flugbuch, Wächter, Benachrichtigungen). Danach braucht jede Anfrage
 // eine Anmeldung; neue Piloten kommen nur über einen Einladungslink dazu.
+db.exec(`CREATE TABLE IF NOT EXISTS reg_fc (target TEXT PRIMARY KEY, lead REAL, fdp REAL, bdp REAL);
+CREATE TABLE IF NOT EXISTS reg_obs (time TEXT PRIMARY KEY, odp REAL, obdp REAL, foehn REAL, bise REAL);
+CREATE TABLE IF NOT EXISTS model_fc (area TEXT NOT NULL, target TEXT NOT NULL, lead REAL, ig REAL, eg REAL, iw REAL, ew REAL, PRIMARY KEY(area,target));`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
@@ -220,6 +223,13 @@ async function collectObservations() {
   state.obs = latestObs();
   state.regional = Object.keys(state.obs).length ? regionalFromObs(state.obs, state.foehnIndex, state.qff) : null;
   state.trend = foehnTrend();
+  if (state.regional) {
+    // Stündlich das Stärkste festhalten: gemessener Druckunterschied und Föhn-/Bise-Signal (für das Nachschärfen)
+    const hour = new Date(Math.floor(Date.now() / 3600000) * 3600000).toISOString(), r = state.regional;
+    dbRun(`INSERT INTO reg_obs(time,odp,obdp,foehn,bise) VALUES(?,?,?,?,?) ON CONFLICT(time) DO UPDATE SET
+      odp=coalesce(excluded.odp, reg_obs.odp), obdp=coalesce(excluded.obdp, reg_obs.obdp), foehn=max(coalesce(reg_obs.foehn,0), coalesce(excluded.foehn,0)), bise=max(coalesce(reg_obs.bise,0), coalesce(excluded.bise,0))`,
+    [hour, r.dp?.foehn ?? null, r.dp?.bise ?? null, r.foehnScore ?? null, r.biseScore ?? null]);
+  }
   invalidate();
 }
 
@@ -334,6 +344,22 @@ function storePredictions(raw, now = Date.now()) {
       up.run(code, new Date(target).toISOString(), nowIso(), lead, fc.wind_speed_10m?.[i] ?? null, fc.wind_gusts_10m?.[i] ?? null, fc.wind_direction_10m?.[i] ?? null, fc.temperature_2m?.[i] ?? null);
     }
   }
+  // Föhn- und Bisedruck (Prognose) und beide Wettermodelle je Gebiet, für das Lernen (lib/learn.js)
+  const at = (sr, k, t) => { const i = sr?.t?.indexOf(t) ?? -1; return i >= 0 && isNum(sr[k]?.[i]) ? sr[k][i] : null; };
+  const g = raw.grad || {};
+  const upR = db.prepare(`INSERT INTO reg_fc(target,lead,fdp,bdp) VALUES(?,?,?,?) ON CONFLICT(target) DO UPDATE SET lead=excluded.lead, fdp=excluded.fdp, bdp=excluded.bdp WHERE abs(excluded.lead - 3) < abs(reg_fc.lead - 3)`);
+  const upM = db.prepare(`INSERT INTO model_fc(area,target,lead,ig,eg,iw,ew) VALUES(?,?,?,?,?,?,?) ON CONFLICT(area,target) DO UPDATE SET lead=excluded.lead, ig=excluded.ig, eg=excluded.eg, iw=excluded.iw, ew=excluded.ew WHERE abs(excluded.lead - 3) < abs(model_fc.lead - 3)`);
+  for (let k = 0; k < 6; k++) {
+    const target = h0 + k * 3600000, lead = (target - now) / 3600000, tIso = new Date(target).toISOString();
+    if (lead < 1) continue;
+    const lug = at(g.LUG, 'pressure_msl', target), klo = at(g.KLO, 'pressure_msl', target), gve = at(g.GVE, 'pressure_msl', target);
+    const fdp = isNum(lug) && isNum(klo) ? Math.round((lug - klo) * 10) / 10 : null, bdp = isNum(klo) && isNum(gve) ? Math.round((klo - gve) * 10) / 10 : null;
+    if (isNum(fdp) || isNum(bdp)) upR.run(tIso, lead, fdp, bdp);
+    for (const [area, a] of Object.entries(raw.areas || {})) {
+      const ig = at(a.sea, 'wind_gusts_10m', target), eg = at(a.ecmwf, 'wind_gusts_10m', target);
+      if (isNum(ig) && isNum(eg)) upM.run(area, tIso, lead, ig, eg, at(a.sea, 'wind_speed_10m', target), at(a.ecmwf, 'wind_speed_10m', target));
+    }
+  }
 }
 
 /** Prognosegüte je Station (Prognose 3 h voraus gegen Messung, letzte 7 Tage). */
@@ -374,6 +400,31 @@ function learnedBias() {
   state.learnedAt = Date.now();
   return state.learned;
 }
+/** Föhn und Bise nachschärfen (lib/learn.js pressureLearn): Prognose gegen Messung, letzte 90 Tage. */
+function pressureLearned() {
+  if (state.pressure && Date.now() - state.pressureAt < 3600000) return state.pressure;
+  const since = new Date(Date.now() - PRESSURE_DAYS * 86400000).toISOString();
+  const rows = dbAll('SELECT f.target, f.fdp, f.bdp, o.odp, o.obdp, o.foehn foehnObs, o.bise biseObs FROM reg_fc f JOIN reg_obs o ON o.time=f.target WHERE f.target>=?', [since])
+    .map(r => ({ ...r, ms: Date.parse(r.target) }));
+  state.pressure = pressureLearn(rows); state.pressureAt = Date.now();
+  return state.pressure;
+}
+/** Welches Wettermodell lag je Gebiet besser (lib/learn.js modelLearn), gegen die nächste Messstation. */
+function modelLearned() {
+  if (state.models && Date.now() - state.modelsAt < 3600000) return state.models;
+  const near = {};
+  for (const a of AREAS) {
+    const st = Object.entries(state.stationList).filter(([, m]) => isNum(m.lat)).map(([code, m]) => ({ code, d: haversineKm(a.lat, a.lon, m.lat, m.lon) })).filter(x => x.d <= 15).sort((x, y) => x.d - y.d)[0];
+    if (st) near[a.id] = st.code;
+  }
+  const since = new Date(Date.now() - STATION_DAYS * 86400000).toISOString(), rows = [];
+  for (const [area, code] of Object.entries(near)) {
+    for (const r of dbAll('SELECT m.target, m.ig, m.eg, o.gust og FROM model_fc m JOIN observations o ON o.code=? AND o.time=m.target WHERE m.area=? AND m.target>=?', [code, area, since])) rows.push({ ...r, area, code, ms: Date.parse(r.target) });
+  }
+  state.models = modelLearn(rows); state.modelsAt = Date.now();
+  return state.models;
+}
+const modelLearnedList = () => Object.entries(modelLearned()).map(([id, m]) => ({ id, name: AREAS.find(a => a.id === id)?.name || id, ...m, station: state.stationList[m.station]?.name || m.station }));
 /** Was die Selbstprüfung erlaubt: alles, nur das Einfache, oder nichts. */
 function learnedForModel() {
   const g = learnGuard();
@@ -389,7 +440,7 @@ function currentModel() {
   if (!state.raw) return null;
   if (!state.model || state.model.ver !== state.version || now - state.modelAt > 5 * 60000) {
     state.model = new PlanModel({
-      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedForModel(),
+      now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedForModel(), pressureLearn: learnGuard().mode === 'off' || learnGuard().off ? null : pressureLearned(), modelLearn: ['off', 'simple'].includes(learnGuard().mode) || learnGuard().off ? null : modelLearned(),
       thermLearn: thermalLearned(),
       feedbackByLevel: siteFeedbackByLevel(feedbackRecords()),
       sites: SITES, fetchedAt: state.raw.fetchedAt
@@ -976,8 +1027,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
-        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), models: modelLearnedList() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!isLocal(req) || !isAdmin(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1418,6 +1469,9 @@ async function maintenance() {
     const cut = new Date(Date.now() - 30 * 86400000).toISOString();
     dbRun('DELETE FROM observations WHERE time<?', [cut]);
     dbRun('DELETE FROM fc_pred WHERE target<?', [cut]);
+    dbRun('DELETE FROM model_fc WHERE target<?', [cut]);
+    const cut120 = new Date(Date.now() - 120 * 86400000).toISOString();
+    dbRun('DELETE FROM reg_fc WHERE target<?', [cut120]); dbRun('DELETE FROM reg_obs WHERE time<?', [cut120]);
     dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;
     await backup(db, path.join(backupsDir, name));
@@ -1512,7 +1566,7 @@ function judgeLearning() {
 function learnedList() {
   return Object.entries(learnedBias()).map(([code, l]) => {
     const top = l.mode !== 'bucket' ? [] : Object.entries(l.buckets || {}).filter(([, b]) => Math.abs(b.gust) >= 3 && Math.abs(b.gust - l.gust) >= 2).sort((x, y) => Math.abs(y[1].gust) - Math.abs(x[1].gust)).slice(0, 2).map(([k, b]) => ({ k, gust: b.gust, n: b.n }));
-    return { code, name: state.stationList[code]?.name || code, n: l.n, days: l.days, gust: l.gust, wind: l.wind, mode: l.mode, mae0: l.mae0, mae: l.mae, gain: l.gain, top, used: l.mode !== 'none' && l.n >= LEARN_MIN_N };
+    return { code, name: state.stationList[code]?.name || code, alt: state.stationList[code]?.alt ?? null, n: l.n, days: l.days, gust: l.gust, wind: l.wind?.avg ?? null, windMode: l.wind?.mode || 'none', windMae0: l.wind?.mae0 ?? null, windMae: l.wind?.mae ?? null, mode: l.mode, mae0: l.mae0, mae: l.mae, gain: l.gain, top, used: (l.mode !== 'none' || (l.wind?.mode || 'none') !== 'none') && l.n >= LEARN_MIN_N };
   }).sort((a, b) => (b.gain || 0) - (a.gain || 0) || b.n - a.n);
 }
 /** Was die Rückmeldungen nach Flügen je Startplatz bewirken (Stufe Normal), für «Selbst gelernt». */

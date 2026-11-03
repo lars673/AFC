@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.0';
+const APP_VER = '10.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -646,6 +646,14 @@ function thermalHtml(t) {
   return `<div style="margin-top:12px"><b>Aus IGC-Flügen gelernt</b> <span class="fine">Thermik-Obergrenze und Steigen gegen die Prognose zur Flugzeit, je Gebiet ab 3 Flügen. Übernommen wird nur, was die bisherigen Flüge besser erklärt hätte.</span>
     ${list.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${list.map(([a, x]) => `<li>${esc(areaName(a))}: ${x.add ? `<b>${x.add > 0 ? '+' : ''}${x.add} m</b>, ` : ''}${esc(x.why)}${climb(x.climb)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:4px 0 0">Noch keine IGC-Flüge mit Thermik, für die AFC die Prognose kennt. Ab jetzt merkt sich AFC die Prognose jeder Stunde, damit neue Flüge verglichen werden können.</p>'}</div>`;
 }
+function pressureHtml(p, models) {
+  if (!p) return '';
+  const row = (name, x) => x ? `<li><b>${name}</b>: ${x.n ? `${x.days} Tage verglichen` : 'noch keine Daten'}${x.bias ? ` · Druckunterschied ${sgn(x.bias)} hPa korrigiert` : ''} · Warngrenze ${x.warn} hPa${x.warn < x.defaultWarn ? ` (statt ${x.defaultWarn}, ${esc(x.why)})` : ''}</li>` : '';
+  const ms = (models || []).filter(m => m.n);
+  return `<div style="margin-top:12px"><b>Föhn, Bise und Wettermodell</b> <span class="fine">Jede Stunde vergleicht AFC den prognostizierten Druckunterschied mit dem gemessenen und prüft, ob Föhn oder Bise unter der Warngrenze kam. Grenzen werden nur gesenkt, nie automatisch angehoben.</span>
+    <ul class="fine" style="margin:4px 0 0;padding-left:18px">${row('Föhn (Lugano–Kloten)', p.foehn)}${row('Bise (Kloten–Genf)', p.bise)}</ul>
+    ${ms.length ? `<p class="fine" style="margin:6px 0 0">ICON gegen ECMWF (Böen, Fehler in km/h): ${ms.map(m => `${esc(m.name)} ${m.maeIcon} / ${m.maeEc}${m.weight ? ` → ECMWF zählt ${Math.round(m.weight * 100)} %` : ''}`).join(' · ')}</p>` : '<p class="fine" style="margin:6px 0 0">Modellvergleich: sammelt noch Daten.</p>'}</div>`;
+}
 function siteFbHtml(f) {
   if (!f) return '';
   return `<div style="margin-top:12px"><b>Aus Rückmeldungen gelernt</b> <span class="fine">Urteile nach Flügen, Flüge ohne Urteil (halb) und «nicht gestartet» je Startplatz, jüngere zählen mehr. «Zu streng» gilt nur für die eigene und erfahrenere Stufen.</span>
@@ -663,8 +671,8 @@ function learnedHtml(list, guard) {
   const used = list.filter(x => x.used), wait = list.filter(x => !x.used);
   const maxN = list.length ? Math.max(...list.map(x => x.n)) : 0;
   return `<div style="margin-top:12px">${head}
-    ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li><b>${esc(x.name)}</b>: Böenfehler ${x.mae0} → ${x.mae} km/h · im Mittel ${sgn(x.gust)} km/h${x.top?.length ? ' · ' + x.top.map(t => `${esc(LEARN_WHEN(t.k))} ${sgn(t.gust)}`).join(', ') : ''}</li>`).join('')}</ul>` : ''}
-    <p class="fine" style="margin:4px 0 0">${used.length ? `${used.length} Stationen mit Korrektur, ${wait.length} ohne (zu wenig Daten oder Prognose dort schon gut).` : `Sammelt noch Daten (${maxN} von 30 Stunden je Station). Wird mit jedem Tag genauer.`} Angewendet werden die Korrekturen der Bergstationen auf Startplätze in der Nähe.</p>
+    ${used.length ? `<ul class="fine" style="margin:4px 0 0;padding-left:18px">${used.map(x => `<li><b>${esc(x.name)}</b>${num(x.alt) ? ` (${x.alt} m)` : ''}: ${x.mode !== 'none' ? `Böenfehler ${x.mae0} → ${x.mae} km/h, im Mittel ${sgn(x.gust)}` : 'Böen ohne Korrektur'}${x.top?.length ? ' · ' + x.top.map(t => `${esc(LEARN_WHEN(t.k))} ${sgn(t.gust)}`).join(', ') : ''}${x.windMode !== 'none' ? ` · Grundwind ${x.windMae0} → ${x.windMae} km/h, im Mittel ${sgn(x.wind)}` : ''}</li>`).join('')}</ul>` : ''}
+    <p class="fine" style="margin:4px 0 0">${used.length ? `${used.length} Stationen mit Korrektur, ${wait.length} ohne (zu wenig Daten oder Prognose dort schon gut).` : `Sammelt noch Daten (${maxN} von 30 Stunden je Station). Wird mit jedem Tag genauer.`} Bergstationen korrigieren Böen und Grundwind am Start, Talstationen den Talwind an der Landung. Mehr Grundwind zählt nur, wenn es die Bewertung verschlechtert.</p>
     ${runs}</div>`;
 }
 
@@ -706,12 +714,13 @@ function techHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
   const o = d.openMeteo;
-  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
+  if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${pressureHtml(d.pressure, d.models)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
   const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
     ${learnedHtml(d.learned, d.learnGuard)}
+    ${pressureHtml(d.pressure, d.models)}
     ${siteFbHtml(d.siteFeedback)}
     ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
