@@ -801,3 +801,20 @@ body.gated > header, body.gated > nav, body.gated > main, body.gated > .banner {
 .conf.c-unsicher .conf-bar i { background: var(--wait); }
 .site-notes { margin: 6px 0; padding: 8px 12px 8px 26px; border-left: 4px solid var(--wait); background: var(--panel2); border-radius: 8px; font-size: 14.5px; }
 .site-notes li + li { margin-top: 4px; }
+
+/* Wetterbild (nur Info, zählt nicht zum Score) */
+:root { --sky-sun: #f4b400; --sky-cl: #dfe5ea; --sky-cl2: #b9c3cb; --sky-line: #7d8b95; --sky-drop: #2f86d6; --sky-bolt: #f2a900; }
+:root[data-theme="dark"] { --sky-sun: #ffc93c; --sky-cl: #c9d2d9; --sky-cl2: #8f9ba4; --sky-line: #5e6b74; --sky-drop: #5aa9f0; --sky-bolt: #ffc93c; }
+@media (prefers-color-scheme: dark) { :root[data-theme="auto"] { --sky-sun: #ffc93c; --sky-cl: #c9d2d9; --sky-cl2: #8f9ba4; --sky-line: #5e6b74; --sky-drop: #5aa9f0; --sky-bolt: #ffc93c; } }
+svg.sky { display: inline-block; vertical-align: -5px; margin-left: 6px; flex: none; overflow: visible; }
+.sky-sun circle { fill: var(--sky-sun); }
+.sky-ray line { stroke: var(--sky-sun); stroke-width: 2; stroke-linecap: round; }
+.sky-cl { fill: var(--sky-cl); stroke: var(--sky-line); stroke-width: 1.2; stroke-linejoin: round; }
+.sky-cl2 { fill: var(--sky-cl2); stroke: var(--sky-line); stroke-width: 1.2; stroke-linejoin: round; }
+.sky-drop line { stroke: var(--sky-drop); stroke-width: 2; stroke-linecap: round; }
+.sky-bolt { fill: var(--sky-bolt); stroke: #8a5a00; stroke-width: .8; stroke-linejoin: round; }
+.hours-tbl td svg.sky { margin-left: 0; vertical-align: middle; }
+.kv-sky b svg.sky { margin-left: 0; vertical-align: middle; }
+.day-n { display: inline-flex; align-items: center; }
+.day-n svg.sky { margin-left: 4px; }
+.fine-i { color: var(--muted); }

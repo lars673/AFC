@@ -484,3 +484,17 @@ test('Bise im Bödeli: Messwerte vom 1.11.2026 ergeben Gefahr, ruhiger Tag nicht
   const fo = regionalFromObs({ BER: { wind: 12, gust: 20, dir: 40 }, MER: { wind: 25, gust: 40, dir: 330 }, GRH: { wind: 40, dir: 170 } });
   assert.equal(fo.biseScore, 22);
 });
+
+test('Wetterbild: Sonne, Wolken, Regen (nur Anzeige)', async () => {
+  const { skyHour, skyOf } = await import('../lib/scoring.js');
+  assert.equal(skyHour({ cloud: 5 }), 'sun');
+  assert.equal(skyHour({ cloud: 35 }), 'few');
+  assert.equal(skyHour({ cloud: 65 }), 'part');
+  assert.equal(skyHour({ cloud: 95 }), 'cloud');
+  assert.equal(skyHour({ cloud: 90, precip: 1.2 }), 'rain');
+  assert.equal(skyHour({ cloud: 90, precip: 2, cape: 1200 }), 'storm');
+  const fc = { cloud_cover: [10, 20, 30, 90, 90], precipitation: [0, 0, 0, 0, 0.8], cape: [0, 0, 0, 0, 0] };
+  assert.equal(skyOf(fc, [0, 1, 2]).k, 'few');
+  assert.equal(skyOf(fc, [0, 1, 2, 3, 4]).k, 'shower');
+  assert.equal(skyOf(null, [0]), null);
+});

@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.6';
+const APP_VER = '10.7';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -271,6 +271,31 @@ function renderBanner() {
   b.hidden = !msg; b.textContent = msg; b.classList.toggle('bad', bad);
 }
 
+/* ---- Wetterbild wie in einer Wetter-App (Sonne, Wolken, Regen). Nur zur Info, zählt nicht zum Score. */
+const SKY_T = { sun: 'Sonnig', few: 'Meist sonnig', part: 'Wechselnd bewölkt', cloud: 'Bewölkt', shower: 'Teils Regen', rain: 'Regen', storm: 'Gewitter möglich' };
+function skySvg(k) {
+  const rays = (cx, cy, r) => [0, 45, 90, 135, 180, 225, 270, 315].map(a => { const c = Math.cos(a * Math.PI / 180), s = Math.sin(a * Math.PI / 180); return `<line x1="${(cx + c * (r + 2.5)).toFixed(1)}" y1="${(cy + s * (r + 2.5)).toFixed(1)}" x2="${(cx + c * (r + 5)).toFixed(1)}" y2="${(cy + s * (r + 5)).toFixed(1)}"/>`; }).join('');
+  const sun = (cx, cy, r) => `<g class="sky-sun"><circle cx="${cx}" cy="${cy}" r="${r}"/><g class="sky-ray">${rays(cx, cy, r)}</g></g>`;
+  const cloud = (dx = 0, dy = 0, cl = 'sky-cl') => `<path class="${cl}" transform="translate(${dx} ${dy})" d="M9 25h15.5a5 5 0 0 0 .6-10A7 7 0 0 0 11.6 13 5.5 5.5 0 0 0 9 25z"/>`;
+  const drops = `<g class="sky-drop"><line x1="12" y1="27.5" x2="10.8" y2="30.5"/><line x1="17" y1="27.5" x2="15.8" y2="30.5"/><line x1="22" y1="27.5" x2="20.8" y2="30.5"/></g>`;
+  const g = {
+    sun: sun(16, 16, 6.5),
+    few: sun(13, 12, 5.5) + `<path class="sky-cl" d="M15 27h10a3.6 3.6 0 0 0 .4-7.2A5 5 0 0 0 16.5 18.6 3.9 3.9 0 0 0 15 27z"/>`,
+    part: sun(11, 10, 4.5) + cloud(1, 1),
+    cloud: cloud(-3, -2, 'sky-cl2') + cloud(1, 2),
+    shower: sun(11, 9, 4) + cloud(1, -2) + drops,
+    rain: cloud(0, -3, 'sky-cl2') + drops,
+    storm: cloud(0, -3, 'sky-cl2') + `<path class="sky-bolt" d="M17 21l-4 6h3.5l-2 5 6-7h-3.5l2-4z"/>`
+  };
+  return g[k] || '';
+}
+function skyIcon(sky, size = 22) {
+  const k = typeof sky === 'string' ? sky : sky?.k;
+  if (!k || !SKY_T[k]) return '';
+  const t = SKY_T[k] + (sky?.cloud != null ? `, Bewölkung etwa ${sky.cloud} %` : '');
+  return `<svg class="sky" viewBox="0 0 32 32" width="${size}" height="${size}" role="img" aria-label="${esc(t)}"><title>${esc(t)}</title>${skySvg(k)}</svg>`;
+}
+
 function renderDaybar() {
   const p = S.plan;
   const today = todayKey();
@@ -278,7 +303,7 @@ function renderDaybar() {
     const top = p.days[i].top, site = top && siteById(top.siteId);
     const sc = top?.best.score, past = p.dates[i] < today || (p.dates[i] === today && !top);
     return `<button type="button" class="day${past ? ' past' : ''}" data-act="day" data-i="${i}" aria-pressed="${i === S.day}">
-      <span class="day-n">${dayName(i)}</span>
+      <span class="day-n">${dayName(i)}${past ? '' : skyIcon(p.days[i].sky, 20)}</span>
       <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>${!past && p.days[i].conf && p.days[i].conf.level !== 'gut' ? `<span class="day-c c-${p.days[i].conf.level}" title="Prognose ${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}">${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}</span>` : ''}
       ${site ? ribbon(site.days[i].scores, top.best) : '<div class="ribbon"></div>'}
     </button>`;
@@ -323,7 +348,7 @@ function areaRow(a) {
   const score = x => (x.blocked ? -1 : x.days[S.day].best?.score ?? -1);
   const srow = (s, inGroup) => {
     const b = s.days[S.day].best;
-    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
+    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
   };
   // Startplätze am selben Berg (höchstens 1.5 km auseinander) zusammen, beste Richtung zuerst
   const rows = mountainGroups(sites).map(g => g.sites.sort((x, y) => score(y) - score(x)))
@@ -335,7 +360,7 @@ function areaRow(a) {
     }).join('');
   return `<div class="arow${open ? ' open' : ''}">
     <button type="button" class="arow-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
-      <span class="arow-txt"><span class="arow-name">${esc(a.name)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
+      <span class="arow-txt"><span class="arow-name">${esc(a.name)}${skyIcon(a.sky?.[S.day], 20)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
       <span class="mini-pill s-${d ? cls(d.best.score) : 'none'}">${d ? d.best.score : '–'}</span></button>
     <button type="button" class="arow-exp" data-act="toggle" data-id="${esc(a.id)}" aria-expanded="${open}" aria-label="${sites.length} ${sites.length === 1 ? 'Startplatz' : 'Startplätze'} ${open ? 'zuklappen' : 'zeigen'}"><span>${sites.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     ${open ? `<div class="rows arow-rows">${rows}</div>` : ''}
@@ -397,7 +422,7 @@ function renderDecide() {
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
-      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
+      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
@@ -1624,6 +1649,7 @@ function renderSite() {
         <div><b>${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
         <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
         <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
+        ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
       </div>
       <details class="pro-more" ${store.get('proOpen') ? 'open' : ''}><summary>Für Profis: Windprofil, Thermik, Scherung, Modelle</summary>
       <div class="kv">
@@ -1639,11 +1665,11 @@ function renderSite() {
       ${profileHtml(hr.prof)}
       </details>
     </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
-  const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
+  const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th><span class="sr">Wetter</span></th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td>${skyIcon(h.sky ? { k: h.sky, cloud: h.cloud } : null, 22)}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     ${d._savedAt ? `<div class="saved-note" role="status"><b>Kein Empfang: gespeicherter Stand von ${esc(whenTxt(d._savedAt))}.</b> Nicht für den Startentscheid verwenden, Wind vor Ort prüfen.</div>` : ''}
-    <div><strong>${dayName(S.day)}</strong> · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
+    <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
     ${S.day === 0 && !d._savedAt ? `<div class="panel" style="margin:0"><h3>Regen jetzt</h3><div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div></div>` : ''}
