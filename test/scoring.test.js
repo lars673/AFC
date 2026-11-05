@@ -498,3 +498,26 @@ test('Wetterbild: Sonne, Wolken, Regen (nur Anzeige)', async () => {
   assert.equal(skyOf(fc, [0, 1, 2, 3, 4]).k, 'shower');
   assert.equal(skyOf(null, [0]), null);
 });
+
+test('Bise: schwach ohne Messung im Oberland, voll mit Messung', async () => {
+  const { biseLevel } = await import('../lib/scoring.js');
+  const weak = biseLevel(2.4, null, 0, 2, false);
+  assert.equal(weak.level, 'warn'); assert.equal(weak.weak, true);
+  assert.equal(biseLevel(2.4, null, 0, 2, true).weak, false);
+  assert.equal(biseLevel(3.2, null, 0, 2, false).weak, false);
+  assert.equal(biseLevel(2.4, { speed: 30, dir: 45 }, 0, 2, false).weak, false);
+  assert.equal(biseLevel(1.0, null, 47, 2, false).weak, true);
+  assert.equal(biseLevel(4.5, null, 0, 2, false).level, 'danger');
+  const s = { ...site, aspects: [45] };
+  const strong = assessHour(s, good({ dir: 45, bise: { level: 'warn', why: ['x'] }, biseExposure: 'full' }));
+  const light = assessHour(s, good({ dir: 45, bise: { level: 'warn', why: ['x'], weak: true }, biseExposure: 'full' }));
+  assert.ok(light.score > strong.score);
+  assert.ok(strong.cap <= 74);
+  assert.ok(light.cap == null || light.cap > 74);
+});
+
+test('Bise im Oberland gemessen setzt biseOberland', () => {
+  const r = regionalFromObs({ BER: { dir: 45, wind: 20, gust: 30 }, BRZ: { dir: 115, wind: 22, gust: 35 } }, {}, {});
+  assert.equal(r.biseOberland, true);
+  assert.equal(regionalFromObs({ BER: { dir: 45, wind: 20, gust: 30 } }, {}, {}).biseOberland, false);
+});

@@ -492,8 +492,8 @@ function regionSummary(d) {
   const day = hours.filter(h => h.h >= 8 && h.h <= 18);
   const parts = [];
   for (const [k, name] of [['front', 'Kaltfront'], ['storm', 'Gewitterrisiko'], ['foehn', 'Föhn'], ['bise', 'Bise']]) {
-    const hit = day.find(h => h[k] === 'danger') || day.find(h => h[k] === 'warn');
-    if (hit) parts.push(k === 'bise' ? `Bise ab ${hit.h} Uhr (${hit.bise === 'danger' ? 'stark: Lee-Hänge am Thuner- und Brienzersee meiden' : 'Vorsicht'})` : `${name} ab ${hit.h} Uhr (${hit[k] === 'danger' ? 'K.-o.' : 'Vorsicht'})`);
+    const hit = day.find(h => h[k] === 'danger') || day.find(h => h[k] === 'warn' && !h.biseWeak) || day.find(h => h[k] === 'warn');
+    if (hit) parts.push(k === 'bise' ? `Bise ab ${hit.h} Uhr (${hit.bise === 'danger' ? 'stark: Lee-Hänge am Thuner- und Brienzersee meiden' : hit.biseWeak ? 'schwach, im Oberland noch nicht gemessen' : 'Vorsicht'})` : `${name} ab ${hit.h} Uhr (${hit[k] === 'danger' ? 'K.-o.' : 'Vorsicht'})`);
   }
   const up = day.filter(h => h.up800 && h.up800[0] >= 40);
   if (up.length) parts.push(`Höhenwind bis ${Math.max(...up.map(h => h.up800[0]))} km/h auf 2000 m`);
