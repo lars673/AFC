@@ -63,8 +63,10 @@
         <button class="map-btn" data-act="locate" title="Mein Standort"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Standort</span></button>
         <button class="map-btn" data-act="route" title="Route von A nach B"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="6" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 17c6 0 2-9 8-10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"/></svg><span>Route</span></button>
         <button class="map-btn" data-act="airtoggle" aria-pressed="false" title="Lufträume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l8-3 8 3v7c0 4-4 7-8 8-4-1-8-4-8-8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Luftraum</span></button>
+        <button class="map-btn" data-act="obsttoggle" aria-pressed="false" title="Kabel und Hindernisse (BAZL)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V5M19 21V5M5 7c4 5 10 5 14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Kabel</span></button>
       </div>
       <div id="radarChip" class="radar-chip" hidden></div>
+      <div id="obstChip" class="radar-chip obst-chip" hidden></div>
       <div id="layerPanel" class="layer-panel" hidden>
         <fieldset><legend>Grundkarte</legend>
           <label><input type="radio" name="base" value="color"> Landeskarte</label>
@@ -77,7 +79,7 @@
           <label><input type="checkbox" name="ov" value="air"> Lufträume (SHV)</label>
           <label><input type="checkbox" name="ov" value="wild"> Wildschutzgebiete</label>
           <label><input type="checkbox" name="ov" value="slope"> Hangneigung über 30°</label>
-          <label><input type="checkbox" name="ov" value="obst"> Hindernisse und Kabel</label>
+          <label><input type="checkbox" name="ov" value="obst"> Kabel, Seilbahnen und Hindernisse (BAZL, täglich neu)</label>
           <label><input type="checkbox" name="ov" value="kk7thermal"> Thermik aus 3,8 Mio. Flügen (kk7)</label>
           <label><input type="checkbox" name="ov" value="kk7sky"> Skyways aus Flügen (kk7)</label>
           <label><input type="checkbox" name="ov" value="stations" checked> Messstationen</label>
@@ -115,7 +117,7 @@
       <div id="mapMsg" class="map-msg" hidden></div>
       <div id="mapSheet" class="sheet" hidden></div>
     </div>
-    <p class="fine">Karte: © swisstopo. Hangneigung und Hindernisse sind Orientierungshilfen und ersetzen keine Luftraum- und Hindernisprüfung.</p>
+    <p class="fine">Karte: © swisstopo. Hangneigung und Hindernisse sind Orientierungshilfen (Hindernisse: BAZL, nur meldepflichtige ab etwa 25 m über Grund) und ersetzen keine Luftraum- und Hindernisprüfung.</p>
   </section>
   <section id="v-lage" class="view" role="tabpanel" hidden></section>
   <section id="v-day" class="view" role="tabpanel" hidden></section>

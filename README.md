@@ -10,7 +10,8 @@ Flugwetter, Startplatz-Ranking und Startentscheid für das Berner Oberland. Node
 * **Messung gegen Prognose**: nächste passende Station (höchstens 15 km, ±600 m Höhe, Messung jünger als 30 min) korrigiert die Prognose der nächsten Stunden (Einfluss halbiert sich etwa alle 1.4 h, höchstens ±12 km/h).
 * **Windprofil und Scherung** aus DWD-ICON-Druckflächen als Turbulenzindikator. Wolkenbasis aus Temperatur und Taupunkt.
 * **Modellvergleich** (MeteoSwiss ICON gegen ECMWF): bei grosser Uneinigkeit gibt es einen kleinen Abzug.
-* **Karte** mit swisstopo-Landeskarte, Luftbild, Hangneigung und Hinderniskarte (Leaflet). Ausweichkarte: OpenStreetMap.
+* **Karte** mit swisstopo-Landeskarte, Luftbild, Hangneigung (Leaflet). Ausweichkarte: OpenStreetMap.
+* **Kabel und Hindernisse** (Knopf «Kabel» auf der Karte): Luftfahrthindernisse des BAZL (Seilbahnen violett, Kabel rot gestrichelt, Masten/Krane als Punkt), antippbar mit Höhe über Grund, m ü. M., Länge, Markierung. Der Server lädt `luftfahrthindernis_4326.kmz` von data.geo.admin.ch einmal am Tag (das BAZL stellt die Daten täglich ab 04 Uhr neu bereit), speichert sie in `data/luftfahrthindernis.kmz` und liefert `/api/obstacles?b=süd,west,nord,ost` bzw. `?near=lat,lon&r=m`. Die Startplatz-Ansicht zeigt Kabel im Umkreis von 1,5 km um den Start und 1 km um den Landeplatz. Erfasst sind nur meldepflichtige Hindernisse; `AFC_OBSTACLE_URL` ändert die Quelle.
 * **Prognosegüte pro Station** (Prognose 3 h voraus gegen Messung) statt Gewichts-Optimierung.
 * Entfernt: Thermikkarte, Hangwindrechner, Notfallkontakt, IGC-Import, Webcams, Lern-/Backtest-Modell, `/api/forecast-snapshot`, `/api/terrain`.
 
@@ -194,7 +195,7 @@ npm test
 
 * Der Score ist eine Entscheidungshilfe, keine Flugfreigabe.
 * Es gibt keine Push-Benachrichtigungen (würden einen Zusatzdienst und Schlüsselverwaltung erfordern).
-* Die Auflagen «Hangneigung» und «Hindernisse» der Karte sind Orientierungshilfen; die Ebenennamen sind bei swisstopo/BAZL zu prüfen (siehe Hinweis im Code `app.js`, `OVERLAYS`).
+* Die Auflage «Hangneigung» und die Hindernisdaten sind Orientierungshilfen. Tiefe Kabel (Heuseile, viele Materialseilbahnen) sind beim BAZL nicht erfasst.
 
 ## Austausch unter den Piloten (10.2)
 

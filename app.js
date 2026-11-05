@@ -1432,10 +1432,13 @@ async function openSite(id) {
   }
 }
 /** Landeplatz: nächster offizieller Landeplatz im Gebiet, Prognose zur gewählten Stunde und Messung in der Nähe. */
-function landingHtml(s, hr) {
-  // Landeplätze des Gebiets, sonst der nächste im Umkreis von 5 km (z.B. Lehn für Amisbühl)
+/** Landeplatz zum Startplatz: Landeplätze des Gebiets, sonst der nächste im Umkreis von 5 km (z.B. Lehn für Amisbühl). */
+function nearestLanding(s) {
   const cand = (S.plan?.landings || []).filter(l => num(l.lat)).map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) }));
-  const L = (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => a.d - b.d)[0];
+  return (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => a.d - b.d)[0];
+}
+function landingHtml(s, hr) {
+  const L = nearestLanding(s);
   if (!L && !hr?.valley) return '';
   const l = L?.l, [warn, bad] = [22, 28];
   const fc = hr?.valley, fv = fc ? Math.max(fc[0], 0.75 * (fc[1] ?? 0)) : null;
@@ -1648,10 +1651,12 @@ function renderSite() {
     ${detailHtml}
     ${S.day === 0 && !d._savedAt ? `<div class="panel" style="margin:0"><h3>Regen jetzt</h3><div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div></div>` : ''}
     ${landingHtml(s, hr)}
+    <div class="panel" style="margin:0"><h3>Kabel und Hindernisse</h3><div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div></div>
     ${table}
     <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
   </div>`);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
+  fillObstNear(s);
   fillCam(s);
 }
 function reportForm(id) {
@@ -1690,7 +1695,6 @@ const KK7 = layer => `https://thermal.kk7.ch/tiles/${layer}/{z}/{x}/{y}.png?src=
 const KK7_ATTR = '<a href="https://thermal.kk7.ch">thermal.kk7.ch</a> (<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA</a>)';
 const OVERLAYS = {
   slope: { url: SWT('ch.swisstopo.hangneigung-ueber_30', 'png'), name: 'Hangneigung', opacity: 0.55 },
-  obst: { url: SWT('ch.bazl.luftfahrthindernis', 'png'), name: 'Hindernisse', opacity: 0.9 },
   // kk7: Auswertung von rund 3,8 Mio. Flügen (XContest, DHV-XC, Leonardo u. a.), CC BY-NC-SA 4.0, nur nicht-kommerziell
   kk7thermal: { url: KK7('thermals_all_all'), name: 'Thermik aus Flügen (kk7)', opacity: 0.6, tms: true, maxNative: 12, attr: KK7_ATTR },
   kk7sky: { url: KK7('skyways_all_all'), name: 'Skyways aus Flügen (kk7)', opacity: 0.6, tms: true, maxNative: 13, attr: KK7_ATTR }
@@ -1865,6 +1869,84 @@ async function airRaster(F) {
   return AIR.raster;
 }
 
+/* ---- Luftfahrthindernisse des BAZL (Kabel, Seilbahnen, Masten …) über den eigenen Mac (/api/obstacles, täglich neu) */
+const OB = { layer: null, n: 0, at: null, key: '', rend: null, sel: null };
+const OB_MINZOOM = 11, OB_PTZOOM = 12;
+const OB_KIND = { rope: 'Seilbahn oder Skilift', wire: 'Kabel oder Leitung', pt: 'Hindernis' };
+const OB_NOTE = 'Erfasst sind nur meldepflichtige Hindernisse (in der Regel ab 25 m über Grund, in Siedlungen ab 60 m). Tiefere Kabel, Heuseile und viele Materialseilbahnen fehlen: vor Ort schauen.';
+const obstOn = () => !!store.get('ov', {}).obst;
+const obstTitle = it => it.t ? it.t.charAt(0).toUpperCase() + it.t.slice(1) : OB_KIND[it.k];
+async function updateObst() {
+  if (!M.map) return;
+  const n = ++OB.n;
+  $('[data-act="obsttoggle"]')?.setAttribute('aria-pressed', String(obstOn()));
+  if (!obstOn()) { if (OB.layer) { M.map.removeLayer(OB.layer); OB.layer = null; } OB.key = ''; if ($('#obstChip')) $('#obstChip').hidden = true; return; }
+  const chip = $('#obstChip'), z = M.map.getZoom();
+  const say = t => { if (chip) { chip.textContent = t; chip.hidden = !t; } };
+  if (z < OB_MINZOOM) { if (OB.layer) { M.map.removeLayer(OB.layer); OB.layer = null; } OB.key = ''; say('Kabel und Hindernisse: näher heranzoomen'); return; }
+  // Ausschnitt mit Rand, auf 0,05° gerundet (gleiche Abfrage beim leichten Verschieben)
+  const bb = M.map.getBounds(), q = v => Math.round(v * 20) / 20;
+  const b = [Math.floor(bb.getSouth() * 20) / 20 - 0.05, Math.floor(bb.getWest() * 20) / 20 - 0.05, Math.ceil(bb.getNorth() * 20) / 20 + 0.05, Math.ceil(bb.getEast() * 20) / 20 + 0.05].map(q);
+  if (b[2] - b[0] > 1 || b[3] - b[1] > 1.5) { say('Kabel und Hindernisse: näher heranzoomen'); return; }
+  const key = b.join(',') + ':' + (z >= OB_PTZOOM ? 'p' : 'l');
+  if (key === OB.key && OB.layer) return;
+  let j;
+  try {
+    const r = await fetch('/api/obstacles?b=' + b.map(v => v.toFixed(2)).join(','));
+    j = await r.json().catch(() => ({}));
+    if (r.status === 202) { say('Kabel und Hindernisse werden geladen …'); setTimeout(() => { if (n === OB.n) { OB.key = ''; updateObst(); } }, 8000); return; }
+    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  } catch (e) { if (n === OB.n) say('Kabel und Hindernisse nicht verfügbar: ' + e.message); return; }
+  if (n !== OB.n || !obstOn()) return;
+  OB.at = j.at; OB.key = key;
+  if (!M.map.getPane('obst')) { const pn = M.map.createPane('obst'); pn.style.zIndex = 440; }
+  OB.rend ||= L.canvas ? L.canvas({ pane: 'obst', tolerance: 10 }) : undefined;
+  const g = L.layerGroup();
+  const tap = it => e => { if (e && L.DomEvent) L.DomEvent.stopPropagation(e); if (RT.active) return routeClick(e.latlng); OB.sel = it; mapSheet('obst', it); };
+  for (const it of j.items) {
+    const title = `${obstTitle(it)}${it.h != null ? ', ' + it.h + ' m über Grund' : ''}`;
+    if (it.k === 'pt') {
+      if (z < OB_PTZOOM) continue;
+      L.circleMarker(it.g[0][0], { pane: 'obst', renderer: OB.rend, radius: 4.5, color: '#fff', weight: 1.5, fillColor: '#c62828', fillOpacity: 1 }).bindTooltip?.(title).on('click', tap(it)).addTo(g);
+      continue;
+    }
+    // weisser Rand, damit das Kabel auf Landeskarte und Luftbild sichtbar ist
+    L.polyline(it.g, { pane: 'obst', renderer: OB.rend, color: '#fff', weight: it.k === 'rope' ? 6 : 5, opacity: 0.85, interactive: false }).addTo(g);
+    L.polyline(it.g, { pane: 'obst', renderer: OB.rend, color: it.k === 'rope' ? '#7b1fa2' : '#d50000', weight: it.k === 'rope' ? 3.5 : 2.5, dashArray: it.k === 'rope' ? null : '9 5' }).bindTooltip?.(title).on('click', tap(it)).addTo(g);
+  }
+  if (OB.layer) M.map.removeLayer(OB.layer);
+  OB.layer = g.addTo(M.map);
+  say(j.more ? 'Sehr viele Hindernisse hier: näher heranzoomen für alle' : '');
+}
+function obstSheetHtml(it) {
+  const row = (k, v) => (v == null || v === '' ? '' : `<div><b>${esc(String(v))}</b><span>${k}</span></div>`);
+  return `<div class="sheet-top"><div><h3>${esc(obstTitle(it))}</h3><p class="fine" style="margin:0">Luftfahrthindernis · Quelle BAZL${OB.at ? ', Stand ' + new Date(OB.at).toLocaleDateString('de-CH') : ''}</p></div></div>
+    <div class="kv">${row('m über Grund (höchster Punkt)', it.h)}${row('m ü. M. (höchster Punkt)', it.top)}${row('m lang', it.len)}${row('Markierung', it.m)}${row('Befeuerung', it.l)}${row('Nummer BAZL', it.id)}</div>
+    <p class="fine">${OB_NOTE}</p>
+    <div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+}
+/** Kabel und Hindernisse um Start- und Landeplatz in der Startplatz-Ansicht. */
+const fmtM = d => (d >= 1000 ? (d / 1000).toFixed(1).replace('.', ',') + ' km' : Math.round(d / 10) * 10 + ' m');
+function obstNearList(items, what) {
+  if (!items.length) return `<p class="fine" style="margin:0 0 6px">${what}: keine erfassten Kabel oder Hindernisse.</p>`;
+  return `<p style="margin:0 0 4px"><b>${what}</b></p><ul class="obst-list">${items.map(it => `<li class="ob-${it.k}"><b>${esc(obstTitle(it))}</b> ${it.d < 30 ? 'direkt hier' : fmtM(it.d) + ' ' + DIR8_ADJ[Math.round(it.deg / 45) % 8]}${it.h != null ? ` <span class="fine">· ${it.h} m über Grund</span>` : ''}</li>`).join('')}</ul>`;
+}
+async function fillObstNear(s) {
+  const el = $('#obstNear');
+  if (!el) return;
+  const l = nearestLanding(s)?.l;
+  try {
+    const get = async (lat, lon, r) => { const x = await fetch(`/api/obstacles?near=${lat.toFixed(5)},${lon.toFixed(5)}&r=${r}`); const j = await x.json().catch(() => ({})); if (x.status === 202) throw new Error('Daten werden noch geladen'); if (!x.ok) throw new Error(j.error || 'HTTP ' + x.status); return j; };
+    const a = await get(s.lat, s.lon, 1500), b = l ? await get(l.lat, l.lon, 1000) : null;
+    if ($('#obstNear') !== el) return;
+    const ka = a.items.filter(x => x.k !== 'pt').length + (b ? b.items.filter(x => x.k !== 'pt').length : 0);
+    el.innerHTML = `${obstNearList(a.items.slice(0, 5), 'Um den Start (1,5 km)')}${b ? obstNearList(b.items.slice(0, 5), 'Um den Landeplatz ' + l.name + ' (1 km)') : ''}
+      ${ka ? `<p class="volte-warn" style="margin:6px 0">${ka === 1 ? 'Ein Kabel' : ka + ' Kabel oder Seilbahnen'} in der Nähe: Lage vor dem Start auf der Karte anschauen.</p>` : ''}
+      <p class="fine" style="margin:4px 0">${OB_NOTE}</p>
+      <button class="btn sec" type="button" data-act="obstmap" data-id="${esc(s.id)}">Kabel auf der Karte zeigen</button>`;
+  } catch (e) { if ($('#obstNear') === el) el.innerHTML = `<p class="fine" style="margin:0">Hindernisdaten nicht verfügbar (${esc(e.message)}).</p>`; }
+}
+
 function initMap() {
   if (M.map) return true;
   if (typeof L === 'undefined') { mapMsg('Die Kartenbibliothek konnte nicht geladen werden. Prüfe die Verbindung und tippe auf «Aktualisieren».'); return false; }
@@ -1878,6 +1960,8 @@ function initMap() {
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   if (ov.radar) setRadar(true);
   syncLayerPanel();
+  M.map.on('moveend', () => { if (obstOn()) updateObst(); });
+  if (ov.obst) updateObst();
   M.map.on('click', e => { if (RT.active) routeClick(e.latlng); else if (T.modes.size && T.data) mapSheet('thermal', e.latlng); else if (airHere(e.latlng.lat, e.latlng.lng)) mapSheet('air', e.latlng); else $('#mapSheet').hidden = true; });
   updateAir();
   return true;
@@ -2459,7 +2543,9 @@ async function updateThermal() {
 function mapSheet(kind, id) {
   const el = $('#mapSheet');
   let h = '';
-  if (kind === 'site') {
+  if (kind === 'obst') {
+    h = obstSheetHtml(id);
+  } else if (kind === 'site') {
     const s = siteById(id), b = s.days[S.day]?.best;
     h = `<div class="sheet-top"><div><h3>${esc(s.name)}</h3><p class="fine" style="margin:0">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}</p></div>${pill(s.blocked ? null : b?.score)}</div><div class="sheet-act"><button class="btn" type="button" data-act="site" data-id="${esc(id)}">Details</button>${starBtn(id)}<button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else if (kind === 'group') {
@@ -2587,6 +2673,8 @@ document.addEventListener('click', async e => {
     }
     case 'report': closeDlg($('#siteDlg')); reportForm(id); break;
     case 'showmap': closeDlg($('#siteDlg')); setTab('map'); setTimeout(() => { const s = siteById(id); if (M.map && s) { M.map.setView([s.lat, s.lon], 14); mapSheet('site', id); } }, 200); break;
+    case 'obsttoggle': { const on = !obstOn(); store.set('ov', { ...store.get('ov', {}), obst: on }); syncLayerPanel(); updateObst(); if (on) { mapMsg('Kabel: rot gestrichelt, Seilbahnen violett, Masten und Krane als roter Punkt. Antippen für die Höhe.'); setTimeout(() => mapMsg(''), 6000); } else $('#mapSheet').hidden = true; break; }
+    case 'obstmap': store.set('ov', { ...store.get('ov', {}), obst: true }); syncLayerPanel(); closeDlg($('#siteDlg')); setTab('map'); setTimeout(() => { const s = siteById(id); if (M.map && s) { M.map.setView([s.lat, s.lon], 14); updateObst(); } }, 200); break;
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
@@ -2724,7 +2812,7 @@ document.addEventListener('change', e => {
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
-  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value === 'radar') setRadar(t.checked); else if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else renderMap(); } }
+  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value === 'radar') setRadar(t.checked); else if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else if (t.value === 'obst') { updateObst(); if (t.checked && M.map && M.map.getZoom() < OB_MINZOOM) { mapMsg('Kabel und Hindernisse erscheinen ab einer näheren Zoomstufe. Antippen für Höhe und Art.'); setTimeout(() => mapMsg(''), 6000); } } else renderMap(); } }
 });
 // IGC-Dateien aufs Flugbuch ziehen
 document.addEventListener('dragover', e => { if (S.tab === 'book' && e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });

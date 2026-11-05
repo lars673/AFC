@@ -37,7 +37,7 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
   const mock = await startMock('good');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-acc-'));
   const port = 18796, base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' }, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_OBSTACLE_URL: mock.url + '/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz', AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' }, stdio: 'ignore' });
   const H = { 'X-AFC-Client': 'testgeraet-12345', 'Content-Type': 'application/json' };
   const call = async (method, p, body, cookie) => {
     const r = await fetch(base + p, { method, headers: { ...H, ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -164,7 +164,7 @@ test('Austausch: Beiträge, Antworten, Bin dabei, Tagesbild je Startplatz', asyn
   const mock = await startMock('good');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-grp-'));
   const port = 18798, base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' }, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_OBSTACLE_URL: mock.url + '/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz', AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '' }, stdio: 'ignore' });
   const H = { 'X-AFC-Client': 'testgeraet-12345', 'Content-Type': 'application/json' };
   const call = async (method, p, body, cookie) => {
     const r = await fetch(base + p, { method, headers: { ...H, ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
