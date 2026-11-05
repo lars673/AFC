@@ -69,6 +69,10 @@ Reiter «Flugbuch»: Flüge mit Datum, Startzeit, Dauer, Start- und Landeplatz, 
 
 AFC bleibt auf dem Mac; das Handy greift über Tailscale darauf zu (gratis, privat, HTTPS, nur Geräte im eigenen Tailscale-Konto). Tailscale auf Mac und Handy installieren und mit demselben Konto anmelden, dann `tools/AFC aufs Handy.command` doppelklicken (`tailscale serve --bg 8787`). Die Adresse `https://<mac>.<tailnet>.ts.net` in Safari öffnen, «Zum Home-Bildschirm». Der Server bleibt an 127.0.0.1 gebunden. Schläft der Mac, zeigt die App den letzten Stand mit Warnung; bei schlechtem Empfang erscheint nach 4 s die gespeicherte Version. Leaflet liegt unter `vendor/leaflet` (BSD-2), damit die Karte nicht von cdnjs abhängt. Beenden: `tools/AFC Handy-Zugang beenden.command`.
 
+## Öffentlich für Freunde (Tailscale Funnel)
+
+`tools/AFC öffentlich machen.command` doppelklicken (`tailscale funnel --bg 8787`): AFC ist dann unter derselben Adresse `https://<mac>.<tailnet>.ts.net` aus dem ganzen Internet erreichbar, Freunde brauchen kein Tailscale, nur einen Einladungslink. Gratis, die Daten bleiben auf dem Mac, Updates kommen wie bisher über den Hinweis in der App. Das Skript macht nur weiter, wenn es schon ein Konto gibt. Anfragen über Funnel (Kopfzeile `Tailscale-Funnel-Request`) zählen nie als «dieser Rechner»: kein Update-Knopf, kein Einrichten des ersten Kontos, und ohne Konten sind alle `/api`-Aufrufe gesperrt. Zurück zu «nur meine Geräte»: `tools/AFC öffentlich beenden.command`. Der Mac muss wach sein.
+
 ## Testphase: Konten, Profil, Rückmeldungen
 - Ohne Konto läuft AFC wie bisher. Das erste Konto (Profil › «Mein Konto einrichten») wird Admin und übernimmt Flugbuch, Wächter, Benachrichtigungen und Einstellungen. Vorher legt AFC eine Kopie der Datenbank an (`data/afc-vor-konten-*.sqlite`, `data/backups/afc-vor-erstem-konto-*.sqlite`).
 - Danach braucht jede Anfrage eine Anmeldung (Cookie 90 Tage, Passwort mit scrypt). Neue Piloten nur über einen Einladungslink (Profil › Testphase › «Freund einladen», gilt 30 Tage, einmal). Passwort vergessen: Admin erstellt in der Übersicht einen «Passwort-Link» (3 Tage).

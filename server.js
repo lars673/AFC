@@ -77,7 +77,9 @@ initOpenMeteoUsage((() => { try { return JSON.parse(fsc.readFileSync(usageFile, 
 // Update über die App: nur im Autostart (launchd startet nach dem Beenden neu) und nur vom eigenen Mac aus
 const AUTOSTART = process.env.XPC_SERVICE_NAME === 'ch.afc.server' || process.env.AFC_AUTOSTART === '1';
 const updater = createUpdater(ROOT, { enabled: process.env.AFC_UPDATE_CHECK !== '0' });
-const isLocal = req => /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
+// Tailscale Funnel (öffentlicher Zugang) leitet über 127.0.0.1 weiter und setzt «Tailscale-Funnel-Request».
+// Solche Anfragen kommen aus dem Internet und zählen nie als «dieser Rechner» (kein Update-Knopf, kein Admin ohne Konto).
+const isLocal = req => !req.headers['tailscale-funnel-request'] && /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
 const db = new DatabaseSync(path.join(dataDir, 'afc.sqlite'));
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
@@ -808,6 +810,7 @@ async function accountRoute(req, res, p, u) {
   }
   if (p === '/api/auth/setup' && req.method === 'POST') {
     if (authOn()) return sendJson(req, res, 409, { error: 'Es gibt schon ein Admin-Konto. Bitte anmelden.' });
+    if (req.headers['tailscale-funnel-request']) return sendJson(req, res, 403, { error: 'Das erste Konto lässt sich nur auf dem eigenen Mac oder Handy einrichten, nicht über den öffentlichen Zugang.' });
     const b = await body();
     const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);
     if (!name) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' });
@@ -1077,6 +1080,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
 
+    // Öffentlicher Zugang (Tailscale Funnel) ohne Konten wäre ein offenes Flugbuch für alle: dann gesperrt.
+    if (p.startsWith('/api/') && req.headers['tailscale-funnel-request'] && !authOn() && p !== '/api/auth/state') return sendJson(req, res, 403, { error: 'Öffentlicher Zugang erst, wenn auf dem Mac ein Konto eingerichtet ist.' });
     // Regenradar und Webcam-Bilder: eigene Grenze, weil eine Karte viele Kacheln auf einmal lädt
     if (req.method === 'GET' && (p === '/api/radar' || p.startsWith('/api/radar/') || p === '/api/camimg')) {
       if (limited(req, 'media', 600)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
