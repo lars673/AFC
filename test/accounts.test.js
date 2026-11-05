@@ -50,6 +50,11 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal((await call('PUT', '/api/logbook/flight/f1', { date: '2026-10-01', siteName: 'Niesen', durMin: 40 })).status, 200);
     let st = await call('GET', '/api/auth/state');
     assert.equal(st.json.setup, true);
+    // öffentlicher Zugang (Tailscale Funnel): ohne Konto gesperrt, erstes Konto nicht von dort
+    const F = { ...H, 'Tailscale-Funnel-Request': '?1' };
+    assert.equal((await fetch(base + '/api/logbook', { headers: F })).status, 403);
+    assert.equal((await fetch(base + '/api/auth/state', { headers: F })).status, 200);
+    assert.equal((await fetch(base + '/api/auth/setup', { method: 'POST', headers: F, body: JSON.stringify({ name: 'Fremd', email: 'f@test.ch', password: 'Niesen-Soaring' }) })).status, 403);
     // erstes Konto = Admin, übernimmt das Flugbuch
     assert.equal((await call('POST', '/api/auth/setup', { name: 'Lars', email: 'lars@test.ch', password: 'kurz' })).status, 400);
     const ad = await call('POST', '/api/auth/setup', { name: 'Lars', email: 'Lars@Test.ch', password: 'Niesen-Soaring', prefs: { fav: ['niesen-1'], pilot: { flights: 150 } } });
