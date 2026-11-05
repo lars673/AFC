@@ -513,7 +513,7 @@ test('Bise: schwach ohne Messung im Oberland, voll mit Messung', async () => {
   const light = assessHour(s, good({ dir: 45, bise: { level: 'warn', why: ['x'], weak: true }, biseExposure: 'full' }));
   assert.ok(light.score > strong.score);
   assert.ok(strong.cap <= 74);
-  assert.ok(light.cap == null || light.cap > 74);
+  assert.ok(light.cap > 74 && light.cap < 80);
 });
 
 test('Bise im Oberland gemessen setzt biseOberland', () => {
