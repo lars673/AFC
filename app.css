@@ -607,6 +607,11 @@ button.st-site .st-sn { color: var(--accent); text-decoration: underline; }
 
 /* Regenradar und Webcam-Bild */
 .radar-chip { position: absolute; top: 10px; left: 56px; z-index: 520; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font: 600 13px var(--f-num); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.obst-chip { top: 44px; color: #b71c1c; }
+.obst-list { margin: 0 0 8px; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 15px; }
+.obst-list li { border-left: 4px dashed #d50000; padding-left: 8px; }
+.obst-list li.ob-rope { border-left: 4px solid #7b1fa2; }
+.obst-list li.ob-pt { border-left: 4px dotted #c62828; }
 .rad-near { border-left: 5px solid var(--go); padding: 6px 10px; border-radius: 6px; background: var(--panel2); }
 .rad-near.warn { border-left-color: var(--wait); background: color-mix(in srgb, var(--wait) 14%, var(--panel)); }
 .cam-img { margin: 8px 0 0; }

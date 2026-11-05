@@ -28,6 +28,7 @@ import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureL
 import { fetchRegionalHistory, eventDays } from './lib/backfill.js';
 import { cleanPost, siteDay, POST_KINDS } from './lib/community.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
+import { unzipFirst, unzipAll, parseObstacleKml, indexObstacles, obstaclesInBox, obstaclesNear } from './lib/obstacles.js';
 import { httpGet } from './lib/http.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -174,7 +175,8 @@ const ingest = {
   foehn: { ok: false, at: null, error: null },
   stations: { ok: false, at: null, error: null, note: null },
   windgrid: { ok: false, at: null, error: null },
-  airspace: { ok: false, at: null, error: null, count: 0 }
+  airspace: { ok: false, at: null, error: null, count: 0 },
+  obstacles: { ok: false, at: null, error: null, count: 0, dataAt: null }
 };
 const state = {
   raw: null, windgrid: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
@@ -297,6 +299,39 @@ async function collectAirspace() {
   }
   ingest.airspace = { ok: items.length > 0, at: nowIso(), error: errors.length ? errors.join('; ') : null, count: items.length };
 }
+
+/* ---- Luftfahrthindernisse (BAZL, KMZ von data.geo.admin.ch). Das BAZL stellt sie täglich ab 04 Uhr neu bereit;
+   AFC holt sie einmal am Tag (höchstens alle 20 h neu) und nimmt bei Fehlern die zuletzt gespeicherte Datei. */
+const OBST_URL = () => process.env.AFC_OBSTACLE_URL || 'https://data.geo.admin.ch/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz';
+const OBST_BOX = [45.8, 5.9, 47.85, 10.55];   // ganze Schweiz
+async function collectObstacles() {
+  const local = path.join(dataDir, 'luftfahrthindernis.kmz');
+  let buf = null, err = null, fileAt = null;
+  const st = await fs.stat(local).catch(() => null), fresh = st && Date.now() - st.mtimeMs < 20 * 3600000;
+  if (fresh && state.obstacles) return;   // aktuelle Daten sind schon geladen
+  if (!fresh) {
+    try {
+      buf = Buffer.from(await (await httpGet(OBST_URL(), { timeoutMs: 180000, accept: 'application/vnd.google-earth.kmz, application/zip, */*' })).arrayBuffer());
+      if (!unzipFirst(buf)) throw new Error('keine KML-Datei im Download');
+      await fs.writeFile(local + '.tmp', buf); await fs.rename(local + '.tmp', local);
+      fileAt = nowIso();
+    } catch (e) { err = errMsg(e); buf = null; }
+  }
+  if (!buf && st) { buf = await fs.readFile(local).catch(() => null); fileAt = new Date(st.mtimeMs).toISOString(); }
+  if (buf) {
+    try {
+      const items = unzipAll(buf).flatMap(k => parseObstacleKml(k.toString('utf8'), OBST_BOX));
+      if (!items.length) throw new Error('keine Hindernisse in der Datei erkannt');
+      state.obstacles = indexObstacles(items);
+      state.obstaclesAt = fileAt;
+      state.obstPayloads = new Map();
+      const by = items.reduce((m, a) => ((m[a.k] = (m[a.k] || 0) + 1), m), {});
+      console.log(`Hindernisse: ${items.length} (Seilbahnen ${by.rope || 0}, Kabel ${by.wire || 0}, Punkte ${by.pt || 0})${err ? ', aus Zwischenspeicher: ' + err : ''}`);
+    } catch (e) { err = (err ? err + '; ' : '') + errMsg(e); }
+  }
+  ingest.obstacles = { ok: !!state.obstacles, at: nowIso(), error: err, count: state.obstacles?.items.length || 0, dataAt: state.obstaclesAt || null };
+}
+const obstOut = it => ({ id: it.id, t: it.t, k: it.k, h: it.h, top: it.top, m: it.m, l: it.l, len: it.len, g: it.g, ...(it.d != null ? { d: it.d, deg: it.deg } : {}) });
 
 async function collectWindGrid() {
   try {
@@ -1089,6 +1124,26 @@ const server = http.createServer(async (req, res) => {
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
       }
+      if (req.method === 'GET' && p === '/api/obstacles') {
+        if (!state.obstacles) return sendJson(req, res, 202, { warming: true, error: ingest.obstacles.error });
+        const at = state.obstaclesAt, near = u.searchParams.get('near');
+        if (near) {
+          const [la, lo] = near.split(',').map(Number), r = Math.min(5000, Math.max(100, Number(u.searchParams.get('r')) || 1500));
+          if (!Number.isFinite(la) || !Number.isFinite(lo)) return sendJson(req, res, 400, { error: 'near=lat,lon fehlt' });
+          return sendJson(req, res, 200, { at, items: obstaclesNear(state.obstacles, la, lo, r).map(obstOut) });
+        }
+        const b = (u.searchParams.get('b') || '').split(',').map(Number);
+        if (b.length !== 4 || b.some(v => !Number.isFinite(v)) || b[2] - b[0] > 1 || b[3] - b[1] > 1.5) return sendJson(req, res, 400, { error: 'b=süd,west,nord,ost fehlt oder Ausschnitt zu gross' });
+        const key = b.map(v => v.toFixed(2)).join(',');
+        let pk = state.obstPayloads.get(key);
+        if (!pk) {
+          const r = obstaclesInBox(state.obstacles, b[0], b[1], b[2], b[3]);
+          pk = packJson({ at, more: r.more, items: r.items.map(obstOut) });
+          if (state.obstPayloads.size > 300) state.obstPayloads.clear();
+          state.obstPayloads.set(key, pk);
+        }
+        return sendPacked(req, res, pk);
+      }
       if (req.method === 'GET' && p === '/api/airspace') {
         if (!state.airspace) return sendJson(req, res, 202, { warming: true, error: ingest.airspace.error });
         return sendPacked(req, res, state.airspace);
@@ -1579,6 +1634,7 @@ async function start() {
     if (state.fcFresh) invalidate(); else await tick('fc', collectForecast);
     if (!state.wgFresh) await tick('wind', collectWindGrid);
     await tick('air', collectAirspace);
+    await tick('obst', collectObstacles);
     if (BACKFILL_ON) await backfillRegional().catch(e => console.warn('Nachlernen', errMsg(e)));
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
@@ -1586,6 +1642,7 @@ async function start() {
   timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
+  timers.push(setInterval(() => tick('obst', collectObstacles), 3 * 3600000));   // prüft alle 3 h, lädt höchstens alle 20 h neu
   setTimeout(maintenance, 60000).unref();
   if (BACKTEST_AUTO) timers.push(setInterval(() => maybeBacktest(), 3600000));
   if (PUSH_ON) timers.push(setInterval(() => tick('push', async () => { await pushTick(); await healthTick(); await watchTick(); }), 10 * 60000));

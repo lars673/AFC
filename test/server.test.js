@@ -13,7 +13,7 @@ async function boot(scenario, port, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-test-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_RADAR_URL: mock.url + '/public/weather-maps.json', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_BACKUP_DIR: '', ...extraEnv },
+    env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_FETCH_TIMEOUT_MS: '5000', AFC_TRUSTED_PROXY_HOPS: '1', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_OBSTACLE_URL: mock.url + '/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz', AFC_RADAR_URL: mock.url + '/public/weather-maps.json', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_BACKUP_DIR: '', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';
@@ -200,6 +200,25 @@ test('Lufträume: Server liefert SHV-Lufträume und Wildschutz, Klasse E ausserh
     assert.deepEqual(j.items.map(a => a.k).sort(), ['block', 'block', 'warn', 'wild']);
     assert.ok(j.items.every(a => a.p.length >= 3 && a.b.length === 4 && a.lo && a.hi));
     assert.match(s.log(), /Lufträume: 4/);
+  } finally { await s.stop(); }
+});
+
+test('Hindernisse: Server lädt BAZL-KMZ, liefert Ausschnitt und Umkreis', async () => {
+  const s = await boot('good', 18779);
+  try {
+    let r;
+    for (let i = 0; i < 40; i++) { r = await fetch(s.base + '/api/obstacles?b=46.6,7.7,46.8,7.9'); if (r.status === 200) break; await new Promise(res => setTimeout(res, 250)); }
+    assert.equal(r.status, 200, s.log());
+    const j = await r.json();
+    assert.deepEqual(j.items.map(x => x.k), ['rope', 'wire', 'pt'], 'Kabel vor Punkten, höchste zuerst, Paris fehlt');
+    const sb = j.items.find(x => x.k === 'rope');
+    assert.equal(sb.h, 42); assert.equal(sb.top, 1891); assert.equal(sb.m, 'Kugeln'); assert.equal(sb.g[0].length, 3); assert.ok(sb.len > 1800 && sb.len < 2000);
+    assert.equal(j.items.find(x => x.k === 'pt').h, 80);
+    assert.match(s.log(), /Hindernisse: 3/);
+    const n = await (await fetch(s.base + '/api/obstacles?near=46.7,7.8&r=1500')).json();
+    assert.deepEqual(n.items.map(x => x.id), ['TEST-1', 'TEST-3']);
+    assert.equal(n.items[0].d, 0);
+    assert.equal((await fetch(s.base + '/api/obstacles?b=45,5,48,11')).status, 400, 'zu grosser Ausschnitt');
   } finally { await s.stop(); }
 });
 

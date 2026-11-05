@@ -48,6 +48,28 @@ DP 46:47:00 N 007:54:00 E
 DP 46:46:00 N 007:54:00 E
 `;
 
+// Erfundene Hindernisse im KML-Stil des BAZL (nur für Tests): Seilbahn, Stromleitung, Antenne, Kabel per Beschreibungstabelle
+export const MOCK_OBST_KML = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><Folder>
+<Placemark><name>TEST-1</name><ExtendedData><SchemaData schemaUrl="#s"><SimpleData name="registrationnumber">TEST-1</SimpleData><SimpleData name="obstacletype">Seilbahn</SimpleData><SimpleData name="maxheightagl">42</SimpleData><SimpleData name="topelevationamsl">1890.5</SimpleData><SimpleData name="marking">Kugeln</SimpleData></SchemaData></ExtendedData>
+<MultiGeometry><Point><coordinates>7.8,46.7,1890</coordinates></Point><LineString><coordinates>7.8,46.7,1890 7.81,46.705,1600 7.82,46.71,1300</coordinates></LineString></MultiGeometry></Placemark>
+<Placemark><name>TEST-2</name><ExtendedData><Data name="obstacletype"><value>Hochspannungsleitung</value></Data><Data name="maxheightagl"><value>35 m</value></Data></ExtendedData>
+<LineString><coordinates>7.85,46.68 7.86,46.69</coordinates></LineString></Placemark>
+<Placemark><name>TEST-3</name><description><![CDATA[<table><tr><td>Obstacle type</td><td>Antenne</td></tr><tr><td>Max height AGL</td><td>80</td></tr></table>]]></description>
+<Point><coordinates>7.802,46.701,0</coordinates></Point></Placemark>
+<Placemark><name>WEIT-WEG</name><Point><coordinates>2.35,48.85,0</coordinates></Point></Placemark>
+</Folder></Document></kml>`;
+/** Minimales ZIP mit einer Datei (Deflate), ohne Zusatzpakete. */
+export function makeZip(name, content) {
+  const data = Buffer.from(content), comp = zlib.deflateRawSync(data), nm = Buffer.from(name);
+  let c = 0xffffffff; for (const v of data) { c ^= v; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; } const crc = (c ^ 0xffffffff) >>> 0;
+  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(nm.length, 26);
+  const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(8, 10); cd.writeUInt32LE(crc, 16); cd.writeUInt32LE(comp.length, 20); cd.writeUInt32LE(data.length, 24); cd.writeUInt16LE(nm.length, 28); cd.writeUInt32LE(0, 42);
+  const off = lh.length + nm.length + comp.length;
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10); end.writeUInt32LE(cd.length + nm.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat([lh, nm, comp, cd, nm, end]);
+}
+
 /** 256×256-PNG, durchsichtig, mit einem blauen Fleck (Regen) – ohne Zusatzpakete. */
 function mockRadarPng() {
   const W = 256, raw = Buffer.alloc((W * 4 + 1) * W);
@@ -119,6 +141,10 @@ export function startMock(scenario = 'good', port = 0) {
     if (u.pathname === '/downloads/switzerland-airspace-metric.txt') {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=latin1' });
       return res.end(Buffer.from(MOCK_AIR, 'latin1'));
+    }
+    if (u.pathname === '/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz') {
+      res.writeHead(200, { 'Content-Type': 'application/vnd.google-earth.kmz' });
+      return res.end(makeZip('doc.kml', MOCK_OBST_KML));
     }
     if (u.pathname === '/downloads/switzerland-wildlife-meters.txt') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
