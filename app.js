@@ -951,7 +951,7 @@ function renderBook() {
     const m = f.date.slice(0, 7), head = m !== lastMonth ? `<div class="lb-month">${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}</div>` : '';
     lastMonth = m;
     const route = [f.siteName || 'Start ?', f.landingName].filter(Boolean).join(' → ');
-    const sub = [f.kind && L.FLIGHT_KINDS[f.kind], gearById[f.gliderId] && L.gearName(gearById[f.gliderId]), num(f.km) ? f.km + ' km' : '', f.track ? 'IGC' : '', f.afcVerdict && f.afcVerdict !== 'richtig' ? 'AFC ' + L.VERDICTS[f.afcVerdict].toLowerCase() : ''].filter(Boolean).join(' · ');
+    const sub = [f.kind && L.FLIGHT_KINDS[f.kind], gearById[f.gliderId] && L.gearName(gearById[f.gliderId]), num(f.km) ? f.km + ' km' : '', L.altDiff(f) != null ? (L.altDiff(f) >= 0 ? L.altDiff(f) + ' m Höhendiff.' : 'Landung ' + -L.altDiff(f) + ' m höher') : '', f.track ? 'IGC' : '', f.afcVerdict && f.afcVerdict !== 'richtig' ? 'AFC ' + L.VERDICTS[f.afcVerdict].toLowerCase() : ''].filter(Boolean).join(' · ');
     return `${head}<button type="button" class="lb-row" data-act="lbflight" data-id="${esc(f.id)}"><span class="lb-date">${ddmm(f.date)}${f.start ? `<small>${f.start}</small>` : ''}</span><span class="lb-main"><b>${esc(route)}</b><small>${esc(sub)}${f.rating ? ' ' + stars(f.rating) : ''}</small></span><span class="lb-dur">${f.durMin ? L.fmtDur(f.durMin) : '–'}</span></button>`;
   }).join('');
   const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
@@ -1219,6 +1219,8 @@ async function importIgc(files) {
     const item = {
       id: L.newId(), date: a.date, start: a.start, durMin: a.durMin, maxAlt: a.maxAlt, km: a.km,
       siteId: site?.id || null, siteName: site?.name || '', landingId: land?.id || null, landingName: land?.name || '',
+      startAlt: num(site?.alt) ? Math.round(site.alt) : num(a.track?.line?.[0]?.[2]) ? a.track.line[0][2] : null,
+      landAlt: num(land?.alt) ? Math.round(land.alt) : num(a.track?.line?.at(-1)?.[2]) ? a.track.line.at(-1)[2] : null,
       kind: a.km >= 15 ? 'xc' : a.track.thermals.length ? 'thermik' : a.durMin <= 20 ? 'abgleiter' : '',
       gliderId: def.glider || null, harnessId: def.harness || null, reserveId: def.reserve || null,
       track: { ...a.track, takeoff: a.takeoff, landing: a.landing }
@@ -1252,14 +1254,28 @@ function trackHtml(t) {
     ${th.length ? `<p class="fine" style="margin:2px 0 0">${th.map(h => `${h.at}: ${h.base} → ${h.alt} m (${h.rate} m/s)`).join(' · ')}</p>` : ''}</div>`;
 }
 
-function flightForm(id) {
+/**
+ * Flug erfassen oder bearbeiten. Mit copyId: neuer Flug, vorausgefüllt mit einem bestehenden (gleicher Platz,
+ * Landeplatz, Art, Ausrüstung, Dauer, Strecke, Notiz). Spur, Bewertungen und AFC-Score gehören zum Original
+ * und werden nicht mitkopiert, die Startzeit bleibt leer, damit man sie für den neuen Flug einträgt.
+ */
+function flightForm(id, copyId) {
   const L = LG(), d = LB.data, f = d.flights.find(x => x.id === id) || null;
+  const src = !f && copyId ? d.flights.find(x => x.id === copyId) : null;
   const def = d.settings.defaults || {};
-  const v = f || { date: todayKey(), start: '', durMin: 0, gliderId: def.glider, harnessId: def.harness, reserveId: def.reserve, rating: null };
+  const v = (f && { ...f }) || (src ? { ...src, id: undefined, start: '', rating: null, afcVerdict: '', afcScore: null, afcFc: null, track: null, pilot: null } : null) || { date: todayKey(), start: '', durMin: 0, gliderId: def.glider, harnessId: def.harness, reserveId: def.reserve, rating: null };
   const opts = (type, sel) => `<option value="">–</option>` + d.gear.filter(g => g.type === type && (!g.retired || g.id === sel)).map(g => `<option value="${esc(g.id)}" ${g.id === sel ? 'selected' : ''}>${esc(L.gearName(g))}</option>`).join('');
-  const sites = [...new Set((S.plan?.sites || []).map(s => s.name))].sort((a, b) => a.localeCompare(b, 'de'));
-  const lands = [...new Set((S.plan?.landings || []).map(s => s.name))].sort((a, b) => a.localeCompare(b, 'de'));
-  dlg('#msgDlg', `<form class="dlg-in lb-form" id="lbFlightForm"><div class="dlg-h"><h2 id="msgDlgT">${f ? 'Flug bearbeiten' : 'Flug erfassen'}</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+  // Start- und Landeplätze mit Höhe: die Höhe wird beim Eintragen automatisch übernommen
+  const startPl = [...(S.plan?.sites || []), ...(S.plan?.unrated || [])], landPl = S.plan?.landings || [];
+  const byName = list => { const m = new Map(); for (const s of list) if (!m.has(s.name)) m.set(s.name, s); return m; };
+  const siteMap = byName(startPl), landMap = byName(landPl);
+  const sites = [...siteMap.keys()].sort((a, b) => a.localeCompare(b, 'de'));
+  const lands = [...landMap.keys()].sort((a, b) => a.localeCompare(b, 'de'));
+  const altOf = (map, list, id, name) => { const p = (id && list.find(s => s.id === id)) || map.get(name); return num(p?.alt) ? Math.round(p.alt) : null; };
+  if (!num(v.startAlt)) v.startAlt = altOf(siteMap, startPl, v.siteId, v.siteName) ?? v.startAlt;
+  if (!num(v.landAlt)) v.landAlt = altOf(landMap, landPl, v.landingId, v.landingName) ?? v.landAlt;
+  dlg('#msgDlg', `<form class="dlg-in lb-form" id="lbFlightForm"><div class="dlg-h"><h2 id="msgDlgT">${f ? 'Flug bearbeiten' : src ? 'Flug kopieren' : 'Flug erfassen'}</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    ${src ? `<p class="fine" style="margin:0 0 8px">Kopie vom Flug am ${ddmm(src.date)}${src.siteName ? ' ab ' + esc(src.siteName) : ''}. Datum und Startzeit anpassen, dann speichern.</p>` : ''}
     <div class="lb-grid">
       <label class="fld"><span>Datum</span><input type="date" name="date" required value="${esc(v.date)}" max="${todayKey()}"></label>
       <label class="fld"><span>Startzeit</span><input type="time" name="start" value="${esc(v.start)}"></label>
@@ -1267,6 +1283,9 @@ function flightForm(id) {
       <label class="fld"><span>Art</span><select name="kind"><option value="">–</option>${Object.entries(L.FLIGHT_KINDS).map(([k, t]) => `<option value="${k}" ${v.kind === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <label class="fld lb-wide"><span>Startplatz</span><input name="siteName" list="lbSites" autocomplete="off" value="${esc(v.siteName || '')}"></label>
       <label class="fld lb-wide"><span>Landeplatz</span><input name="landingName" list="lbLands" autocomplete="off" value="${esc(v.landingName || '')}"></label>
+      <label class="fld"><span>Höhe Start m</span><input type="number" inputmode="numeric" min="0" max="9000" name="startAlt" value="${num(v.startAlt) ? v.startAlt : ''}"></label>
+      <label class="fld"><span>Höhe Landung m</span><input type="number" inputmode="numeric" min="0" max="9000" name="landAlt" value="${num(v.landAlt) ? v.landAlt : ''}"></label>
+      <p class="fine lb-wide lb-hdiff" id="lbHdiff" style="margin:0" aria-live="polite"></p>
       <label class="fld"><span>Strecke km</span><input type="number" inputmode="decimal" min="0" step="0.1" name="km" value="${num(v.km) ? v.km : ''}"></label>
       <label class="fld"><span>Max. Höhe m</span><input type="number" inputmode="numeric" min="0" name="maxAlt" value="${num(v.maxAlt) ? v.maxAlt : ''}"></label>
       <label class="fld"><span>Schirm</span><select name="gliderId">${opts('glider', v.gliderId)}</select></label>
@@ -1278,16 +1297,24 @@ function flightForm(id) {
       ${v.track ? trackHtml(v.track) : ''}
       <label class="fld lb-wide"><span>Notiz (Bedingungen, Lernpunkte)</span><textarea name="note" maxlength="500" rows="3">${esc(v.note || '')}</textarea></label>
     </div>
-    <datalist id="lbSites">${sites.map(n => `<option value="${esc(n)}">`).join('')}</datalist><datalist id="lbLands">${lands.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <datalist id="lbSites">${sites.map(n => `<option value="${esc(n)}"${num(siteMap.get(n).alt) ? ` label="${Math.round(siteMap.get(n).alt)} m"` : ''}>`).join('')}</datalist><datalist id="lbLands">${lands.map(n => `<option value="${esc(n)}"${num(landMap.get(n).alt) ? ` label="${Math.round(landMap.get(n).alt)} m"` : ''}>`).join('')}</datalist>
     <div id="lbErr" class="fine" role="alert"></div>
-    <div class="btn-row">${f ? '<button class="btn danger sec" type="button" data-act="lbdelflight">Löschen</button>' : ''}<button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form>`);
+    <div class="btn-row">${f ? '<button class="btn danger sec" type="button" data-act="lbdelflight">Löschen</button><button class="btn sec" type="button" data-act="lbcopyflight" title="Neuen Flug mit denselben Angaben erfassen">Kopieren</button>' : ''}<button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form>`);
   const form = $('#lbFlightForm');
   form.dataset.id = f?.id || '';
+  // Höhe automatisch: bekannter Start- oder Landeplatz gewählt → Höhe übernehmen; Differenz laufend anzeigen
+  const hdiff = () => {
+    const a = Number(form.startAlt.value), b = Number(form.landAlt.value);
+    $('#lbHdiff').textContent = form.startAlt.value !== '' && form.landAlt.value !== '' ? (a >= b ? `Höhendifferenz ${Math.round(a - b)} m (Start ${Math.round(a)} m, Landung ${Math.round(b)} m)` : `Landung ${Math.round(b - a)} m höher als der Start`) : '';
+  };
+  form.siteName.addEventListener('input', () => { const p = siteMap.get(form.siteName.value); if (num(p?.alt)) { form.startAlt.value = Math.round(p.alt); hdiff(); } });
+  form.landingName.addEventListener('input', () => { const p = landMap.get(form.landingName.value); if (num(p?.alt)) { form.landAlt.value = Math.round(p.alt); hdiff(); } });
+  form.startAlt.addEventListener('input', hdiff); form.landAlt.addEventListener('input', hdiff); hdiff();
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const x = Object.fromEntries(new FormData(form));
-    const site = (S.plan?.sites || []).find(s => s.name === x.siteName), land = (S.plan?.landings || []).find(s => s.name === x.landingName);
-    const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, afcVerdict: x.afcVerdict || '', note: x.note };
+    const site = siteMap.get(x.siteName), land = landMap.get(x.landingName);
+    const item = { ...(f || {}), id: f?.id || L.newId(), date: x.date, start: x.start, durMin: (Number(x.durH) || 0) * 60 + (Number(x.durM) || 0), kind: x.kind, siteName: x.siteName, siteId: site?.id || null, landingName: x.landingName, landingId: land?.id || null, km: x.km, maxAlt: x.maxAlt, startAlt: x.startAlt === '' ? null : Number(x.startAlt), landAlt: x.landAlt === '' ? null : Number(x.landAlt), gliderId: x.gliderId || null, harnessId: x.harnessId || null, reserveId: x.reserveId || null, rating: x.rating ? Number(x.rating) : null, afcVerdict: x.afcVerdict || '', note: x.note };
     // AFC-Score des Startplatzes zur Startzeit festhalten (zum späteren Abgleich), solange der Plan diesen Tag noch kennt
     if (!num(item.afcScore) || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcScore = afcScoreAt(item.siteId, item.date, item.start) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcScore : null);
     if (!item.afcFc || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcFc = (await afcFcAt(item.siteId, item.date, item.start)) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcFc : null);
@@ -2747,6 +2774,7 @@ document.addEventListener('click', async e => {
       } catch (err) { toast('Sicherung fehlgeschlagen: ' + err.message); }
       break;
     }
+    case 'lbcopyflight': { const fid = b.closest('form')?.dataset.id; if (fid) flightForm(null, fid); break; }
     case 'lbdelflight': case 'lbdelgear': {
       const fid = b.closest('form')?.dataset.id, kind = a === 'lbdelflight' ? 'flight' : 'gear';
       if (!fid || !(await ask({ title: kind === 'flight' ? 'Flug löschen?' : 'Ausrüstung löschen?', text: kind === 'flight' ? 'Der Flug wird aus dem Flugbuch entfernt.' : 'Flüge mit diesem Teil bleiben erhalten. Tipp: «Ausgemustert» behält die Stunden.', ok: 'Löschen', danger: true }))) break;

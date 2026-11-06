@@ -136,3 +136,15 @@ test('Lernen aus Flügen: ohne Urteil halb, «nicht gestartet» als Warnung, jü
   r = siteFeedback([{ siteId: 'e', date: '2025-01-10', afcVerdict: 'streng' }, { siteId: 'e', date: '2025-01-11', afcVerdict: 'streng' }, { siteId: 'e', date: d, afcVerdict: 'mild' }], NOW);
   assert.ok(r.e.wm > r.e.ws / 2, 'neue Warnung wiegt mehr als die alten zwei');
 });
+
+test('Flugbuch: Höhe Start und Landung, Höhendifferenz', async () => {
+  const { altDiff } = await import('../lib/logbook.js');
+  const f = cleanFlight({ date: '2026-09-01', startAlt: 1924, landAlt: 1060 });
+  assert.equal(f.startAlt, 1924);
+  assert.equal(f.landAlt, 1060);
+  assert.equal(altDiff(f), 864);
+  assert.equal(altDiff(cleanFlight({ date: '2026-09-01', startAlt: 1924 })), null);
+  assert.equal(cleanFlight({ date: '2026-09-01', startAlt: 99999 }).startAlt, 9000);
+  const csv = flightsCsv([f], []);
+  assert.match(csv, /;1924;1060;864;/);
+});
