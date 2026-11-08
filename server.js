@@ -80,6 +80,10 @@ const updater = createUpdater(ROOT, { enabled: process.env.AFC_UPDATE_CHECK !== 
 // Tailscale Funnel (öffentlicher Zugang) leitet über 127.0.0.1 weiter und setzt «Tailscale-Funnel-Request».
 // Solche Anfragen kommen aus dem Internet und zählen nie als «dieser Rechner» (kein Update-Knopf, kein Admin ohne Konto).
 const isLocal = req => !req.headers['tailscale-funnel-request'] && /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
+// Auf einem eigenen Server im Internet (AFC_SERVER=1) sitzt niemand am Rechner: dort darf der Admin mit seinem Konto
+// auch von unterwegs Updates einspielen und den Rückblick-Test starten. Ohne Konten geht das nie.
+const SERVER_MODE = process.env.AFC_SERVER === '1';
+const canOperate = req => isAdmin(req) && (isLocal(req) || (SERVER_MODE && authOn()));
 const db = new DatabaseSync(path.join(dataDir, 'afc.sqlite'));
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, code TEXT NOT NULL, time TEXT NOT NULL, wind REAL, gust REAL, dir REAL, temp REAL, rh REAL, pressure REAL, dew REAL, sun REAL, precip REAL, fetched_at TEXT, UNIQUE(code,time));
@@ -1170,14 +1174,14 @@ const server = http.createServer(async (req, res) => {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
         if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && isLocal(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
-        if (!isLocal(req) || !isAdmin(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
+        if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
         return sendJson(req, res, 200, { ok: true, started: maybeBacktest(true), ...backtestStatus() });
       }
       if (req.method === 'POST' && p === '/api/update') {
-        if (!isLocal(req) || !AUTOSTART || !isAdmin(req)) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
+        if (!canOperate(req) || !AUTOSTART) return sendJson(req, res, 403, { error: 'Update nur auf dem eigenen Mac mit eingerichtetem Autostart' });
         if (req.headers['x-afc-client'] === undefined) return sendJson(req, res, 400, { error: 'Kopfzeile fehlt' });
         const r = await updater.apply();
         if (!r.ok) return sendJson(req, res, 500, { error: r.error });
@@ -1187,7 +1191,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (req.method === 'POST' && p === '/api/update/check') {
-        if (!isLocal(req) || !isAdmin(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
+        if (!canOperate(req)) return sendJson(req, res, 403, { error: 'nur lokal' });
         return sendJson(req, res, 200, { ok: true, update: { ...(await updater.check()), canApply: AUTOSTART } });
       }
       if (req.method === 'GET' && p === '/api/meta') {

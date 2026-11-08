@@ -1,0 +1,26 @@
+# AFC als Dienst auf einem Linux-Server (Oracle Cloud, Hetzner …). Wird von deploy/server-einrichten.sh installiert.
+[Unit]
+Description=AFC Advanced Flight Check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=afc
+WorkingDirectory=/home/afc/AFC
+ExecStart=/usr/bin/node server.js
+# Nach einem Update beendet sich AFC selbst; systemd startet es mit der neuen Version wieder.
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=AFC_AUTOSTART=1
+Environment=AFC_SERVER=1
+Environment=AFC_STAY_AWAKE=0
+Environment=AFC_BACKUP_DIR=
+Environment=TZ=Europe/Zurich
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+StandardOutput=append:/home/afc/AFC/data/server.log
+StandardError=append:/home/afc/AFC/data/server.log
+
+[Install]
+WantedBy=multi-user.target

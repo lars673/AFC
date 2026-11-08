@@ -209,3 +209,32 @@ test('Austausch: Beiträge, Antworten, Bin dabei, Tagesbild je Startplatz', asyn
 
   } finally { child.kill(); await mock.close(); }
 });
+
+test('Eigener Server (AFC_SERVER=1): Admin darf über den öffentlichen Zugang Updates prüfen, andere nicht', async () => {
+  const mock = await startMock('good');
+  const run = async (port, server) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afc-srv-'));
+    const base = `http://127.0.0.1:${port}`;
+    const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, PORT: String(port), AFC_DATA_DIR: dir, AFC_OPENMETEO_URL: mock.url, AFC_SMN_URL: mock.url, AFC_STATION_META_URL: mock.url + '/meta_stations.csv', AFC_UPDATE_CHECK: '0', AFC_AIRSPACE_URL: mock.url, AFC_OBSTACLE_URL: mock.url + '/ch.bazl.luftfahrthindernis/luftfahrthindernis/luftfahrthindernis_4326.kmz', AFC_BACKUP_DIR: '', XPC_SERVICE_NAME: '', AFC_AUTOSTART: '', AFC_SERVER: server ? '1' : '' }, stdio: 'ignore' });
+    const H = { 'X-AFC-Client': 'testgeraet-12345', 'Content-Type': 'application/json' };
+    try {
+      for (let i = 0; i < 80; i++) { try { if ((await fetch(base + '/api/meta')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 250)); }
+      const F = { ...H, 'Tailscale-Funnel-Request': '?1' };
+      // ohne Konten: auch auf dem Server nichts von aussen
+      assert.equal((await fetch(base + '/api/update/check', { method: 'POST', headers: F })).status, 403);
+      const ad = await fetch(base + '/api/auth/setup', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Lars', email: 'lars@test.ch', password: 'Niesen-Soaring' }) });
+      const A = ad.headers.get('set-cookie').split(';')[0];
+      const inv = await (await fetch(base + '/api/admin/invite', { method: 'POST', headers: { ...H, Cookie: A }, body: '{}' })).json();
+      const pi = await fetch(base + '/api/auth/register', { method: 'POST', headers: H, body: JSON.stringify({ code: inv.code, name: 'Beat', email: 'beat@test.ch', password: 'Niesen-Soaring' }) });
+      const B = pi.headers.get('set-cookie')?.split(';')[0];
+      return {
+        admin: (await fetch(base + '/api/update/check', { method: 'POST', headers: { ...F, Cookie: A } })).status,
+        pilot: B ? (await fetch(base + '/api/update/check', { method: 'POST', headers: { ...F, Cookie: B } })).status : 403
+      };
+    } finally { child.kill(); }
+  };
+  try {
+    assert.deepEqual(await run(18801, true), { admin: 200, pilot: 403 });
+    assert.deepEqual(await run(18802, false), { admin: 403, pilot: 403 }, 'auf dem Mac bleibt es wie bisher');
+  } finally { await mock.close(); }
+});
