@@ -28,7 +28,7 @@ import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureL
 import { fetchRegionalHistory, eventDays } from './lib/backfill.js';
 import { cleanPost, siteDay, POST_KINDS } from './lib/community.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
-import { unzipFirst, unzipAll, parseObstacleKml, indexObstacles, obstaclesInBox, obstaclesNear } from './lib/obstacles.js';
+import { zipHas, parseObstacleKmz, indexObstacles, obstaclesInBox, obstaclesNear } from './lib/obstacles.js';
 import { httpGet } from './lib/http.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -314,7 +314,7 @@ async function collectObstacles() {
   if (!fresh) {
     try {
       buf = Buffer.from(await (await httpGet(OBST_URL(), { timeoutMs: 180000, accept: 'application/vnd.google-earth.kmz, application/zip, */*' })).arrayBuffer());
-      if (!unzipFirst(buf)) throw new Error('keine KML-Datei im Download');
+      if (!zipHas(buf)) throw new Error('keine KML-Datei im Download');
       await fs.writeFile(local + '.tmp', buf); await fs.rename(local + '.tmp', local);
       fileAt = nowIso();
     } catch (e) { err = errMsg(e); buf = null; }
@@ -322,7 +322,7 @@ async function collectObstacles() {
   if (!buf && st) { buf = await fs.readFile(local).catch(() => null); fileAt = new Date(st.mtimeMs).toISOString(); }
   if (buf) {
     try {
-      const items = unzipAll(buf).flatMap(k => parseObstacleKml(k.toString('utf8'), OBST_BOX));
+      const items = await parseObstacleKmz(buf, OBST_BOX);
       if (!items.length) throw new Error('keine Hindernisse in der Datei erkannt');
       state.obstacles = indexObstacles(items);
       state.obstaclesAt = fileAt;
@@ -331,6 +331,7 @@ async function collectObstacles() {
       console.log(`Hindernisse: ${items.length} (Seilbahnen ${by.rope || 0}, Kabel ${by.wire || 0}, Punkte ${by.pt || 0})${err ? ', aus Zwischenspeicher: ' + err : ''}`);
     } catch (e) { err = (err ? err + '; ' : '') + errMsg(e); }
   }
+  if (!state.obstacles && err) console.log('Hindernisse nicht verfügbar: ' + err);
   ingest.obstacles = { ok: !!state.obstacles, at: nowIso(), error: err, count: state.obstacles?.items.length || 0, dataAt: state.obstaclesAt || null };
 }
 const obstOut = it => ({ id: it.id, t: it.t, k: it.k, h: it.h, top: it.top, m: it.m, l: it.l, len: it.len, g: it.g, ...(it.d != null ? { d: it.d, deg: it.deg } : {}) });
