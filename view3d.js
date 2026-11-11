@@ -1,8 +1,9 @@
 // AFC 3D: Gelände als Relief mit WebGL, ohne Zusatzpakete.
-// Baut aus dem Geländeraster (ca. 250 m, weich interpoliert) eine runde Reliefscheibe um einen Punkt, beleuchtet sie
-// nach dem Sonnenstand (mit Schattenwurf der Berge), legt wahlweise das Kartenbild und eine Ebene (Thermik, Lee …)
-// darüber und zeichnet Linien (Kabel, Flugspur, Wind), Flächen und Beschriftungen. Bedienung: ziehen dreht,
-// zwei Finger zoomen und verschieben. Läuft im Browser als window.AFC3D.
+// Baut aus dem Geländeraster (ca. 250 m, weich interpoliert) oder aus einem feinen Höhenmodell (offene Höhenkacheln,
+// rund 30 m) eine runde Reliefscheibe um einen Punkt, beleuchtet sie nach dem Sonnenstand (mit Schattenwurf der Berge),
+// legt wahlweise das Kartenbild und eine Ebene (Thermik, Lee …) darüber und zeichnet Wolken und Nebelmeer, Linien
+// (Kabel, Flugspur, Wind), Flächen und Beschriftungen. Bedienung: ziehen dreht, zwei Finger zoomen und verschieben.
+// Läuft im Browser als window.AFC3D.
 (() => {
   'use strict';
   const D2R = Math.PI / 180, M_LAT = 111320;
@@ -68,17 +69,106 @@
     return (g._lakes = out);
   }
 
+  /* ---- Feines Höhenmodell aus offenen Höhenkacheln (Terrarium-Format: Höhe = R·256 + G + B/256 − 32768) */
+  const demMem = new Map();
+  const mercY = (lat, n) => (1 - Math.log(Math.tan(lat * D2R) + 1 / Math.cos(lat * D2R)) / Math.PI) / 2 * n;
+  async function demTrim(store) { const keys = await store.keys(); if (keys.length > 160) for (const k of keys.slice(0, keys.length - 120)) await store.delete(k); }
+  /** Eine Kachel als Bild: zuerst aus dem Zwischenspeicher des Geräts (spart Daten und geht ohne Empfang), sonst aus dem Netz. */
+  async function demTile(url) {
+    let res = null, store = null;
+    try { store = await caches.open('afc-dem'); res = await store.match(url); } catch { /* kein Zwischenspeicher, z.B. im privaten Fenster */ }
+    if (!res) {
+      res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (store) store.put(url, res.clone()).then(() => demTrim(store)).catch(() => {});
+    }
+    const blob = await res.blob();
+    if (typeof createImageBitmap === 'function') { try { return await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }); } catch { /* unten als <img> */ } }
+    return new Promise((ok, bad) => { const im = new Image(), u = URL.createObjectURL(blob); im.onload = () => { URL.revokeObjectURL(u); ok(im); }; im.onerror = () => { URL.revokeObjectURL(u); bad(new Error('Kachel nicht lesbar')); }; im.src = u; });
+  }
+  /**
+   * Feines Höhenmodell für einen Ausschnitt laden. tpl: Kachel-Adresse mit {z}/{x}/{y}. Ergebnis null, wenn es sich nicht
+   * lohnt (grosser Ausschnitt), das Netz fehlt, es zu lange dauert (o.timeout) oder die Daten nicht zum groben Raster
+   * passen (o.grid: das grobe Raster zum Vergleich): dann bleibt das Relief aus dem groben Raster.
+   */
+  async function loadDem(tpl, { lat, lon, radius }, o = {}) {
+    if (!tpl || typeof document === 'undefined') return null;
+    const cosL = Math.cos(lat * D2R), want = 2 * radius / 300;                 // Maschenweite des Reliefs in m
+    if (want > 150) return null;
+    let z = 12; while (z > 10 && 40075016 * cosL / 2 ** z / 256 < want * 0.5) z--;
+    const n = 2 ** z, pad = radius + 400, mLon = M_LAT * cosL;
+    const x0 = Math.floor((lon - pad / mLon + 180) / 360 * n), x1 = Math.floor((lon + pad / mLon + 180) / 360 * n), y0 = Math.floor(mercY(lat + pad / M_LAT, n)), y1 = Math.floor(mercY(lat - pad / M_LAT, n));
+    const nx = x1 - x0 + 1, ny = y1 - y0 + 1;
+    if (nx * ny > 20) return null;
+    const key = [z, x0, y0, x1, y1].join('/');
+    if (demMem.has(key)) return demMem.get(key);
+    const keep = dem => { if (!dem) return; demMem.set(key, dem); if (demMem.size > 3) demMem.delete(demMem.keys().next().value); };
+    const job = (async () => {
+      const jobs = [];
+      for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) jobs.push(demTile(tpl.replace('{z}', z).replace('{x}', x0 + x).replace('{y}', y0 + y)));
+      const ims = await Promise.all(jobs);
+      const W = nx * 256, H = ny * 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ims.forEach((im, i) => { ctx.drawImage(im, (i % nx) * 256, Math.floor(i / nx) * 256, 256, 256); im.close?.(); });
+      const px = ctx.getImageData(0, 0, W, H).data, data = new Float32Array(W * H);
+      for (let i = 0, q = 0; i < data.length; i++, q += 4) data[i] = px[q] * 256 + px[q + 1] + px[q + 2] / 256 - 32768;
+      cv.width = cv.height = 1;
+      const dem = {
+        z, res: 40075016 * cosL / n / 256, W, H, data,
+        has(la, lo) { const fx = ((lo + 180) / 360 * n - x0) * 256, fy = (mercY(la, n) - y0) * 256; return fx >= 1 && fy >= 1 && fx <= W - 1 && fy <= H - 1; },
+        at(la, lo) {
+          const fx = clamp(((lo + 180) / 360 * n - x0) * 256 - 0.5, 0, W - 1.001), fy = clamp((mercY(la, n) - y0) * 256 - 0.5, 0, H - 1.001), x = fx | 0, y = fy | 0, tx = fx - x, ty = fy - y, k = y * W + x;
+          return (data[k] * (1 - tx) + data[k + 1] * tx) * (1 - ty) + (data[k + W] * (1 - tx) + data[k + W + 1] * tx) * ty;
+        }
+      };
+      // Plausibilität gegen das grobe Raster: ein falsch gelesenes Bild darf nie als Gelände erscheinen
+      const chk = o.grid ? samplers(o.grid).fast : o.check;
+      if (chk) {
+        let sum = 0, cnt = 0;
+        for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) { const la = lat + j * radius * 0.4 / M_LAT, lo = lon + i * radius * 0.4 / mLon, c = chk(la, lo); if (Number.isFinite(c)) { sum += Math.abs(dem.at(la, lo) - c); cnt++; } }
+        if (cnt && sum / cnt > 220) throw new Error('Höhendaten unplausibel');
+      }
+      return dem;
+    })();
+    job.then(keep).catch(() => {});      // kommt es erst nach der Wartezeit an, steht es beim nächsten Öffnen bereit
+    return Promise.race([job, new Promise(r => setTimeout(() => r(null), o.timeout ?? 7000))]).catch(() => null);
+  }
+
+  /** Kachelbares Rauschen (128 × 128) für die Wolken: drei Kanäle mit grober, mittlerer und feiner Struktur, je gleichverteilt 0–255. */
+  function noiseData() {
+    const S = 128, out = new Uint8Array(S * S * 4);
+    let seed = 20261111; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const layer = cells => {
+      const g = new Float32Array(cells * cells).map(rnd);
+      return (x, y) => {
+        const fx = x / S * cells, fy = y / S * cells, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0, sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+        const a = g[(y0 % cells) * cells + x0 % cells], b = g[(y0 % cells) * cells + (x0 + 1) % cells], c = g[((y0 + 1) % cells) * cells + x0 % cells], d = g[((y0 + 1) % cells) * cells + (x0 + 1) % cells];
+        return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+      };
+    };
+    [[[4, 0.5], [8, 0.3], [16, 0.2]], [[8, 0.55], [16, 0.45]], [[16, 0.55], [32, 0.45]]].forEach((oct, ch) => {
+      const fs = oct.map(([cells, w]) => [layer(cells), w]), v = new Float32Array(S * S);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { let t = 0; for (const [fn, w] of fs) t += fn(x, y) * w; v[y * S + x] = t; }
+      // Rangfolge statt Wert: so entspricht der Anteil über einer Schwelle genau der gewünschten Bedeckung
+      const order = Array.from(v.keys()).sort((a, b) => v[a] - v[b]);
+      order.forEach((k, r) => { out[k * 4 + ch] = Math.round(r / (S * S - 1) * 255); });
+    });
+    for (let i = 3; i < out.length; i += 4) out[i] = 255;
+    return out;
+  }
+
   /* ---- Shader */
   const HI = '#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n';
   const VS_SKY = 'attribute vec2 a_p; varying float v_y; void main(){ v_y = a_p.y*.5+.5; gl_Position = vec4(a_p, 0.999, 1.); }';
   const FS_SKY = HI + 'varying float v_y; uniform vec3 u_top, u_bot; void main(){ gl_FragColor = vec4(mix(u_bot, u_top, smoothstep(.25, 1., v_y)), 1.); }';
-  const VS_TER = `attribute vec3 a_pos, a_n; attribute vec2 a_uv, a_duv; attribute float a_w, a_sh;
-    uniform mat4 u_mvp; varying vec3 v_pos, v_n; varying vec2 v_uv, v_duv; varying float v_w, v_sh;
-    void main(){ v_pos = a_pos; v_n = a_n; v_uv = a_uv; v_duv = a_duv; v_w = a_w; v_sh = a_sh; gl_Position = u_mvp*vec4(a_pos, 1.); }`;
+  const VS_TER = `attribute vec3 a_pos, a_n; attribute vec2 a_uv, a_duv; attribute float a_w, a_sh, a_cv;
+    uniform mat4 u_mvp; varying vec3 v_pos, v_n; varying vec2 v_uv, v_duv; varying float v_w, v_sh, v_cv;
+    void main(){ v_pos = a_pos; v_n = a_n; v_uv = a_uv; v_duv = a_duv; v_w = a_w; v_sh = a_sh; v_cv = a_cv; gl_Position = u_mvp*vec4(a_pos, 1.); }`;
   const FS_TER = d => (d ? '#extension GL_OES_standard_derivatives : enable\n' : '') + HI + `
-    varying vec3 v_pos, v_n; varying vec2 v_uv, v_duv; varying float v_w, v_sh;
+    varying vec3 v_pos, v_n; varying vec2 v_uv, v_duv; varying float v_w, v_sh, v_cv;
     uniform vec3 u_sun, u_sunCol, u_amb, u_eye, u_fog; uniform vec2 u_c; uniform vec3 u_f;   // u_f: Radius, Nebel ab, Nebel bis
-    uniform sampler2D u_ov0, u_ov1, u_dr; uniform float u_ovMix, u_ovA, u_drape, u_ex;
+    uniform sampler2D u_ov0, u_ov1, u_dr, u_noise, u_cov; uniform float u_ovMix, u_ovA, u_drape, u_ex;
+    uniform vec4 u_cv, u_cl; uniform vec2 u_coff, u_sunH;   // u_cl: Wolken an, Basis, Massstab, Nebel-Obergrenze (Szenenhöhe)
     void main(){
       float r = length(v_pos.xz - u_c), edge = 1. - smoothstep(u_f.x*.94, u_f.x, r);
       if (edge < .01) discard;
@@ -89,12 +179,22 @@
       float steep = smoothstep(.82, .60, n.y);
       c = mix(c, vec3(.53,.51,.49), steep*.85);
       c = mix(c, vec3(.95,.97,1.), smoothstep(2750., 3150., h)*(1. - steep*.5));
+      c *= 1. + v_cv*.3;                                        // Grate heller, Rinnen dunkler: die Form bleibt auch im Schatten lesbar
       c = mix(c, vec3(.20,.42,.58), smoothstep(.35, .65, v_w));
       ${d ? 'float f = h/100., fw = fwidth(f); float l = (1. - smoothstep(0., 1.3*fw, abs(fract(f - .5) - .5)))*clamp(1. - fw*2.5, 0., 1.); c *= 1. - l*.22*(1. - smoothstep(.35, .65, v_w))*(1. - u_drape);' : ''}
-      float dif = max(dot(n, u_sun), 0.)*v_sh;
-      vec3 lit = c*(u_amb + u_sunCol*dif);
+      float cs = 0., fg = 0.;
+      if (u_cl.x > 0.) {
+        // Schatten der Wolken wandert über das Gelände (dem Sonnenstand nach versetzt)
+        vec2 sp = v_pos.xz + u_sunH*max(0., u_cl.y - v_pos.y);
+        float cov = texture2D(u_cov, sp*u_cv.xy + u_cv.zw).r, th = 1.02 - cov*1.04;
+        cs = smoothstep(th, th + .09, texture2D(u_noise, sp/u_cl.z + u_coff).r)*step(v_pos.y, u_cl.y)*u_cl.x;
+      }
+      if (u_cl.w > 0. && v_pos.y < u_cl.w) fg = smoothstep(.5, .8, texture2D(u_cov, v_pos.xz*u_cv.xy + u_cv.zw).g);
+      float dif = max(dot(n, u_sun), 0.)*v_sh*(1. - .8*cs)*(1. - .85*fg);
+      float hemi = .8 + .28*n.y;                               // Himmelslicht: flache Stellen heller als steile
+      vec3 lit = c*(u_amb*hemi*(1. - .16*cs) + u_sunCol*dif);
       vec4 dr = texture2D(u_dr, v_duv);
-      lit = mix(lit, dr.rgb*(u_amb*1.25 + u_sunCol*(.35 + .65*dif)), u_drape);
+      lit = mix(lit, dr.rgb*(1. + v_cv*.16)*(u_amb*1.25*hemi + u_sunCol*(.35 + .65*dif)), u_drape);
       vec4 ov = mix(texture2D(u_ov0, v_uv), texture2D(u_ov1, v_uv), u_ovMix)*u_ovA;
       lit = lit*(1. - ov.a) + ov.rgb*(.72 + .28*dif);
       float fd = length(v_pos - u_eye);
@@ -119,6 +219,26 @@
       if (u_flow > 0.) { float f = fract(v_d/u_flow - u_time*v_sp); a *= .1 + .9*f*f*f; }
       if (u_dash > 0.) a *= step(.45, fract(v_d/u_dash));
       gl_FragColor = vec4(v_col.rgb, a);
+    }`;
+  const VS_CLD = 'attribute vec3 a_pos; uniform mat4 u_mvp; uniform float u_lift; varying vec3 v_pos; void main(){ v_pos = vec3(a_pos.x, a_pos.y + u_lift, a_pos.z); gl_Position = u_mvp*vec4(v_pos, 1.); }';
+  const FS_CLD = HI + `varying vec3 v_pos; uniform sampler2D u_noise, u_cov; uniform vec4 u_cv; uniform vec2 u_off; uniform vec3 u_lit, u_dim;
+    uniform float u_k, u_R, u_sc, u_fog, u_a;
+    void main(){
+      float edge = 1. - smoothstep(u_R*.86, u_R*.985, length(v_pos.xz));
+      if (edge < .01) discard;
+      vec2 q = v_pos.xz/u_sc + u_off; vec4 cv = texture2D(u_cov, v_pos.xz*u_cv.xy + u_cv.zw);
+      float n = texture2D(u_noise, q).r, d = texture2D(u_noise, q*3.3 + u_off*.7).g, a; vec3 c;
+      if (u_fog > .5) {
+        // Nebelmeer: geschlossene Decke mit sanften Wellen, nur wo die Prognose tiefe Wolken zeigt
+        a = (.5 + .3*n)*smoothstep(.5, .8, cv.g);
+        c = mix(u_dim, u_lit, .5 + .5*u_k)*(.9 + .1*d);
+      } else {
+        // Quellwolken: die Schwelle steigt nach oben, so wölben sich die Wolken; bei voller Bedeckung eine Decke
+        float th = 1.02 - cv.r*1.04 + u_k*(.07 + .2*(1. - cv.r)) + (d - .5)*.1*u_k;
+        a = smoothstep(th, th + .09, n)*.6;
+        c = mix(u_dim, u_lit, clamp(u_k*.8 + .25*smoothstep(th, th + .35, n), 0., 1.));
+      }
+      gl_FragColor = vec4(c, a*edge*u_a);
     }`;
   const VS_FLAT = 'attribute vec3 a_pos; attribute vec4 a_col; uniform mat4 u_mvp; varying vec4 v_col; void main(){ v_col = a_col; gl_Position = u_mvp*vec4(a_pos, 1.); }';
   const FS_FLAT = HI + 'varying vec4 v_col; uniform float u_alpha; void main(){ gl_FragColor = vec4(v_col.rgb, v_col.a*u_alpha); }';
@@ -177,10 +297,16 @@
     }
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT) };
-      this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer() };
+      this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD) };
+      this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-      this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex() };
+      this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
+      gl.bindTexture(gl.TEXTURE_2D, this.X.noise);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 128, 128, 0, gl.RGBA, gl.UNSIGNED_BYTE, Scene._noise ||= noiseData());
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.generateMipmap(gl.TEXTURE_2D);
+      if (this._cl) this._cl.dirty = true;
       for (const m of [this.lines, this.tris]) for (const v of m.values()) v.buf = null;
     }
     /** Alles, was im Speicher der App liegt, (wieder) auf die Grafikkarte laden. */
@@ -195,10 +321,15 @@
     }
 
     /* ---- Ausschnitt: runde Scheibe mit Radius (m) um lat/lon */
-    setArea({ lat, lon, radius, n = 141 }) {
-      const R = this.R = radius, N = this.N = n, s = this.step = 2 * R / (N - 1), ex = this.ex, g = this.g;
+    /** dem: feines Höhenmodell aus AFC3D.loadDem (sonst das grobe Raster). n: Punkte je Seite (ohne Angabe passend zur Auflösung). */
+    setArea({ lat, lon, radius, n, dem = null }) {
+      const g = this.g, coarse = samplers(g).smooth, nMax = this._u32 ? 301 : 255;
+      this.dem = dem;
+      this.ground = dem ? (la, lo) => (dem.has(la, lo) ? dem.at(la, lo) : coarse(la, lo)) : coarse;
+      n = Math.min(nMax, n || (dem ? Math.max(141, Math.ceil(2 * radius / dem.res) | 1) : 141));
+      const R = this.R = radius, N = this.N = n, s = this.step = 2 * R / (N - 1), ex = this.ex;
       this.c = { lat, lon }; this.mLon = M_LAT * Math.cos(lat * D2R);
-      const H = this.H = new Float32Array(N * N), V = this.V = new Float32Array(N * N * 11);
+      const H = this.H = new Float32Array(N * N), V = this.V = new Float32Array(N * N * 12);
       // Kartenkacheln für das Kartenbild: Zoomstufe so, dass höchstens 8 Kacheln nebeneinander liegen
       let z = 16; while (z > 8 && 2 * R / (40075016 * Math.cos(lat * D2R) / 2 ** z) > 6.4) z--;
       const mx = lo => (lo + 180) / 360 * 2 ** z, my = la => (1 - Math.log(Math.tan(la * D2R) + 1 / Math.cos(la * D2R)) / Math.PI) / 2 * 2 ** z;
@@ -215,23 +346,27 @@
       for (let j = 0; j < N; j++) {
         const zc = -R + j * s, la = lat - zc / M_LAT;
         for (let i = 0; i < N; i++) {
-          const k = j * N + i, o = k * 11, xc = -R + i * s, lon2 = lon + xc / this.mLon, h = H[k];
+          const k = j * N + i, o = k * 12, xc = -R + i * s, lon2 = lon + xc / this.mLon, h = H[k];
           if (h < lo) lo = h; if (h > hi) hi = h;
           let nx = (hAt(i - 1, j) - hAt(i + 1, j)) * ex, ny = 2 * s, nz = (hAt(i, j - 1) - hAt(i, j + 1)) * ex; const l = Math.hypot(nx, ny, nz);
           const gx = (lon2 - g.lo0) / g.dlo, gy = (la - g.la0) / g.dla;
           V[o] = xc; V[o + 1] = h * ex; V[o + 2] = zc; V[o + 3] = nx / l; V[o + 4] = ny / l; V[o + 5] = nz / l;
           V[o + 6] = (gx + 0.5) / g.nx; V[o + 7] = (g.ny - 0.5 - gy) / g.ny;
           V[o + 8] = (mx(lon2) - tl.x0) / tl.nx; V[o + 9] = (my(la) - tl.y0) / tl.ny;
-          { const x0 = clamp(Math.floor(gx), 0, g.nx - 2), y0 = clamp(Math.floor(gy), 0, g.ny - 2), tx = clamp(gx - x0, 0, 1), ty = clamp(gy - y0, 0, 1), q = y0 * g.nx + x0;
+          // Wölbung in zwei Massstäben (kleine Rippen und ganze Grate): hebt die Geländeform hervor
+          V[o + 11] = clamp(1.3 * (h - (hAt(i - 1, j) + hAt(i + 1, j) + hAt(i, j - 1) + hAt(i, j + 1)) / 4) / s + 1.1 * (h - (hAt(i - 4, j) + hAt(i + 4, j) + hAt(i, j - 4) + hAt(i, j + 4)) / 4) / (4 * s), -1, 1);
+          if (dem) V[o + 10] = Math.max(Math.abs(hAt(i - 1, j) - h), Math.abs(hAt(i + 1, j) - h), Math.abs(hAt(i, j - 1) - h), Math.abs(hAt(i, j + 1) - h)) < 0.05 ? 1 : 0;   // Seen sind im feinen Modell völlig eben
+          else { const x0 = clamp(Math.floor(gx), 0, g.nx - 2), y0 = clamp(Math.floor(gy), 0, g.ny - 2), tx = clamp(gx - x0, 0, 1), ty = clamp(gy - y0, 0, 1), q = y0 * g.nx + x0;
             V[o + 10] = (lk[q] * (1 - tx) + lk[q + 1] * tx) * (1 - ty) + (lk[q + g.nx] * (1 - tx) + lk[q + g.nx + 1] * tx) * ty; }
         }
       }
       this.hMin = lo; this.hMax = hi;
-      const I = this.I = new Uint16Array((N - 1) * (N - 1) * 6);
+      const I = this.I = new (N * N > 65535 ? Uint32Array : Uint16Array)((N - 1) * (N - 1) * 6);
       for (let j = 0, q = 0; j < N - 1; j++) for (let i = 0; i < N - 1; i++) { const a = j * N + i, b = a + 1, c2 = a + N, d = c2 + 1; I[q++] = a; I[q++] = c2; I[q++] = b; I[q++] = b; I[q++] = c2; I[q++] = d; }
       this.SH = new Float32Array(N * N).fill(1);
       this._shadow();
       this.cam.t = [0, this.ground(lat, lon) * ex, 0];
+      if (this._cl) this._cl.dirty = true;
       this._upload(); this.invalidate();
     }
     toLocal(lat, lon, alt) { return [(lon - this.c.lon) * this.mLon, (alt ?? this.ground(lat, lon)) * this.ex, -(lat - this.c.lat) * M_LAT]; }
@@ -242,10 +377,13 @@
     _shadow() {
       const { N, H, step: s, R } = this, e = this.sun.elev, out = this.SH;
       if (e <= 0.3) { out.fill(0); return; }
-      const tan = Math.tan(e * D2R), sx = Math.sin(this.sun.az * D2R), sz = -Math.cos(this.sun.az * D2R), d0 = Math.max(s, 120), tmp = this._shTmp ||= new Float32Array(N * N);
+      // dichtes Relief: nur jeden zweiten Punkt rechnen und dazwischen mitteln (gleich schnell wie beim groben Relief)
+      const q = N > 190 ? 2 : 1, M = Math.floor((N - 1) / q) + 1;
+      const tan = Math.tan(e * D2R), sx = Math.sin(this.sun.az * D2R), sz = -Math.cos(this.sun.az * D2R), d0 = Math.max(s * q, 120);
+      const tmp = this._shTmp?.length === M * M ? this._shTmp : (this._shTmp = new Float32Array(M * M)), sm = this._shSm?.length === M * M ? this._shSm : (this._shSm = new Float32Array(M * M));
       const top = Math.max(this.hMax, 4300);
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        const k = j * N + i, h0 = H[k], x0 = -R + i * s, z0 = -R + j * s;
+      for (let b = 0; b < M; b++) for (let a = 0; a < M; a++) {
+        const i = Math.min(N - 1, a * q), j = Math.min(N - 1, b * q), h0 = H[j * N + i], x0 = -R + i * s, z0 = -R + j * s;
         let lit = 1;
         for (let d = d0; d < 9000; d += d0 * (1 + d / 3000)) {
           const need = h0 + d * tan + 18;
@@ -254,12 +392,20 @@
           const hh = Math.abs(x) < R && Math.abs(z) < R ? this._meshH(x, z) : this._fast(this.c.lat - z / M_LAT, this.c.lon + x / this.mLon);
           if (hh > need) { lit = 0; break; }
         }
-        tmp[k] = lit;
+        tmp[b * M + a] = lit;
       }
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        let a = 0, n = 0;
-        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const jj = j + dj, ii = i + di; if (jj >= 0 && ii >= 0 && jj < N && ii < N) { a += tmp[jj * N + ii]; n++; } }
-        out[j * N + i] = a / n;
+      for (let b = 0; b < M; b++) for (let a = 0; a < M; a++) {
+        let v = 0, n = 0;
+        for (let db = -1; db <= 1; db++) for (let da = -1; da <= 1; da++) { const bb = b + db, aa = a + da; if (bb >= 0 && aa >= 0 && bb < M && aa < M) { v += tmp[bb * M + aa]; n++; } }
+        sm[b * M + a] = v / n;
+      }
+      if (q === 1) { out.set(sm); return; }
+      for (let j = 0; j < N; j++) {
+        const fb = Math.min(M - 1.001, j / q), b = fb | 0, tb = fb - b;
+        for (let i = 0; i < N; i++) {
+          const fa = Math.min(M - 1.001, i / q), a = fa | 0, ta = fa - a, k = b * M + a;
+          out[j * N + i] = (sm[k] * (1 - ta) + sm[k + 1] * ta) * (1 - tb) + (sm[k + M] * (1 - ta) + sm[k + M + 1] * ta) * tb;
+        }
       }
     }
     _meshH(x, z) {
@@ -306,6 +452,75 @@
       gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     }
     get draped() { return this._drape.ok; }
+
+    /* ---- Wolken und Nebelmeer: Schalen aus durchscheinenden Flächen auf Höhe der Basis, vom Wind verschoben */
+    /**
+     * c: { cover: 0–1 oder { grid, v: [0–100 je Rasterpunkt] }, base: m ü. M. (Zahl oder Liste je Rasterpunkt), fog: Obergrenze
+     * des Nebelmeers in m oder null, fogCover: wie cover (wo der Nebel liegt), wind: [u, v] km/h }. null blendet alles aus.
+     */
+    setClouds(c, ms = 700) {
+      const cl = this._cl ||= { cur: null, from: null, to: null, t0: 0, ms: 1, off: [0.13, 0.71], wind: [0, 0], time: null, dirty: true };
+      const prev = cl.cur, g = c ? (c.cover?.grid || c.fogCover?.grid || null) : (prev?.g || null), n = g ? g.nx * g.ny : 1;
+      const fill = (src, def, k) => { const a = new Float32Array(n); for (let i = 0; i < n; i++) { const v = src == null ? def : typeof src === 'number' ? src : (src.v ? src.v[i] : src[i]); a[i] = (Number.isFinite(v) ? v : def) * k; } return a; };
+      let to;
+      if (!c) to = prev ? { ...prev, an: 0 } : null;
+      else {
+        const base = fill(c.base, NaN, 1), has = base.some(Number.isFinite);
+        const mean = has ? base.reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0) / base.filter(Number.isFinite).length : (prev ? prev.base[0] : 2500);
+        for (let i = 0; i < n; i++) if (!Number.isFinite(base[i])) base[i] = mean;
+        const cov = fill(c.cover, 0, c.cover?.v ? 0.01 : 1).map(v => clamp(v, 0, 1));
+        to = { g, n, cov, fogc: fill(c.fogCover, 1, c.fogCover?.v ? 0.01 : 1).map(v => clamp(v, 0, 1)), base, fogTop: c.fog ?? prev?.fogTop ?? 1000, fogA: c.fog != null ? 1 : 0, deckA: has && cov.some(v => v > 0.02) ? 1 : 0, an: 1 };
+        if (c.wind) cl.wind = [c.wind[0] || 0, c.wind[1] || 0];
+      }
+      if (!to) return;
+      const same = prev && prev.n === to.n && (prev.g?.nx || 0) === (to.g?.nx || 0);
+      // weicher Übergang: vom jetzigen Stand zum neuen; die Höhe einer Schicht, die erst erscheint, wird nicht «hergefahren»
+      cl.from = same ? { ...prev, base: prev.deckA * prev.an > 0.02 ? prev.base : to.base, fogTop: prev.fogA * prev.an > 0.02 ? prev.fogTop : to.fogTop } : { ...to, an: 0 };
+      cl.to = to; cl.t0 = performance.now(); cl.ms = Math.max(1, ms); cl.cur = null;
+      this._cloudStep(ms <= 1);
+      this.invalidate();
+    }
+    /** Stand der Wolken für dieses Bild (zwischen altem und neuem Zustand gemischt). true, solange der Übergang läuft. */
+    _cloudStep(end) {
+      const cl = this._cl;
+      if (!cl?.to) return false;
+      const k = end ? 1 : ease(clamp((performance.now() - cl.t0) / cl.ms, 0, 1)), a = cl.from, b = cl.to;
+      if (cl.cur && cl.k === k) return k < 1;
+      const mix = (x, y) => x + (y - x) * k, arr = (x, y) => (k >= 1 ? y : x.map((v, i) => v + (y[i] - v) * k));
+      cl.cur = { g: b.g, n: b.n, cov: arr(a.cov, b.cov), fogc: arr(a.fogc, b.fogc), base: arr(a.base, b.base), fogTop: mix(a.fogTop, b.fogTop), fogA: mix(a.fogA, b.fogA), deckA: mix(a.deckA, b.deckA), an: mix(a.an, b.an) };
+      cl.k = k; cl.dirty = true;
+      return k < 1;
+    }
+    /** Bedeckung als kleine Textur und die Wolkenfläche (Höhe der Basis je Punkt) auf die Grafikkarte laden. */
+    _cloudUpload() {
+      const gl = this.gl, cl = this._cl, c = cl.cur, g = c.g, nx = g ? g.nx : 1, ny = g ? g.ny : 1, px = new Uint8Array(nx * ny * 4);
+      for (let i = 0; i < nx * ny; i++) { px[i * 4] = Math.round(c.cov[i] * 255); px[i * 4 + 1] = Math.round(c.fogc[i] * 255); px[i * 4 + 3] = 255; }
+      gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, nx, ny, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const M = 33, R = this.R, V = new Float32Array(M * M * 3), F = new Float32Array(M * M * 3);
+      const baseAt = (la, lo) => {
+        if (!g) return c.base[0];
+        const fx = clamp((lo - g.lo0) / g.dlo, 0, g.nx - 1.001), fy = clamp((la - g.la0) / g.dla, 0, g.ny - 1.001), x = fx | 0, y = fy | 0, tx = fx - x, ty = fy - y, k = y * g.nx + x;
+        return (c.base[k] * (1 - tx) + c.base[k + 1] * tx) * (1 - ty) + (c.base[k + g.nx] * (1 - tx) + c.base[k + g.nx + 1] * tx) * ty;
+      };
+      let sum = 0;
+      for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
+        const o = (j * M + i) * 3, x = -R + i * 2 * R / (M - 1), z = -R + j * 2 * R / (M - 1), geo = this.toGeo(x, z), b = baseAt(geo[0], geo[1]);
+        V[o] = F[o] = x; V[o + 2] = F[o + 2] = z; V[o + 1] = b * this.ex; sum += b;
+      }
+      cl.mean = sum / (M * M);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.B.cld); gl.bufferData(gl.ARRAY_BUFFER, V, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.B.cldF); gl.bufferData(gl.ARRAY_BUFFER, F, gl.STATIC_DRAW);
+      const I = new Uint16Array((M - 1) * (M - 1) * 6);
+      for (let j = 0, q = 0; j < M - 1; j++) for (let i = 0; i < M - 1; i++) { const a = j * M + i, b = a + 1, c2 = a + M, d = c2 + 1; I[q++] = a; I[q++] = c2; I[q++] = b; I[q++] = b; I[q++] = c2; I[q++] = d; }
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+      cl.nI = I.length;
+      // Rasterpunkt aus der Lage in der Szene: u = x·a + b, v = z·c + d
+      cl.cv = g ? [1 / (this.mLon * g.dlo * g.nx), -1 / (M_LAT * g.dla * g.ny), ((this.c.lon - g.lo0) / g.dlo + 0.5) / g.nx, ((this.c.lat - g.la0) / g.dla + 0.5) / g.ny] : [0, 0, 0.5, 0.5];
+      cl.dirty = false;
+    }
+    /** Was gerade zu sehen ist: { base, cover, fog } oder null (für Anzeigen der App). */
+    get clouds() { const c = this._cl?.to; return c && c.an > 0.5 && (c.deckA > 0.5 || c.fogA > 0.5) ? { base: c.base.reduce((a, v) => a + v, 0) / c.n, deck: c.deckA > 0.5, fog: c.fogA > 0.5 ? c.fogTop : null } : null; }
 
     /* ---- Linien: Bänder mit fester Breite am Bildschirm. lines: [{ pts: [[lat, lon, alt]], color, colors, width, speed, agl }] */
     setLines(key, lines, o = {}) {
@@ -513,6 +728,7 @@
       if (o.mix < 1) { o.mix = clamp((performance.now() - o.t0) / o.ms, 0, 1); busy = busy || o.mix < 1; }
       const d = this._drape;
       if (d.ok && d.a < 1) { d.a = clamp((performance.now() - d.t0) / 700, 0, 1); busy = true; }
+      if (this._cloudStep()) busy = true;
       if (this.onFrame && this.onFrame(ts, dt)) busy = true;
       if (this.flowing) { this.time += dt / 1000; busy = true; }
       this._draw();
@@ -545,8 +761,8 @@
       P = this.P.ter; gl.useProgram(P.p); gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.ter);
-      const st = 44, att = (loc, n, off) => { if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, st, off); } };
-      att(P.a.a_pos, 3, 0); att(P.a.a_n, 3, 12); att(P.a.a_uv, 2, 24); att(P.a.a_duv, 2, 32); att(P.a.a_w, 1, 40);
+      const st = 48, att = (loc, n, off) => { if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, st, off); } };
+      att(P.a.a_pos, 3, 0); att(P.a.a_n, 3, 12); att(P.a.a_uv, 2, 24); att(P.a.a_duv, 2, 32); att(P.a.a_w, 1, 40); att(P.a.a_cv, 1, 44);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sh); gl.enableVertexAttribArray(P.a.a_sh); gl.vertexAttribPointer(P.a.a_sh, 1, gl.FLOAT, false, 0, 0);
       const er = Math.max(e, 0) * D2R, sa = this.sun.az * D2R, sv = [Math.sin(sa) * Math.cos(er), Math.sin(er) * 1.0, -Math.cos(sa) * Math.cos(er)];
       const warm = 1 - low;
@@ -556,14 +772,52 @@
       gl.uniform3f(P.u.u_amb, 0.24 + 0.30 * day, 0.27 + 0.30 * day, 0.34 + 0.28 * day);
       gl.uniform3fv(P.u.u_eye, eye); gl.uniform3fv(P.u.u_fog, bot); gl.uniform2f(P.u.u_c, 0, 0);
       gl.uniform3f(P.u.u_f, this.R, c.dist * 1.1, c.dist * 1.1 + this.R * 2.6);
+      // Wolken: Stand für dieses Bild, Verschiebung mit dem Wind (zur Anschauung beschleunigt)
+      const cl = this._cl, cc = cl?.cur && cl.cur.an > 0.004 && this.cloudsOn !== false ? cl.cur : null;
+      let flow = false;
+      if (cc) {
+        if (cl.dirty || cl.R !== this.R) { this._cloudUpload(); cl.R = this.R; }
+        cl.sc = clamp(this.R * 1.3, 6000, 36000);
+        const dtc = this.time - (cl.time ?? this.time); cl.time = this.time;
+        cl.off[0] -= cl.wind[0] / 3.6 * dtc * 14 / cl.sc; cl.off[1] += cl.wind[1] / 3.6 * dtc * 14 / cl.sc;
+        if (!this.still && Math.hypot(cl.wind[0], cl.wind[1]) > 0.5) flow = true;
+        const sh = e > 2 ? 1 / Math.max(Math.tan(e * D2R), 0.35) : 0;
+        gl.uniform4f(P.u.u_cl, e > 2 ? cc.an * cc.deckA : 0, cl.mean * this.ex, cl.sc, cc.fogA * cc.an > 0.5 ? cc.fogTop * this.ex : 0);
+        gl.uniform4fv(P.u.u_cv, cl.cv); gl.uniform2fv(P.u.u_coff, cl.off); gl.uniform2f(P.u.u_sunH, Math.sin(sa) * sh, -Math.cos(sa) * sh);
+      } else gl.uniform4f(P.u.u_cl, 0, 0, 1, 0);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.X.noise); gl.uniform1i(P.u.u_noise, 3);
+      gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.uniform1i(P.u.u_cov, 4);
       gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.X.ov0); gl.uniform1i(P.u.u_ov0, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.X.ov1); gl.uniform1i(P.u.u_ov1, 1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.X.dr); gl.uniform1i(P.u.u_dr, 2);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.idx); gl.drawElements(gl.TRIANGLES, this.I.length, gl.UNSIGNED_SHORT, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.idx); gl.drawElements(gl.TRIANGLES, this.I.length, this.I instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
       for (const k in P.a) if (P.a[k] >= 0) gl.disableVertexAttribArray(P.a[k]);
       // Flächen (durchsichtig, schreiben keine Tiefe)
       gl.depthMask(false);
+      if (cc) {
+        // Wolken und Nebelmeer: je einige Schalen übereinander, die fernere Schicht zuerst, Berge ragen heraus
+        P = this.P.cld; gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.X.noise); gl.uniform1i(P.u.u_noise, 3);
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.uniform1i(P.u.u_cov, 4);
+        gl.uniform4fv(P.u.u_cv, cl.cv); gl.uniform2fv(P.u.u_off, cl.off); gl.uniform1f(P.u.u_R, this.R); gl.uniform1f(P.u.u_sc, cl.sc);
+        const amb = [0.24 + 0.30 * day, 0.27 + 0.30 * day, 0.34 + 0.28 * day], sun = [(0.78 + 0.16 * warm) * day, (0.74 - 0.06 * warm) * day, (0.66 - 0.2 * warm) * day];
+        gl.uniform3f(P.u.u_lit, Math.min(1, amb[0] * 0.78 + sun[0] * 0.75), Math.min(1, amb[1] * 0.78 + sun[1] * 0.75), Math.min(1, amb[2] * 0.78 + sun[2] * 0.75));
+        gl.uniform3f(P.u.u_dim, amb[0] * 1.02 + 0.06 * day, amb[1] * 1.02 + 0.07 * day, amb[2] * 1.02 + 0.09 * day);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.enableVertexAttribArray(P.a.a_pos);
+        const thick = clamp(this.R * 0.045, 220, 900) * this.ex, fogT = 90 * this.ex;
+        const layers = [];
+        if (cc.deckA > 0.01) layers.push({ y: cl.mean * this.ex, n: 6, buf: this.B.cld, fog: 0, a: cc.an * cc.deckA, lift: k => k * thick });
+        if (cc.fogA > 0.01) layers.push({ y: cc.fogTop * this.ex, n: 4, buf: this.B.cldF, fog: 1, a: cc.an * cc.fogA, lift: k => cc.fogTop * this.ex - (1 - k) * fogT });
+        layers.sort((p, q2) => Math.abs(q2.y - eye[1]) - Math.abs(p.y - eye[1]));
+        for (const L of layers) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, L.buf); gl.vertexAttribPointer(P.a.a_pos, 3, gl.FLOAT, false, 12, 0);
+          gl.uniform1f(P.u.u_fog, L.fog); gl.uniform1f(P.u.u_a, L.a);
+          const up = eye[1] > L.y;
+          for (let i = 0; i < L.n; i++) { const k = (up ? i : L.n - 1 - i) / (L.n - 1); gl.uniform1f(P.u.u_k, k); gl.uniform1f(P.u.u_lift, L.lift(k)); gl.drawElements(gl.TRIANGLES, cl.nI, gl.UNSIGNED_SHORT, 0); }
+        }
+        gl.disableVertexAttribArray(P.a.a_pos);
+      }
       if (this.tris.size) {
         P = this.P.flat; gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp);
         gl.enableVertexAttribArray(P.a.a_pos); gl.enableVertexAttribArray(P.a.a_col);
@@ -575,7 +829,6 @@
         gl.disableVertexAttribArray(P.a.a_pos); gl.disableVertexAttribArray(P.a.a_col);
       }
       // Linien
-      this.flowing = false;
       if (this.lines.size) {
         P = this.P.line; gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); gl.uniform2f(P.u.u_vp, this.w, this.h); gl.uniform1f(P.u.u_time, this.time);
         const A = P.a, on = ['a_p', 'a_q', 'a_m', 'a_col', 'a_sp'].filter(k => A[k] >= 0);
@@ -584,20 +837,21 @@
           if (!l.buf) { l.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, l.buf); gl.bufferData(gl.ARRAY_BUFFER, l.data, gl.STATIC_DRAW); } else gl.bindBuffer(gl.ARRAY_BUFFER, l.buf);
           gl.vertexAttribPointer(A.a_p, 3, gl.FLOAT, false, 56, 0); gl.vertexAttribPointer(A.a_q, 3, gl.FLOAT, false, 56, 12); gl.vertexAttribPointer(A.a_m, 3, gl.FLOAT, false, 56, 24); gl.vertexAttribPointer(A.a_col, 4, gl.FLOAT, false, 56, 36);
           if (A.a_sp >= 0) gl.vertexAttribPointer(A.a_sp, 1, gl.FLOAT, false, 56, 52);
-          const flow = l.flow && !this.still ? l.flow : 0;
-          gl.uniform1f(P.u.u_flow, flow); gl.uniform1f(P.u.u_dash, l.dash); gl.uniform1f(P.u.u_bias, l.bias);
-          if (flow) this.flowing = true;
+          const fl = l.flow && !this.still ? l.flow : 0;
+          gl.uniform1f(P.u.u_flow, fl); gl.uniform1f(P.u.u_dash, l.dash); gl.uniform1f(P.u.u_bias, l.bias);
+          if (fl) flow = true;
           if (l.xray) { gl.disable(gl.DEPTH_TEST); gl.uniform1f(P.u.u_alpha, l.alpha * 0.22); gl.drawArrays(gl.TRIANGLES, 0, l.n); gl.enable(gl.DEPTH_TEST); }
           gl.uniform1f(P.u.u_alpha, l.alpha); gl.drawArrays(gl.TRIANGLES, 0, l.n);
         }
         for (const k of on) gl.disableVertexAttribArray(A[k]);
       }
       gl.depthMask(true);
+      this.flowing = flow;
       if (this.lab) this._place();
       this.onDraw?.();
     }
     /** Sofort zeichnen (für Clips, die das Bild gleich weiterverwenden). */
-    renderNow(dt = 0) { if (this._dead || this._gone) return; this.time += dt; if (this.orbit) this.cam.az += this.orbit * dt; this._ov.mix = 1; if (this._drape.ok) this._drape.a = 1; this._draw(); }
+    renderNow(dt = 0) { if (this._dead || this._gone) return; this.time += dt; if (this.orbit) this.cam.az += this.orbit * dt; this._ov.mix = 1; if (this._drape.ok) this._drape.a = 1; this._cloudStep(true); this._draw(); }
 
     destroy() {
       this._dead = true; cancelAnimationFrame(this._raf); this._ro?.disconnect();
@@ -619,5 +873,5 @@
     return { elev: elev / D2R, az: (az / D2R + 540) % 360 };
   }
 
-  window.AFC3D = { Scene, sunAt, supported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl') || c.getContext('experimental-webgl')); } catch { return false; } } };
+  window.AFC3D = { Scene, sunAt, loadDem, supported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl') || c.getContext('experimental-webgl')); } catch { return false; } } };
 })();

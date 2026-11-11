@@ -17,6 +17,7 @@ import { loadStationList, fetchObservations, fetchFoehnIndex, PRESSURE_STATIONS 
 import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LEARN_DAYS, LEARN_MIN_N } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
+import { cloudField, cloudPoints } from './lib/clouds.js';
 import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedbackByLevel, cleanPilotSnap, voterLevel } from './lib/logbook.js';
@@ -362,6 +363,10 @@ function windResponse(ms, level) {
   state.payloads.set(key, p);
   return p;
 }
+/** Wolkenbasis und Nebelmeer einer Stunde für die 3D-Ansicht (lib/clouds.js); null, wenn die Prognose fehlt. */
+function cloudAt(grid, ms) {
+  try { return state.raw ? cloudField(cloudPoints(state.raw, ms, SITES, AREAS, REF_POINT), grid) : null; } catch { return null; }
+}
 function thermalResponse(ms) {
   const hourMs = Math.round(ms / 3600000) * 3600000;
   const key = `thermal:${hourMs}`;
@@ -369,6 +374,7 @@ function thermalResponse(ms) {
   if (p) return p;
   const sl = thermalSlice(state.windgrid, hourMs);
   if (!sl) return null;
+  sl.cloud = cloudAt(sl.grid, hourMs);
   p = packJson(sl);
   state.payloads.set(key, p);
   return p;
@@ -381,7 +387,7 @@ function filmResponse(ms, n) {
   let p = state.payloads.get(key);
   if (p) return p;
   const hours = [];
-  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) hours.push(sl); }
+  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) { sl.cloud = cloudAt(sl.grid, t0 + i * 3600000); hours.push(sl); } }
   if (hours.length < 2) return null;
   p = packJson({ grid: hours[0].grid, fetchedAt: hours[0].fetchedAt, hours: hours.map(({ grid, fetchedAt, ...h }) => h) });
   state.payloads.set(key, p);
@@ -605,7 +611,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
   "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org https://thermal.kk7.ch",
-  "connect-src 'self'", "worker-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"
+  "connect-src 'self' https://s3.amazonaws.com/elevation-tiles-prod/", "worker-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"
 ].join('; ');
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN', 'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()' };
 const corsHeaders = req => {
