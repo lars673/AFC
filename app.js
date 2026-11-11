@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.0.2';
+const APP_VER = '12.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -215,15 +215,71 @@ function ringHtml(score, from = 0) {
 /** Zahl weich hochzählen (ohne Bewegung bei «Bewegung reduzieren»). */
 function countUp(el, from, to, ms = 600) {
   if (!el || !num(to) || !num(from) || from === to || noMotion()) return;
-  const t0 = performance.now();
+  let t0 = null;
   const step = t => {
     if (!el.isConnected) return;
-    const k = Math.min(1, (t - t0) / ms);
+    if (t0 === null) t0 = t;                       // Zeit des ersten Bildes: dieselbe Uhr wie alle folgenden
+    const k = Math.min(1, Math.max(0, (t - t0) / ms));
     el.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3)));
     if (k < 1) requestAnimationFrame(step);
   };
   el.textContent = Math.round(from);
   requestAnimationFrame(step);
+}
+/** Zahlen mit Merker einsammeln (vor dem Neuzeichnen) … */
+function numSnap(root) {
+  const m = new Map();
+  for (const e of root?.querySelectorAll('[data-cu]') || []) m.set(e.dataset.cu, Number(e.textContent));
+  return m;
+}
+/** … und nach dem Neuzeichnen vom alten zum neuen Wert laufen lassen. Ohne alten Wert zählt die Zahl nur, wenn zero gesetzt ist. */
+function morphNums(root, prev, ms = 520, zero = false) {
+  for (const e of root?.querySelectorAll('[data-cu]') || []) {
+    const to = Number(e.textContent), from = prev?.get(e.dataset.cu);
+    if (num(from)) countUp(e, from, to, ms); else if (zero) countUp(e, 0, to, ms + 180);
+  }
+}
+/**
+ * Kurze Einstiegs-Bewegung nach einem echten Wechsel (Reiter, Tag, erster Stand). Blosses Neuzeichnen bleibt ruhig.
+ * dir: -1 früherer Tag, 1 späterer Tag, 0 von unten. prev: Zahlen vor dem Wechsel. first: erster Stand nach dem Öffnen.
+ */
+let liveT = 0;
+function lively(dir = 0, prev = null, first = false) {
+  const v = $('#v-' + S.tab), bar = $('#daybar');
+  if (!v || noMotion()) return;
+  const all = ['live', 'live-l', 'live-r', 'live-first'];
+  $$('.view.live').forEach(x => x.classList.remove(...all)); bar.classList.remove('live', 'live-day');
+  void v.offsetWidth;                                 // Neustart der Animation erzwingen
+  if (S.tab !== 'map') v.classList.add('live', ...(dir ? [dir > 0 ? 'live-r' : 'live-l'] : []), ...(first ? ['live-first'] : []));
+  if (first) bar.classList.add('live'); else if (dir) bar.classList.add('live-day');
+  morphNums(v, prev, 520, first);
+  if (first) morphNums(bar, null, 520, true);
+  clearTimeout(liveT);
+  liveT = setTimeout(() => { v.classList.remove(...all); bar.classList.remove('live', 'live-day'); }, 1300);
+}
+/** Gleitende Marke unter dem gewählten Reiter. */
+function tabMark() {
+  const nav = $('.tabs'), b = nav?.querySelector('[aria-selected="true"]');
+  if (!nav) return;
+  nav.classList.add('ind');
+  nav.style.setProperty('--tx', (b ? b.offsetLeft : 0) + 'px');
+  nav.style.setProperty('--tw', (b ? b.offsetWidth : 0) + 'px');
+}
+/**
+ * Windsack: hängt bei Windstille, steht ab etwa 28 km/h waagrecht (wie am Platz: je Ring rund 5 km/h) und flattert
+ * mit den Böen. Nur Zierde, die Zahlen stehen daneben.
+ */
+function sockHtml(speed, gust) {
+  if (!num(speed)) return '';
+  const v = Math.max(0, speed), g = Math.max(0, (num(gust) ? gust : v) - v);
+  const droop = [38, 16, 14, 12, 10], r = [6.2, 5.4, 4.7, 4.1, 3.6, 3.2], L = 8.4;
+  const dur = Math.max(0.5, 1.9 - v * 0.05).toFixed(2), d = Math.min(8, 1.2 + v * 0.07 + g * 0.22).toFixed(1);
+  let inner = '';
+  for (let i = 4; i >= 0; i--) {
+    const a = ((1 - Math.min(1, Math.max(0, (v - 5.5 * i) / 5.5))) * droop[i]).toFixed(1);
+    inner = `<g class="sock-s" style="--l:${i ? L : 0}px;--a:${a}deg;animation-delay:${(-i * 0.13).toFixed(2)}s"><path class="${i % 2 ? 'sock-w' : 'sock-r'}" d="M0 ${-r[i]}L${L} ${-r[i + 1]}V${r[i + 1]}L0 ${r[i]}z"/>${inner}</g>`;
+  }
+  return `<svg class="sock" viewBox="0 0 60 50" width="60" height="50" aria-hidden="true" style="--d:${d}deg;--t:${dur}s"><path class="sock-p" d="M9 48V6"/><circle class="sock-p" cx="9" cy="6" r="1.6"/><g transform="translate(10 9)">${inner}</g></svg>`;
 }
 function starBtn(id) {
   const on = S.fav.has(id);
@@ -240,6 +296,7 @@ function render() {
   if (S.plan) renderDaybar();
   for (const t of ['decide', 'map', 'lage', 'day', 'book', 'group', 'profile']) $('#v-' + t).hidden = S.tab !== t;
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
+  tabMark();
   if (S.tab === 'decide') renderDecide();
   else if (S.tab === 'lage') renderLage();
   else if (S.tab === 'day') renderDay();
@@ -247,6 +304,7 @@ function render() {
   else if (S.tab === 'book') renderBook();
   else if (S.tab === 'map') renderMap();
   else if (S.tab === 'group') renderGroup();
+  if (S.plan && !S.shown) { S.shown = true; lively(0, null, true); }   // erster Stand nach dem Öffnen: Karten gleiten herein, Scores zählen hoch
 }
 
 function sourceState() {
@@ -307,11 +365,11 @@ function skySvg(k) {
   };
   return g[k] || '';
 }
-function skyIcon(sky, size = 22) {
+function skyIcon(sky, size = 22, live = false) {
   const k = typeof sky === 'string' ? sky : sky?.k;
   if (!k || !SKY_T[k]) return '';
   const t = SKY_T[k] + (sky?.cloud != null ? `, Bewölkung etwa ${sky.cloud} %` : '');
-  return `<svg class="sky" viewBox="0 0 32 32" width="${size}" height="${size}" role="img" aria-label="${esc(t)}"><title>${esc(t)}</title>${skySvg(k)}</svg>`;
+  return `<svg class="sky${live ? ' sky-live' : ''}" viewBox="0 0 32 32" width="${size}" height="${size}" role="img" aria-label="${esc(t)}"><title>${esc(t)}</title>${skySvg(k)}</svg>`;
 }
 
 function renderDaybar() {
@@ -321,8 +379,8 @@ function renderDaybar() {
     const top = p.days[i].top, site = top && siteById(top.siteId);
     const sc = top?.best.score, past = p.dates[i] < today || (p.dates[i] === today && !top);
     return `<button type="button" class="day${past ? ' past' : ''}" data-act="day" data-i="${i}" aria-pressed="${i === S.day}">
-      <span class="day-n">${dayName(i)}${past ? '' : skyIcon(p.days[i].sky, 20)}</span>
-      <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>${!past && p.days[i].conf && p.days[i].conf.level !== 'gut' ? `<span class="day-c c-${p.days[i].conf.level}" title="Prognose ${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}">${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}</span>` : ''}
+      <span class="day-n">${dayName(i)}${past ? '' : skyIcon(p.days[i].sky, 20, true)}</span>
+      <span class="day-h"><span class="day-d">${dayDate(i)}</span><span class="day-s t-${cls(sc)}" data-cu="d:${i}">${num(sc) ? sc : past ? 'vorbei' : '–'}</span></span>${!past && p.days[i].conf && p.days[i].conf.level !== 'gut' ? `<span class="day-c c-${p.days[i].conf.level}" title="Prognose ${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}">${p.days[i].conf.level === 'mittel' ? 'eher unsicher' : 'unsicher'}</span>` : ''}
       ${site ? ribbon(site.days[i].scores, top.best) : '<div class="ribbon"></div>'}
     </button>`;
   }).join('');
@@ -330,7 +388,7 @@ function renderDaybar() {
 
 function stateBox() {
   if (S.plan) return '';
-  if (S.warming || !S.offline) return `<div class="warm"><div class="spinner"></div>Wetterdaten werden geladen. Beim ersten Start dauert das bis zu einer Minute.</div>`;
+  if (S.warming || !S.offline) return `<div class="skel" role="status"><div class="skel-b skel-hl"></div><div class="skel-b skel-h"></div>${'<div class="skel-b skel-row"></div>'.repeat(5)}<p class="fine">Wetterdaten werden geladen. Beim ersten Start dauert das bis zu einer Minute.</p></div>`;
   return `<div class="empty">Keine Daten verfügbar (${esc(S.err)}). <button class="btn sec" data-act="reload" type="button">Erneut versuchen</button></div>`;
 }
 
@@ -366,7 +424,7 @@ function areaRow(a) {
   const score = x => (x.blocked ? -1 : x.days[S.day].best?.score ?? -1);
   const srow = (s, inGroup) => {
     const b = s.days[S.day].best;
-    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
+    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}" data-cu="s:${esc(s.id)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
   };
   // Startplätze am selben Berg (höchstens 1.5 km auseinander) zusammen, beste Richtung zuerst
   const rows = mountainGroups(sites).map(g => g.sites.sort((x, y) => score(y) - score(x)))
@@ -379,9 +437,9 @@ function areaRow(a) {
   return `<div class="arow${open ? ' open' : ''}">
     <button type="button" class="arow-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
       <span class="arow-txt"><span class="arow-name">${esc(a.name)}${skyIcon(a.sky?.[S.day], 20)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
-      <span class="mini-pill s-${d ? cls(d.best.score) : 'none'}">${d ? d.best.score : '–'}</span></button>
+      <span class="mini-pill s-${d ? cls(d.best.score) : 'none'}" data-cu="a:${esc(a.id)}">${d ? d.best.score : '–'}</span></button>
     <button type="button" class="arow-exp" data-act="toggle" data-id="${esc(a.id)}" aria-expanded="${open}" aria-label="${sites.length} ${sites.length === 1 ? 'Startplatz' : 'Startplätze'} ${open ? 'zuklappen' : 'zeigen'}"><span>${sites.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-    ${open ? `<div class="rows arow-rows">${rows}</div>` : ''}
+    ${open ? `<div class="rows arow-rows${S.justOpen === a.id ? ' new' : ''}">${rows}</div>` : ''}
   </div>`;
 }
 /** Startplätze gruppieren, die höchstens 1.5 km auseinander liegen (gleicher Berg, verschiedene Richtungen). */
@@ -440,7 +498,7 @@ function renderDecide() {
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
-      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
+      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}${skyIcon(s.days[S.day].sky, 18, true)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}" data-cu="f:${esc(s.id)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
@@ -1438,13 +1496,21 @@ function flightCheck(log) {
 /* ---------------------------------------------------------------- Dialoge */
 function dlg(id, html) {
   const d = $(id);
+  if (d._closing) { clearTimeout(d._closing); d._closing = 0; d.classList.remove('closing'); }   // wird gleich wieder gebraucht: Schliessen abbrechen
   d.innerHTML = html;
   // Auf dem Handy: «Schliessen» unten in Daumenreichweite (oben rechts ist mit einer Hand schwer erreichbar)
   if (id === '#siteDlg') d.querySelector('.dlg-in')?.insertAdjacentHTML('beforeend', '<div class="dlg-foot"><button class="btn sec" type="button" data-act="closesite">Schliessen</button></div>');
   if (!d.open) d.showModal();
   return d;
 }
-function closeDlg(d) { if (d?.open) d.close(); }
+/** Dialog schliessen, mit kurzem Ausblenden. Solange er ausblendet, gilt er für isOpen() schon als zu. */
+function closeDlg(d) {
+  if (!d?.open || d._closing) return;
+  if (noMotion()) { d.close(); return; }
+  d.classList.add('closing');
+  d._closing = setTimeout(() => { d._closing = 0; d.classList.remove('closing'); if (d.open) d.close(); }, 170);
+}
+const isOpen = d => !!d?.open && !d._closing;
 function ask({ title, text, ok = 'OK', danger = false, cancel = 'Abbrechen' }) {
   return new Promise(res => {
     const d = dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">${esc(title)}</h2><p>${esc(text)}</p><div class="btn-row">${cancel ? `<button class="btn sec" type="button" data-r="0">${esc(cancel)}</button>` : ''}<button class="btn ${danger ? 'danger' : ''}" type="button" data-r="1" autofocus>${esc(ok)}</button></div></div>`);
@@ -1515,7 +1581,7 @@ async function openSite(id) {
   if (!S.plan || !siteById(id)) return;
   const base = siteById(id);
   S.site = id; S.hour = null; S.panel = null;
-  dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="warm"><div class="spinner"></div>Lade Details …</div></div>`);
+  dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
   try {
     const d = await loadDetail(id);
     if (S.site !== id) return;
@@ -1716,6 +1782,7 @@ function renderSite(fresh = false) {
   const c = hr ? cls(hr.score) : 'none';
   const nc = d.nowcast;
   const ringFrom = fresh ? 0 : S.ringPrev ?? 0;
+  const kvPrev = fresh ? null : numSnap($('#siteDlg'));
   S.ringPrev = num(hr?.score) ? hr.score : 0;
   const actionsHtml = `<div class="site-acts">
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
@@ -1736,11 +1803,11 @@ function renderSite(fresh = false) {
       ${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine">Keine Auffälligkeiten.</p>'}
       </details>
       <div class="kv">
-        <div><b>${hr.speed ?? '–'} ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span></div>
-        <div><b>${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
+        <div class="kv-wind"><b><span data-cu="k:speed">${hr.speed ?? '–'}</span> ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span>${sockHtml(hr.speed, hr.gust)}</div>
+        <div><b data-cu="k:gust">${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
         <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
         <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
-        ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
+        ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30, true)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
       </div>
       <details class="pro-more" ${store.get('proOpen') ? 'open' : ''}><summary>Für Profis: Windprofil, Thermik, Scherung, Modelle</summary>
       <div class="kv">
@@ -1760,7 +1827,7 @@ function renderSite(fresh = false) {
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     ${d._savedAt ? `<div class="saved-note" role="status"><b>Kein Empfang: gespeicherter Stand von ${esc(whenTxt(d._savedAt))}.</b> Nicht für den Startentscheid verwenden, Wind vor Ort prüfen.</div>` : ''}
-    <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
+    <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20, true)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
     ${S.day === 0 && !d._savedAt ? `<div class="panel" style="margin:0"><h3>Regen jetzt</h3><div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div></div>` : ''}
@@ -1771,6 +1838,7 @@ function renderSite(fresh = false) {
   </div>`);
   $('#siteDlg .dlg-in')?.classList.toggle('fresh', fresh);
   countUp($('#siteDlg .ring b'), ringFrom, hr?.score);
+  if (kvPrev) morphNums($('#siteDlg'), kvPrev, 380);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
   fillCam(s);
@@ -2991,8 +3059,10 @@ function locate() {
 
 /* ---------------------------------------------------------------- Aktionen */
 function setTab(t) {
+  const was = S.tab;
   S.tab = t; store.set('tab', t);
   render();
+  if (was !== t) lively();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
   if (t === 'profile') loadStatus();
   if (t === 'group') groupLoad().catch(() => {});
@@ -3038,10 +3108,10 @@ document.addEventListener('click', async e => {
     case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
     case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
     case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast('Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
-    case 'day': S.day = Number(b.dataset.i); S.dayPicked = true; render(); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break;
+    case 'day': { const was = S.day, prev = numSnap($('#v-' + S.tab)); S.day = Number(b.dataset.i); S.dayPicked = true; render(); if (S.day !== was) lively(Math.sign(S.day - was), prev); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break; }
     case 'reload': loadPlan(true); break;
     case 'sources': setTab('profile'); setTimeout(() => $$('#v-profile .panel h3').find(h => h.textContent === 'Datenquellen')?.scrollIntoView({ behavior: 'smooth' }), 80); break;
-    case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); renderDecide(); break;
+    case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); S.justOpen = S.open.has(id) ? id : null; renderDecide(); S.justOpen = null; break;
     case 'site': $('#mapSheet').hidden = true; openSite(id); break;
     case 'closesite': closeDlg($('#siteDlg')); break;
     case 'groupzoom': if (M.groupBounds) { M.map.fitBounds(M.groupBounds, { padding: [60, 60], maxZoom: 16 }); $('#mapSheet').hidden = true; } break;
@@ -3057,6 +3127,7 @@ document.addEventListener('click', async e => {
       b.setAttribute('aria-pressed', String(S.fav.has(id)));
       if (!dlgEl) { if (S.tab === 'decide') renderDecide(); else if (S.tab === 'profile') renderProfile(); }
       else if (S.detailData) renderSite();
+      if (S.fav.has(id)) $$('.star[aria-pressed="true"]').filter(x => x.dataset.id === id).forEach(x => x.classList.add('pop'));   // kleiner Hüpfer als Bestätigung
       break;
     }
     case 'hour': S.hour = Number(b.dataset.h); if (S.detailData) renderSite(); break;
@@ -3261,6 +3332,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
 $('#v3dDlg')?.addEventListener('close', v3dEnd);
+window.addEventListener('resize', tabMark);
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
 });
@@ -4458,7 +4530,7 @@ async function openAdmin(tab) {
   if (tab) ADM.tab = tab;
   S.panel = 'admin';
   dlg('#siteDlg', adminHtml());
-  try { await adminLoad(); if ($('#siteDlg').open && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(e.message); }
+  try { await adminLoad(); if (isOpen($('#siteDlg')) && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(e.message); }
 }
 const inviteUrl = (code, kind) => `${location.origin}/?${kind === 'reset' ? 'reset' : 'invite'}=${code}`;
 function inviteShow(code, kind = 'invite', note = '') {
@@ -4473,7 +4545,7 @@ function inviteShow(code, kind = 'invite', note = '') {
 async function inviteCreate() {
   const note = prompt('Für wen ist die Einladung? (Vorname, nur für deine Übersicht)');
   if (note === null) return;
-  try { const j = await jsonPost('/api/admin/invite', { note: note.trim() }); inviteShow(j.code, 'invite', note.trim()); adminLoad().then(() => { if (S.panel === 'admin' && $('#siteDlg').open) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {}); }
+  try { const j = await jsonPost('/api/admin/invite', { note: note.trim() }); inviteShow(j.code, 'invite', note.trim()); adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {}); }
   catch (e) { toast(e.message); }
 }
 

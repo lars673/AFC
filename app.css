@@ -260,7 +260,7 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .dlg { border: 0; padding: 0; border-radius: 14px; background: var(--panel); color: var(--ink); width: min(92vw, 460px); max-height: 90dvh; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
 .dlg::backdrop { background: rgba(5,12,8,.55); }
 .dlg-big { width: min(96vw, 760px); }
-.dlg-in { padding: 16px; display: grid; gap: 12px; max-height: 88dvh; overflow-y: auto; }
+.dlg-in { position: relative; padding: 16px; display: grid; gap: 12px; max-height: 88dvh; overflow-y: auto; }   /* relative: unsichtbare Vorlese-Texte (.sr) bleiben im Scrollbereich, sonst wird der Dialog selbst scrollbar */
 .dlg-h { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
 .dlg-h h2 { font: 700 26px/1.1 var(--f-num); }
 .x-btn { min-width: 44px; min-height: 44px; background: none; border: 1px solid var(--line); border-radius: 8px; font-size: 22px; line-height: 1; }
@@ -353,6 +353,80 @@ dialog.dlg[open]::backdrop { animation: fade-in .24s ease-out; }
 .tabs button { transition: color .16s ease; }
 .tabs button svg { transition: transform .2s cubic-bezier(.2,.7,.2,1); }
 .tabs button[aria-selected="true"] svg { transform: translateY(-1px) scale(1.1); }
+/* ---- Lebendig: Einstieg nach Reiter- oder Tageswechsel (Klasse «live» setzt app.js nur kurz), nie bei blossem Neuzeichnen */
+@keyframes live-up { from { opacity: 0; transform: translateY(14px); } }
+@keyframes live-r { from { opacity: 0; transform: translateX(12px); } }
+@keyframes live-l { from { opacity: 0; transform: translateX(-12px); } }
+@keyframes pill-pop { 0% { transform: scale(.55); opacity: 0; } 60% { transform: scale(1.08); opacity: 1; } 100% { transform: none; } }
+@keyframes rib-grow { from { transform: scaleX(0); opacity: .2; } }
+@keyframes day-pop { 0% { transform: scale(.93); } 100% { transform: none; } }
+@keyframes star-pop { 0% { transform: scale(.6) rotate(-18deg); } 55% { transform: scale(1.45) rotate(8deg); } 100% { transform: none; } }
+@keyframes rows-in { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes dlg-out { to { opacity: 0; transform: translateY(12px) scale(.985); } }
+@keyframes fade-out { to { opacity: 0; } }
+main { overflow-x: clip; }   /* gleitende Karten dürfen die Seite nie seitlich verschiebbar machen */
+.view.live > * { animation: live-up .38s cubic-bezier(.2,.7,.2,1) both; }
+.view.live-r > * { animation-name: live-r; } .view.live-l > * { animation-name: live-l; }
+.view.live > :nth-child(2) { animation-delay: .04s; } .view.live > :nth-child(3) { animation-delay: .08s; } .view.live > :nth-child(4) { animation-delay: .12s; }
+.view.live > :nth-child(5) { animation-delay: .16s; } .view.live > :nth-child(6) { animation-delay: .2s; } .view.live > :nth-child(n+7) { animation-delay: .24s; }
+.view.live .alist > .arow, .view.live .cards .srow, .view.live .lb-row, .view.live .grp-post { animation: live-up .36s cubic-bezier(.2,.7,.2,1) both; animation-delay: .14s; }
+.view.live-r .alist > .arow, .view.live-r .cards .srow { animation-name: live-r; } .view.live-l .alist > .arow, .view.live-l .cards .srow { animation-name: live-l; }
+.view.live .alist > .arow:nth-child(2), .view.live .cards .srow:nth-child(2), .view.live .lb-row:nth-child(2), .view.live .grp-post:nth-child(2) { animation-delay: .18s; }
+.view.live .alist > .arow:nth-child(3), .view.live .cards .srow:nth-child(3), .view.live .lb-row:nth-child(3), .view.live .grp-post:nth-child(3) { animation-delay: .22s; }
+.view.live .alist > .arow:nth-child(4), .view.live .cards .srow:nth-child(4), .view.live .lb-row:nth-child(4), .view.live .grp-post:nth-child(4) { animation-delay: .26s; }
+.view.live .alist > .arow:nth-child(5), .view.live .cards .srow:nth-child(5), .view.live .lb-row:nth-child(5), .view.live .grp-post:nth-child(5) { animation-delay: .3s; }
+.view.live .alist > .arow:nth-child(6), .view.live .cards .srow:nth-child(6), .view.live .lb-row:nth-child(6) { animation-delay: .34s; }
+.view.live .alist > .arow:nth-child(7), .view.live .lb-row:nth-child(7) { animation-delay: .38s; }
+.view.live .alist > .arow:nth-child(n+8), .view.live .lb-row:nth-child(n+8) { animation-delay: .42s; }
+.view.live .mini-pill, .view.live .pill { animation: pill-pop .46s cubic-bezier(.2,.8,.3,1) both; animation-delay: .3s; }
+.view.live .ribbon { transform-origin: 0 50%; animation: rib-grow .5s cubic-bezier(.2,.7,.2,1) both; animation-delay: .28s; }
+.daybar.live .day { animation: live-up .36s cubic-bezier(.2,.7,.2,1) both; }
+.daybar.live .day:nth-child(2) { animation-delay: .05s; } .daybar.live .day:nth-child(3) { animation-delay: .1s; } .daybar.live .day:nth-child(4) { animation-delay: .15s; } .daybar.live .day:nth-child(n+5) { animation-delay: .2s; }
+.daybar.live .ribbon { transform-origin: 0 50%; animation: rib-grow .5s cubic-bezier(.2,.7,.2,1) both; animation-delay: .3s; }
+.daybar.live-day .day[aria-pressed="true"] { animation: day-pop .34s cubic-bezier(.2,.8,.3,1); }
+.arow-rows.new { animation: rows-in .24s cubic-bezier(.2,.7,.2,1); }
+.star.pop svg { animation: star-pop .46s cubic-bezier(.2,.8,.3,1); }
+.fresh .kv > div { animation: live-up .32s cubic-bezier(.2,.7,.2,1) both; animation-delay: .1s; }
+.fresh .kv > div:nth-child(2) { animation-delay: .14s; } .fresh .kv > div:nth-child(3) { animation-delay: .18s; } .fresh .kv > div:nth-child(n+4) { animation-delay: .22s; }
+dialog.dlg.closing { animation: dlg-out .17s ease-in forwards; pointer-events: none; }
+dialog.dlg.closing::backdrop { animation: fade-out .17s ease-in forwards; }
+/* Antippen gibt nach */
+.srow-main, .arow-main, .day, .lb-row, .grp-site, .card-main { transition: transform .12s ease, background-color .16s ease; }
+.srow-main:active, .arow-main:active, .lb-row:active, .grp-site:active, .card-main:active { transform: scale(.985); }
+.day:active { transform: scale(.96); }
+/* Gleitende Marke unter dem gewählten Reiter (Lage und Breite setzt app.js) */
+.tabs.ind::before { content: ""; position: absolute; left: 0; top: 0; width: var(--tw, 0px); height: 3px; border-radius: 0 0 3px 3px; background: var(--accent); transform: translateX(var(--tx, 0px)); transition: transform .32s cubic-bezier(.3,.8,.2,1), width .32s cubic-bezier(.3,.8,.2,1); pointer-events: none; }
+.tabs.ind button[aria-selected="true"] { border-top-color: transparent; }
+@media (min-width: 760px) { .tabs.ind::before { top: auto; bottom: 0; border-radius: 3px 3px 0 0; } .tabs.ind button[aria-selected="true"] { border-bottom-color: transparent; } }
+/* Laden: sanfter Schimmer */
+@keyframes skel { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.skel { display: grid; gap: 10px; padding: 4px 0; }
+.skel-b { border-radius: 10px; background: linear-gradient(100deg, var(--panel2) 30%, var(--panel) 50%, var(--panel2) 70%) 0 0 / 220% 100% var(--panel2); animation: skel 1.5s linear infinite; border: 1px solid var(--line); }
+.skel-hl { height: 92px; } .skel-h { height: 22px; width: 46%; } .skel-row { height: 58px; } .skel-rib { height: 34px; }
+.skel-ring { display: grid; grid-template-columns: 72px 1fr; gap: 12px; align-items: center; } .skel-ring > div:last-child { display: grid; gap: 8px; }
+.skel-c { width: 72px; height: 72px; border-radius: 50%; } .skel-l1 { height: 20px; width: 70%; } .skel-l2 { height: 14px; width: 48%; }
+.skel .fine { text-align: center; margin: 6px 0 0; }
+/* Bewegtes Wetterbild (nur an wenigen grossen Stellen: Tagesleiste, Favoriten, Startplatz) */
+@keyframes sky-spin { to { transform: rotate(360deg); } }
+@keyframes sky-drift { from { translate: -1.1px 0; } to { translate: 1.3px 0; } }
+@keyframes sky-fall { 0% { translate: 0.6px -1.5px; opacity: 0; } 25% { opacity: 1; } 100% { translate: -1px 2.6px; opacity: 0; } }
+@keyframes sky-flash { 0%, 62%, 70%, 78%, 100% { opacity: 1; } 66%, 74% { opacity: .15; } }
+@keyframes sky-glow { from { transform: scale(.94); } to { transform: scale(1.05); } }
+.sky-live .sky-ray { transform-box: fill-box; transform-origin: center; animation: sky-spin 16s linear infinite; }
+.sky-live .sky-sun circle { transform-box: fill-box; transform-origin: center; animation: sky-glow 2.8s ease-in-out infinite alternate; }
+.sky-live .sky-cl { animation: sky-drift 4.6s ease-in-out infinite alternate; }
+.sky-live .sky-cl2 { animation: sky-drift 6.4s ease-in-out infinite alternate-reverse; }
+.sky-live .sky-drop line { animation: sky-fall 1.1s linear infinite; }
+.sky-live .sky-drop line:nth-child(2) { animation-delay: -.4s; } .sky-live .sky-drop line:nth-child(3) { animation-delay: -.75s; }
+.sky-live .sky-bolt { animation: sky-flash 3.4s linear infinite; }
+/* Windsack */
+@keyframes sock-fl { 0%, 100% { transform: translate(var(--l), 0) rotate(calc(var(--a) - var(--d))); } 50% { transform: translate(var(--l), 0) rotate(calc(var(--a) + var(--d))); } }
+.kv > div.kv-wind { position: relative; padding-right: 66px; }
+.kv b span { font: inherit; color: inherit; }
+.sock { position: absolute; right: 4px; top: 50%; margin-top: -25px; overflow: visible; }
+.sock-p { fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; } circle.sock-p { fill: var(--muted); stroke: none; }
+.sock-s { transform: translate(var(--l), 0) rotate(var(--a)); animation: sock-fl var(--t, 1.2s) ease-in-out infinite; }
+.sock-r { fill: #e0453c; stroke: #e0453c; stroke-width: .6; stroke-linejoin: round; } .sock-w { fill: #fff; stroke: #c9d2cb; stroke-width: .6; stroke-linejoin: round; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* Statusfarben zuletzt, damit sie die Grundfarben von Pill/Zelle sicher überschreiben */
