@@ -956,6 +956,8 @@ button.v3d-m { pointer-events: auto; cursor: pointer; min-width: 44px; min-heigh
 .v3d-card .volte-warn { margin: 0; background: rgba(234,98,89,.18); color: #ffd6d2; border: 0; padding: 6px 9px; border-radius: 8px; font-size: 13.5px; }
 .v3d-m.other.crowd .v3d-name { display: none; }
 .v3d-m.tag.crowd { opacity: 0; }
+.v3d-m.top.crowd .v3d-name { visibility: hidden; }
+.v3d-m.kout { opacity: 0; pointer-events: none; }
 .v3d-bar { display: grid; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: #0f1a14; }
 .v3d-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 1px; }
 .v3d-chips::-webkit-scrollbar { display: none; }

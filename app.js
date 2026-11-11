@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.0';
+const APP_VER = '12.0.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3666,7 +3666,7 @@ function v3dEnd() {
 }
 function v3dFail(msg) { const el = $('#v3dLoad'); if (el) { el.hidden = false; el.innerHTML = `<span>${esc(msg)}</span>`; } }
 function v3dScene(g, area) {
-  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g);
+  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
   sc.still = noMotion();
   sc.setArea(area);
   sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen dreht, zwei Finger zoomen und verschieben. Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
@@ -3720,7 +3720,7 @@ function v3dSiteMarkers() {
   if (!sc) return;
   const { score } = v3dHourData();
   const ms = [{ id: 'start', lat: s.lat, lon: s.lon, cls: 'top', html: `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(s.name)}</span>` }];
-  if (l) ms.push({ id: 'land', lat: l.lat, lon: l.lon, cls: 'top', html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(l.name)}</span>` });
+  if (l) ms.push({ id: 'land', lat: l.lat, lon: l.lon, cls: 'top', yield: true, html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(l.name)}</span>` });
   for (const o of S.plan.sites) {
     if (o.id === s.id || o.blocked || !num(o.lat) || haversineKm(s.lat, s.lon, o.lat, o.lon) * 1000 > sc.R * 0.88) continue;
     ms.push({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'other', yield: true, title: o.name + ' in 3D ansehen', html: `<span class="v3d-dot s-${cls(o.days?.[S.day]?.best?.score)}"></span><span class="v3d-name sm">${esc(o.name)}</span>` });
@@ -3938,7 +3938,7 @@ async function open3dFlight(id) {
     sc.setTris('therm', th.flatMap(x => sc.column(x.lat, x.lon, x.base, x.alt, Math.max(55, R * 0.012), [1, 0.55, 0.12])));
     const ms = [
       { id: 'st', lat: pts[0][0], lon: pts[0][1], cls: 'top', html: `<span class="v3d-pin st">S</span><span class="v3d-name">${esc(f.siteName || 'Start')}</span>` },
-      { id: 'ld', lat: pts[n - 1][0], lon: pts[n - 1][1], cls: 'top', html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(f.landingName || 'Landung')}</span>` },
+      { id: 'ld', lat: pts[n - 1][0], lon: pts[n - 1][1], cls: 'top', yield: true, html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(f.landingName || 'Landung')}</span>` },
       ...th.slice().sort((a, b) => b.gain - a.gain).slice(0, 5).map((x, i) => ({ id: 'th' + i, lat: x.lat, lon: x.lon, alt: x.alt, air: true, yield: true, cls: 'tag th', html: `+${x.rate} m/s<small>${esc(x.at || '')} · bis ${x.alt} m</small>` })),
       { id: 'gl', lat: pts[0][0], lon: pts[0][1], alt: pts[0][2], air: true, center: true, cls: 'glider', html: GLIDER_SVG }
     ];
@@ -3946,7 +3946,7 @@ async function open3dFlight(id) {
     const ring = (alt, key, color, label) => {
       const c = Array.from({ length: 49 }, (_, i) => { const a = i / 48 * 2 * Math.PI; return [cLat + Math.cos(a) * rr / 111320, cLon + Math.sin(a) * rr / sc.mLon, alt]; });
       sc.setLines(key, [{ pts: c, color, width: 2.6 }], { dash: Math.max(90, rr / 14), xray: true });
-      ms.push({ id: key, lat: c[0][0], lon: c[0][1], alt, air: true, cls: 'tag fc', html: label });
+      ms.push({ id: key, lat: c[0][0], lon: c[0][1], alt, air: true, yield: true, cls: 'tag fc', html: label });
     };
     if (num(fc?.top)) ring(fc.top, 'fcTop', '#6cc3e2', `AFC: Thermik bis ${Math.round(fc.top)} m`);
     if (num(fc?.base) && (!num(fc?.top) || Math.abs(fc.base - fc.top) > 150)) ring(fc.base, 'fcBase', '#ffffff', `AFC: Wolkenbasis ${Math.round(fc.base)} m`);

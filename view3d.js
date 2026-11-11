@@ -394,6 +394,16 @@
       }
       return false;
     }
+    _avoid() {
+      const f = this.o.avoid, now = performance.now();
+      if (!f) return [];
+      if (!this._ko || now - this._koT > 400) {
+        const h = this.host.getBoundingClientRect();
+        this._ko = f().map(e => { const q = e && !e.hidden ? e.getBoundingClientRect() : null; return q && q.width ? [q.left - h.left, q.top - h.top, q.right - h.left, q.bottom - h.top] : null; }).filter(Boolean);
+        this._koT = now;
+      }
+      return this._ko;
+    }
     _place() {
       const key = this._eye.join() + this.w, moved = key !== this._mk; this._mk = key;
       for (const m of this.markers) {
@@ -404,12 +414,16 @@
         if (moved || m.dirty !== false) { const oc = m.air ? false : this._occluded(m.p); if (oc !== m.oc) { m.oc = oc; m.el.classList.toggle('behind', oc); } m.dirty = false; }
         m.sx = s.x; m.sy = s.y;
       }
-      // Gedränge: weiter vorn in der Liste hat Vorrang, spätere Beschriftungen weichen (Klasse «crowd»)
-      const rects = [];
+      // Gedränge: weiter vorn in der Liste hat Vorrang, spätere Beschriftungen weichen (Klasse «crowd»);
+      // unter Anzeigen und Knöpfen über dem Bild (o.avoid) blenden Beschriftungen aus (Klasse «kout»)
+      const rects = [], ko = this._avoid(), cut = (r, q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1];
       for (const m of this.markers) {
         if (m.off) continue;
         const r = [m.sx - m.bw / 2 - 3, m.center ? m.sy - m.bh / 2 : m.sy - m.bh - 2, m.sx + m.bw / 2 + 3, m.center ? m.sy + m.bh / 2 : m.sy + 2];
-        const hit = m.yield && rects.some(q => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+        const out = !m.center && ko.some(q => cut([r[0] + 9, r[1] + 8, r[2] - 9, r[3] - 4], q));
+        if (out !== !!m.kout) { m.kout = out; m.el.classList.toggle('kout', out); }
+        if (out) continue;
+        const hit = !!m.yield && rects.some(q => cut(r, q));
         if (hit !== !!m.crowd) { m.crowd = hit; m.el.classList.toggle('crowd', hit); }
         if (!hit) rects.push(r);
       }
