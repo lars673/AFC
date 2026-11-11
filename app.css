@@ -326,7 +326,7 @@ table.plain th { color: var(--muted); font-weight: 600; }
 .srcs div { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start; font-size: 14px; }
 .srcs .dot { margin-top: 5px; }
 .srcs small { color: var(--muted); display: block; }
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + 14px + env(safe-area-inset-bottom)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 90; max-width: 90vw; font-size: 15px; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + 14px + env(safe-area-inset-bottom)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 90; width: max-content; max-width: 90vw; font-size: 15px; }
 @media (min-width: 760px) { .toast { bottom: 24px; } }
 /* Feinschliff: weiche Übergänge beim Wechseln, Öffnen und Antippen */
 @keyframes view-in { from { opacity: 0; transform: translateY(8px); } }
@@ -340,6 +340,8 @@ main > #v-map:not([hidden]) { animation-name: fade-in; }
 dialog.dlg[open] { animation: dlg-in .24s cubic-bezier(.2,.7,.2,1); }
 dialog.dlg[open]::backdrop { animation: fade-in .24s ease-out; }
 .toast:not([hidden]) { animation: toast-in .22s ease-out; }
+.toast:popover-open { top: auto; right: auto; margin: 0; border: 0; overflow: visible; }
+.toast { box-shadow: 0 8px 24px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.16); }
 .sheet:not([hidden]) { animation: sheet-in .22s cubic-bezier(.2,.7,.2,1); }
 .fresh .ribbon.big .rc { transform-origin: 50% 100%; animation: rc-in .34s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 16ms + 60ms); }
 .fresh .why li { animation: view-in .3s ease-out both; }

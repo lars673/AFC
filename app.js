@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.0.1';
+const APP_VER = '12.0.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1502,7 +1502,12 @@ function showIntro(i = 0) {
 let toastT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, Math.max(3200, msg.length * 70));
+  // Offene Dialoge liegen in der obersten Ebene des Browsers und würden den Hinweis verdecken:
+  // als Popover wird er dort jedes Mal zuoberst eingereiht (ältere Browser zeigen ihn wie bisher).
+  if (typeof t.showPopover === 'function') {
+    try { if (t.popover !== 'manual') t.popover = 'manual'; if (t.matches(':popover-open')) t.hidePopover(); t.showPopover(); } catch { /* bleibt ein gewöhnlicher Hinweis */ }
+  }
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; try { if (t.matches(':popover-open')) t.hidePopover(); } catch { /* ohne Popover */ } }, Math.max(3200, msg.length * 70));
 }
 
 /* ---- Startplatz-Ansicht */
