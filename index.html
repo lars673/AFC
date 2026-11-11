@@ -98,17 +98,20 @@
         </div>
         <div class="wind-row" role="group" aria-label="Karten für Thermik, Soaring und Lee, einzeln ein- und ausschaltbar">
           <span class="wind-t">Ebenen</span>
+          <button type="button" class="wseg tseg" data-act="thermal" data-mode="sun" aria-pressed="false">Sonne</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="thermal" aria-pressed="false">Thermik</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="soar" aria-pressed="false">Soaring</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="lee" aria-pressed="false">Lee</button>
         </div>
         </div>
-        <div class="wind-row wind-time" hidden>
-          <label for="windHour" class="wind-h"><b id="windHourT">12 Uhr</b></label>
+        <div class="wind-row wind-time">
+          <button type="button" id="filmBtn" class="film-btn" data-act="film" aria-pressed="false" aria-label="Tagesfilm abspielen" title="Tagesfilm abspielen"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i-play" d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z"/><path class="i-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg></button>
+          <label for="windHour" class="wind-h"><svg id="sunArc" class="sun-arc" viewBox="0 0 44 24" width="44" height="24" role="img" aria-label="Sonnenstand" hidden><path d="M4 19a18 15 0 0 1 36 0" fill="none"/><line x1="1" y1="19.5" x2="43" y2="19.5"/><circle cx="22" cy="6" r="3.4"/></svg><b id="windHourT">12 Uhr</b></label>
           <input id="windHour" type="range" min="6" max="20" step="1" value="12" aria-label="Uhrzeit der Wind- und Thermikkarte">
         </div>
         <div class="bar-body bar-legends">
-        <div class="wind-legend" hidden aria-label="Farben: Windstärke in km/h"><i style="--c:#2a7fd4"></i>&lt;10<i style="--c:#2fa84f"></i>10–20<i style="--c:#d9b300"></i>20–30<i style="--c:#ef8a1f"></i>30–40<i style="--c:#d93a32"></i>40+ km/h</div>
+        <div class="wind-legend" hidden aria-label="Farben: Windstärke in km/h"><i style="--c:#2a7fd4"></i>&lt;10<i style="--c:#2fa84f"></i>10–20<i style="--c:#d9b300"></i>20–30<i style="--c:#ef8a1f"></i>30–40<i style="--c:#d93a32"></i>40+ km/h<span class="fine" hidden>Am Boden folgt die Strömung dem Gelände (Schätzung aus Modellwind und Geländeform).</span></div>
+        <div class="thermal-legend sun-legend" hidden><span class="tgrad sungrad" aria-hidden="true"></span><span>Schatten</span><span>Sonne</span><span class="fine">Sonnenstand und Schattenwurf der Berge. Antippen zeigt warum.</span></div>
         <div class="thermal-legend th-legend" hidden><span class="tgrad" aria-hidden="true"></span><span>schwach</span><span>stark</span><span class="fine">Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Antippen zeigt warum.</span></div>
         <div class="thermal-legend soar-legend" hidden><span class="tgrad sgrad" aria-hidden="true"></span><span>schwach</span><span>gut <i class="sstrong"></i> zu stark</span><span class="fine">Wo der Wind frontal auf einen steilen Hang trifft, auch ohne Thermik. Antippen zeigt warum.</span></div>
         <div class="thermal-legend lee-legend" hidden><span class="tgrad lgrad" aria-hidden="true"></span><span>leicht</span><span>stark</span><span class="fine">Hinter höheren Kreten, gegen den Wind gesehen: absinkende Luft und Rotoren. Antippen zeigt warum.</span></div>

@@ -344,7 +344,7 @@ async function collectWindGrid() {
   try {
     const wg = await fetchWindGrid();
     state.windgrid = wg;
-    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:') || k.startsWith('thermal:')) state.payloads.delete(k);
+    for (const k of [...state.payloads.keys()]) if (k.startsWith('wind:') || k.startsWith('thermal:') || k.startsWith('film:')) state.payloads.delete(k);
     ingest.windgrid = { ok: true, at: nowIso(), error: null };
     fs.writeFile(path.join(dataDir, 'windgrid.json.tmp'), JSON.stringify(wg)).then(() => fs.rename(path.join(dataDir, 'windgrid.json.tmp'), path.join(dataDir, 'windgrid.json'))).catch(() => {});
   } catch (e) {
@@ -370,6 +370,20 @@ function thermalResponse(ms) {
   const sl = thermalSlice(state.windgrid, hourMs);
   if (!sl) return null;
   p = packJson(sl);
+  state.payloads.set(key, p);
+  return p;
+}
+
+/** Tagesfilm: alle Stunden eines Tages (höchstens 18) in einer Antwort, damit die Karte den Tag flüssig abspielen kann. */
+function filmResponse(ms, n) {
+  const t0 = Math.round(ms / 3600000) * 3600000;
+  const key = `film:${t0}:${n}`;
+  let p = state.payloads.get(key);
+  if (p) return p;
+  const hours = [];
+  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) hours.push(sl); }
+  if (hours.length < 2) return null;
+  p = packJson({ grid: hours[0].grid, fetchedAt: hours[0].fetchedAt, hours: hours.map(({ grid, fetchedAt, ...h }) => h) });
   state.payloads.set(key, p);
   return p;
 }
@@ -1125,6 +1139,14 @@ const server = http.createServer(async (req, res) => {
         if (!state.windgrid) return sendJson(req, res, 202, { warming: true });
         const pk = windResponse(t, level);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Winddaten für diese Zeit' });
+        return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/film') {
+        const t = Date.parse(u.searchParams.get('t') || ''), n = Math.min(18, Math.max(2, Number(u.searchParams.get('n')) || 15));
+        if (!Number.isFinite(t)) return sendJson(req, res, 400, { error: 't fehlt (Zeit der ersten Stunde)' });
+        if (!state.windgrid?.thermal) return sendJson(req, res, 202, { warming: true });
+        const pk = filmResponse(t, n);
+        if (!pk) return sendJson(req, res, 404, { error: 'keine Daten für diesen Tag' });
         return sendPacked(req, res, pk);
       }
       if (req.method === 'GET' && p === '/api/thermal') {

@@ -78,6 +78,19 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.ok(th.sunPos.elev > 20, 'Sonnenhöhe ' + th.sunPos.elev);
     assert.ok(th.top.every(x => x === null || x > 1000) && th.top.some(x => x > 1500), 'Thermikhöhe ' + th.top.slice(0, 3));
     assert.equal(th.wind['800'].u.length, th.grid.nx * th.grid.ny);
+    // Tagesfilm: alle Stunden eines Tages in einer Antwort, gleiche Werte wie die Einzelstunde
+    const six = new Date(noon); six.setUTCHours(5);
+    const fr = await fetch(s.base + '/api/film?t=' + six.toISOString() + '&n=15');
+    assert.equal(fr.status, 200);
+    const film = await fr.json();
+    assert.equal(film.hours.length, 15);
+    assert.deepEqual(film.grid, th.grid);
+    const same = film.hours.find(h => h.t === th.t);
+    assert.ok(same, 'Mittagsstunde im Film');
+    assert.deepEqual(same.sun, th.sun); assert.deepEqual(same.wind['10m'], th.wind['10m']); assert.deepEqual(same.sunPos, th.sunPos);
+    assert.ok(film.hours.every((h, i) => i === 0 || Date.parse(h.t) - Date.parse(film.hours[i - 1].t) === 3600000), 'Stunden lückenlos');
+    assert.equal((await fetch(s.base + '/api/film')).status, 400);
+    assert.equal((await fetch(s.base + '/api/film?t=2001-01-01T06:00:00Z')).status, 404);
     assert.equal((await fetch(s.base + '/kk7-grid.bin')).status, 404);   // nur nach lokalem kk7-Abgleich vorhanden
     const gr = await fetch(s.base + '/terrain-grid.bin');
     assert.equal(gr.status, 200);

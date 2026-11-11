@@ -215,6 +215,26 @@ table.brief { border-collapse: separate; border-spacing: 0; width: 100%; min-wid
 .thermal-legend .fine { grid-column: 1 / -1; margin: 0; }
 .thermal-img { image-rendering: auto; }
 .thermal-legend .sgrad { background: linear-gradient(90deg, rgba(80,200,220,.45), #1e96e6, #1446c8); }
+.thermal-legend .sungrad { background: linear-gradient(90deg, rgba(22,34,82,.75), rgba(22,34,82,.45) 45%, rgba(255,196,64,.35) 55%, #ffc440); }
+.wind-legend .fine { flex-basis: 100%; margin: 0; }
+/* Tagesfilm: Abspielknopf, Uhr und Sonnenbogen in der Zeitleiste */
+.wind-time { flex-wrap: nowrap; gap: 6px; }
+.film-btn { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; box-shadow: 0 1px 4px rgba(0,0,0,.3); transition: transform .12s ease, box-shadow .12s ease; position: relative; }
+.film-btn:active { transform: scale(.94); }
+.film-btn svg { fill: currentColor; }
+.film-btn .i-pause, .film-btn[aria-pressed="true"] .i-play { display: none; }
+.film-btn[aria-pressed="true"] .i-pause { display: block; }
+.film-btn.busy::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2.5px solid transparent; border-top-color: var(--accent); animation: film-spin .8s linear infinite; }
+@keyframes film-spin { to { transform: rotate(360deg); } }
+.wind-time .wind-h { flex: none; min-width: 52px; display: grid; justify-items: center; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.wind-time input { flex: 1 1 70px; width: 70px; min-width: 70px; }
+.sun-arc { display: block; }
+.sun-arc[hidden] { display: none; }
+.sun-arc path { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 2 3; }
+.sun-arc line { stroke: var(--muted); stroke-width: 1; }
+.sun-arc circle { fill: #f5b301; stroke: #fff; stroke-width: 1; transition: fill .3s; }
+.sun-arc.down circle { fill: #6b7a99; }
+@media (prefers-reduced-motion: reduce) { .film-btn.busy::after { animation-duration: 2.4s; } }
 .thermal-legend .lgrad { background: linear-gradient(90deg, rgba(125,90,200,.35), #5f37af, #3c1978); }
 .thermal-legend .sstrong { display: inline-block; width: 12px; height: 6px; border-radius: 3px; background: rgb(200,40,200); margin: 0 2px 0 6px; }
 .why-list { margin: 6px 0 8px; padding-left: 18px; font-size: 14px; }

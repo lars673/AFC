@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '10.7';
+const APP_VER = '11.0';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -2075,6 +2075,7 @@ function drawSites() {
 /* ---- Windkarte: Partikel strömen mit dem Prognosewind (eigene Canvas-Ebene, ohne Zusatzbibliothek) */
 const WIND_COLORS = [[10, '#2a7fd4'], [20, '#2fa84f'], [30, '#d9b300'], [40, '#ef8a1f'], [Infinity, '#d93a32']];
 const windColor = kmh => WIND_COLORS.find(c => kmh < c[0])[1];
+const WIND_WIDTH = { '#2a7fd4': 1.5, '#2fa84f': 1.8, '#d9b300': 2.1, '#ef8a1f': 2.4, '#d93a32': 2.7 };   // stärkerer Wind, kräftigere Spur
 const W = { level: 'off', hour: 12, data: null, cache: new Map(), layer: null, req: 0 };
 
 function windSample(d, lat, lon) {
@@ -2098,17 +2099,44 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     this._c = L.DomUtil.create('canvas', '', map.getPane('wind'));
     this._ctx = this._c.getContext('2d');
     this._still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    map.on('movestart zoomstart', this._stop, this);
-    map.on('moveend zoomend resize', this._reset, this);
+    map.on('movestart zoomstart', this._moveStart, this);
+    map.on('moveend zoomend resize', this._moveEnd, this);
     this._reset();
   },
+  _moveStart() { this._moving = true; this._stop(); },
+  _moveEnd() { this._moving = false; this._reset(); },
   onRemove(map) {
     this._stop();
-    map.off('movestart zoomstart', this._stop, this);
-    map.off('moveend zoomend resize', this._reset, this);
+    map.off('movestart zoomstart', this._moveStart, this);
+    map.off('moveend zoomend resize', this._moveEnd, this);
     this._c.remove();
   },
   setData(d) { this._d = d; this._reset(); },
+  /** Neues Windfeld, ohne die Teilchen neu zu streuen (Tagesfilm: das Feld ändert sich laufend). */
+  setField(d) {
+    const had = this._d; this._d = d;
+    if (this._moving) return;                                   // nach dem Verschieben baut sich die Ebene selbst neu auf
+    if (!had || (!this._raf && !this._still)) return this._reset();
+    if (this._still && performance.now() - (this._stillAt || 0) > 400) { this._stillAt = performance.now(); this._ctx.clearRect(0, 0, this._w, this._h); this._drawArrows(); }
+  },
+  /** Geländeraster für den Bodenwind: an steilen Hängen strömt die Luft dem Hang entlang statt durch den Berg. */
+  setTerrain(g) { this._g = g || null; },
+  _flow(lat, lon) {
+    const w = windSample(this._d, lat, lon), g = this._g;
+    if (!w || !g) return w;
+    const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
+    if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return w;
+    const k = y * g.nx + x, slope = g.slope[k];
+    if (slope <= 8) return w;
+    const a = g.aspect[k] * 360 / 256 * D2R, ax = Math.sin(a), ay = Math.cos(a), sp = Math.hypot(w[0], w[1]);
+    if (sp < 0.5) return w;
+    const f = Math.min(0.8, (slope - 8) / 22), c = (w[0] * ax + w[1] * ay) * f;
+    let u = w[0] - c * ax, v = w[1] - c * ay;
+    const n = Math.hypot(u, v);
+    if (n < 0.2 * sp) return [u, v];
+    const keep = sp * (1 - 0.25 * f) / n;                        // Betrag bleibt fast erhalten, am Hang etwas gebremst
+    return [u * keep, v * keep];
+  },
   _stop() { cancelAnimationFrame(this._raf); this._raf = 0; if (this._ctx) this._ctx.clearRect(0, 0, this._c.width, this._c.height); },
   _reset() {
     this._stop();
@@ -2123,7 +2151,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     this._geo = (x, y) => [nw.lat + (se.lat - nw.lat) * y / size.y, nw.lng + (se.lng - nw.lng) * x / size.x];
     if (!this._d) return;
     if (this._still) return this._drawArrows();
-    const n = Math.round(Math.min(1800, size.x * size.y / 300));
+    const n = Math.round(Math.min(2200, size.x * size.y / 260));
     this._p = Array.from({ length: n }, () => this._spawn({}));
     this._last = 0;
     this._raf = requestAnimationFrame(t => this._frame(t));
@@ -2135,25 +2163,31 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     this._last = t;
     const ctx = this._ctx;
     ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillStyle = 'rgba(0,0,0,0.945)';                       // lange, weich auslaufende Spuren
     ctx.fillRect(0, 0, this._w, this._h);
     ctx.globalCompositeOperation = 'source-over';
-    ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+    ctx.lineCap = 'round';
     const groups = new Map();
     for (const p of this._p) {
       const [lat, lon] = this._geo(p.x, p.y);
-      const w = windSample(this._d, lat, lon);
-      if (!w || p.age++ > 90) { this._spawn(p); p.age = 0; continue; }
-      const k = 0.06;                                         // km/h -> Pixel je Bild, unabhängig vom Zoom
+      const w = this._flow(lat, lon);
+      if (!w || p.age++ > 110) { this._spawn(p); p.age = 0; continue; }
+      const sp = Math.hypot(w[0], w[1]);
+      if (sp < 1.5) { if (p.age > 30) { this._spawn(p); p.age = 0; } continue; }   // Windstille: keine stehenden Punkte
+      const k = 0.3 / sp + 0.052;                             // km/h -> Pixel je Bild, unabhängig vom Zoom; schwacher Wind bleibt als Spur sichtbar
       const nx = p.x + w[0] * k, ny = p.y - w[1] * k;
-      const col = windColor(Math.hypot(w[0], w[1]));
+      const col = windColor(sp);
       if (!groups.has(col)) groups.set(col, []);
       groups.get(col).push(p.x, p.y, nx, ny);
       p.x = nx; p.y = ny;
       if (nx < 0 || ny < 0 || nx > this._w || ny > this._h) this._spawn(p);
     }
+    // zuerst ein heller Saum, damit die Spuren auf Wald, Fels und Schnee gleich gut lesbar sind, dann die Farbe
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 3; ctx.beginPath();
+    for (const seg of groups.values()) for (let i = 0; i < seg.length; i += 4) { ctx.moveTo(seg[i], seg[i + 1]); ctx.lineTo(seg[i + 2], seg[i + 3]); }
+    ctx.stroke();
     for (const [col, seg] of groups) {
-      ctx.strokeStyle = col; ctx.beginPath();
+      ctx.strokeStyle = col; ctx.lineWidth = WIND_WIDTH[col] || 1.8; ctx.beginPath();
       for (let i = 0; i < seg.length; i += 4) { ctx.moveTo(seg[i], seg[i + 1]); ctx.lineTo(seg[i + 2], seg[i + 3]); }
       ctx.stroke();
     }
@@ -2163,7 +2197,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     const ctx = this._ctx, step = 46;
     ctx.lineWidth = 2;
     for (let y = step / 2; y < this._h; y += step) for (let x = step / 2; x < this._w; x += step) {
-      const [lat, lon] = this._geo(x, y), w = windSample(this._d, lat, lon);
+      const [lat, lon] = this._geo(x, y), w = this._flow(lat, lon);
       if (!w) continue;
       const sp = Math.hypot(w[0], w[1]); if (sp < 1) continue;
       const len = Math.min(20, 6 + sp / 2), dx = w[0] / sp * len, dy = -w[1] / sp * len;
@@ -2187,10 +2221,15 @@ function syncWindBar() {
   $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
   $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(T.modes.has(b.dataset.mode))));
   const on = W.level !== 'off';
-  $('#windBar .wind-time').hidden = !on && !T.modes.size && !RT.res; $('#windBar .wind-legend').hidden = !on;
+  $('#windBar .wind-legend').hidden = !on;
+  $('#windBar .wind-legend .fine').hidden = W.level !== '10m';
+  $('#windBar .thermal-legend.sun-legend').hidden = !T.modes.has('sun');
   $('#windBar .thermal-legend.th-legend').hidden = !T.modes.has('thermal'); $('#windBar .soar-legend').hidden = !T.modes.has('soar'); $('#windBar .lee-legend').hidden = !T.modes.has('lee');
-  $('#windHour').value = W.hour;
-  $('#windHourT').textContent = `${W.hour} Uhr`;
+  if (!FILM.playing) { $('#windHour').step = '1'; $('#windHour').value = W.hour; $('#windHourT').textContent = `${W.hour} Uhr`; sunArc(T.data?.sunPos); }
+  const fb = $('#filmBtn');
+  fb.setAttribute('aria-pressed', String(FILM.playing)); fb.classList.toggle('busy', FILM.busy);
+  fb.setAttribute('aria-label', FILM.playing ? 'Tagesfilm anhalten' : 'Tagesfilm abspielen: Wind, Sonne und Thermik von 6 bis 20 Uhr');
+  fb.title = FILM.playing ? 'Anhalten' : 'Tagesfilm abspielen';
   // Zusammengeklappt: nur Zusammenfassung und Uhrzeit, damit die Karte auf dem Handy frei bleibt
   const folded = store.get('barFold', innerWidth < 600);
   $('#windBar').classList.toggle('folded', folded);
@@ -2203,6 +2242,7 @@ async function updateWind() {
   syncWindBar();
   if (!M.map || !WindLayer) return;
   if (W.level === 'off') { if (W.layer) { M.map.removeLayer(W.layer); W.layer = null; } return; }
+  if (FILM.playing) { if (!W.layer) W.layer = new WindLayer().addTo(M.map); windTerrain(); return filmDraw(); }
   const key = `${W.level}|${windTimeIso()}`, req = ++W.req;
   let d = W.cache.get(key);
   if (!d) {
@@ -2217,13 +2257,21 @@ async function updateWind() {
   }
   if (req !== W.req || W.level === 'off') return;
   if (!W.layer) W.layer = new WindLayer().addTo(M.map);
+  windTerrain();
   W.layer.setData(d);
+}
+/** Am Boden folgt die Strömung dem Gelände; in der Höhe strömt sie frei darüber. */
+function windTerrain() {
+  if (!W.layer) return;
+  if (W.level !== '10m') return W.layer.setTerrain(null);
+  if (T.grid) return W.layer.setTerrain(T.grid);
+  thermalGrid().then(g => { if (W.layer && W.level === '10m') W.layer.setTerrain(g); }).catch(() => {});
 }
 
 /* ---- Thermik-Wärmekarte: Schätzung aus Sonne auf dem Hang, Thermikhöhe, Geländeform und Wolken.
    Soaring-Ansicht: wo der Wind frontal auf einen steilen Hang trifft (Hangaufwind, auch ohne Thermik).
    Das Geländeraster (ca. 250 m) kommt einmal vom Server, die Wetterwerte je Stunde aus /api/thermal. */
-const T_MODES = ['thermal', 'soar', 'lee'], T_NAMES = { thermal: 'Thermik', soar: 'Soaring', lee: 'Lee' };
+const T_MODES = ['sun', 'thermal', 'soar', 'lee'], T_NAMES = { sun: 'Sonne', thermal: 'Thermik', soar: 'Soaring', lee: 'Lee' };
 const T = { modes: new Set(), layers: {}, grid: null, gridReq: null, cache: new Map(), layer: null, data: null, req: 0 };
 const D2R = Math.PI / 180;
 
@@ -2255,10 +2303,13 @@ async function thermalGrid() {
 function fieldAt(d, arr, lat, lon) {
   const g = d.grid, fx = Math.min(Math.max((lon - g.lo0) / g.dlo, 0), g.nx - 1), fy = Math.min(Math.max((lat - g.la0) / g.dla, 0), g.ny - 1);
   const x0 = Math.min(Math.floor(fx), g.nx - 2), y0 = Math.min(Math.floor(fy), g.ny - 2), tx = fx - x0, ty = fy - y0;
-  let s = 0, w = 0;
-  for (const [i, k] of [[y0 * g.nx + x0, (1 - tx) * (1 - ty)], [y0 * g.nx + x0 + 1, tx * (1 - ty)], [(y0 + 1) * g.nx + x0, (1 - tx) * ty], [(y0 + 1) * g.nx + x0 + 1, tx * ty]]) {
-    if (arr[i] != null) { s += arr[i] * k; w += k; }
-  }
+  // ohne Zwischenlisten: diese Funktion läuft für den Tagesfilm millionenfach
+  const i = y0 * g.nx + x0, j = i + g.nx, a = arr[i], b = arr[i + 1], c = arr[j], e = arr[j + 1];
+  let s = 0, w = 0, k;
+  if (a != null) { k = (1 - tx) * (1 - ty); s += a * k; w += k; }
+  if (b != null) { k = tx * (1 - ty); s += b * k; w += k; }
+  if (c != null) { k = (1 - tx) * ty; s += c * k; w += k; }
+  if (e != null) { k = tx * ty; s += e * k; w += k; }
   return w > 0 ? s / w : null;
 }
 
@@ -2307,12 +2358,17 @@ function rampRgba(ramp, v) {
 }
 
 /** Wind auf Geländehöhe: Bodenwind in tiefen Lagen, darüber zwischen 2000 m und 3000 m interpoliert. */
-function windAtAlt(d, lat, lon, elev) {
+function windAtAlt(d, lat, lon, elev) { return windMix(windLevels(d, lat, lon), elev); }
+/** Wind der drei Höhen an einem Ort: [Boden, ca. 2000 m, ca. 3000 m], je [u, v] oder null. */
+function windLevels(d, lat, lon) {
   const at = k => { const w = d.wind?.[k]; if (!w) return null; const u = fieldAt(d, w.u, lat, lon), v = fieldAt(d, w.v, lat, lon); return u == null || v == null ? null : [u, v]; };
+  return [at('10m'), at('800'), at('700')];
+}
+function windMix(lv, elev) {
   const mix = (a, b, t) => (!a ? b : !b ? a : [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-  if (elev <= 1200) return at('10m');
-  if (elev <= 1950) return mix(at('10m'), at('800'), (elev - 1200) / 750);
-  return mix(at('800'), at('700'), Math.min(1, (elev - 1950) / 1060));
+  if (elev <= 1200) return lv[0];
+  if (elev <= 1950) return mix(lv[0], lv[1], (elev - 1200) / 750);
+  return mix(lv[1], lv[2], Math.min(1, (elev - 1950) / 1060));
 }
 
 /** Soaringwert 0–1 einer Rasterzelle: Wind frontal auf steilen Hang, Kreten verstärken. */
@@ -2339,7 +2395,7 @@ function soarCell(d, g, k, lat, lon) {
 const LEE_RAMP = [[0.12, [125, 90, 200, 0]], [0.25, [125, 90, 200, 90]], [0.55, [95, 55, 175, 150]], [1, [60, 25, 120, 205]]];
 function leeCell(d, g, k, lat, lon) {
   const x = k % g.nx, y = (k - x) / g.nx, e = g.elev[k];
-  const w0 = windAtAlt(d, lat, lon, e + 600);
+  const lv = windLevels(d, lat, lon), w0 = windMix(lv, e + 600);
   if (!w0) return { v: 0, elev: e, speed: null };
   const from = (Math.atan2(-w0[0], -w0[1]) / D2R + 360) % 360, sp0 = Math.hypot(w0[0], w0[1]);
   if (sp0 < 8) return { v: 0, elev: e, speed: sp0, from };
@@ -2352,7 +2408,7 @@ function leeCell(d, g, k, lat, lon) {
     if (dh < 120 || dh / (dist * 1000) < 0.1) continue;
     const reach = dh / 1000 * 8;
     if (dist > reach) continue;
-    const w = windAtAlt(d, lat, lon, h), sp = w ? Math.hypot(w[0], w[1]) : sp0;
+    const w = windMix(lv, h), sp = w ? Math.hypot(w[0], w[1]) : sp0;
     const fWind = Math.min(1, Math.max(0, (sp - 12) / 18));
     const v = fWind * Math.min(1, dh / 500) * Math.sqrt(1 - dist / reach);
     if (v > best.v) best = { v, dh, dist, sp };
@@ -2372,22 +2428,103 @@ function leeWhy(c) {
   return { title: 'Lee ' + level, elev: c.elev, why };
 }
 
-function thermalImage(d, g, mode) {
-  const c = document.createElement('canvas'); c.width = g.nx; c.height = g.ny;
-  const ctx = c.getContext('2d'), img = ctx.createImageData(g.nx, g.ny);
-  for (let y = 0; y < g.ny; y++) {
-    const lat = g.la0 + y * g.dla, row = (g.ny - 1 - y) * g.nx;      // Bild beginnt im Norden
-    for (let x = 0; x < g.nx; x++) {
+/**
+ * Sonne und Schatten einer Rasterzelle: Steht die Sonne über dem Horizont, wirft eine Krete in Sonnenrichtung (bis 9 km)
+ * Schatten, wenn sie höher liegt als der Sonnenstrahl; sonst zählt, wie steil die Sonne auf den Hang fällt.
+ */
+function sunCell(d, g, k, lat, lon) {
+  const pos = d.sunPos, e = g.elev[k], slope = g.slope[k], aspect = g.aspect[k] * 360 / 256;
+  if (!(pos.elev > 0.5)) return { night: true, elev: e, slope, aspect };
+  const x = k % g.nx, y = (k - x) / g.nx;
+  const kx = g.dlo * 111.32 * Math.cos(lat * D2R), ky = g.dla * 111.32, sx = Math.sin(pos.az * D2R), sy = Math.cos(pos.az * D2R), tan = Math.tan(pos.elev * D2R);
+  for (let s = 1; s <= 30; s++) {
+    const dist = s <= 12 ? s * 0.25 : 3 + (s - 12) * 0.34, px = Math.round(x + sx * dist / kx), py = Math.round(y + sy * dist / ky);
+    if (px < 0 || py < 0 || px >= g.nx || py >= g.ny) break;
+    const dh = g.elev[py * g.nx + px] - e;
+    if (dh > dist * 1000 * tan + 25) return { cast: true, dh, dist, elev: e, slope, aspect };
+  }
+  const sl = slope * D2R, el = pos.elev * D2R;
+  const cosi = Math.cos(sl) * Math.sin(el) + Math.sin(sl) * Math.cos(el) * Math.cos((pos.az - aspect) * D2R);
+  const sw = fieldAt(d, d.sun, lat, lon) ?? 0, clear = 990 * Math.sin(el) - 30;
+  return { cosi, self: cosi <= 0.02, sky: Math.min(1, Math.max(0, sw / Math.max(60, clear))), sw, elev: e, slope, aspect };
+}
+/** Helligkeit einer Zelle: -1 Schatten oder Nacht, 0 flaches Licht, bis 1 voll besonnter Hang (unter Wolken blasser). */
+function sunLight(c) {
+  if (c.night) return -1.15;
+  if (c.cast || c.self) return -1;
+  return Math.min(1, Math.max(0, (c.cosi - 0.18) / 0.6)) * (0.3 + 0.7 * c.sky);
+}
+/** Sonnenbild: Lichtfeld rechnen, weichzeichnen (Halbschatten statt Treppenkanten), dann einfärben. */
+function sunImage(d, g, ctx, img, step = 1) {
+  const W2 = img.width, H2 = img.height, N = W2 * H2;
+  let f = new Float32Array(N), t = new Float32Array(N);
+  for (let y = 0; y < H2; y++) { const gy = y * step, lat = g.la0 + gy * g.dla; for (let x = 0; x < W2; x++) f[y * W2 + x] = sunLight(sunCell(d, g, gy * g.nx + x * step, lat, g.lo0 + x * step * g.dlo)); }
+  for (let pass = 0; pass < (step > 1 ? 1 : 2); pass++) {
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) { const k = y * W2 + x; t[k] = (f[x > 0 ? k - 1 : k] + f[k] + f[x < W2 - 1 ? k + 1 : k]) / 3; }
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) { const k = y * W2 + x; f[k] = (t[y > 0 ? k - W2 : k] + t[k] + t[y < H2 - 1 ? k + W2 : k]) / 3; }
+  }
+  const px = img.data;
+  for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+    const v = f[y * W2 + x], o = ((H2 - 1 - y) * W2 + x) * 4;
+    if (v < 0) { px[o] = 20; px[o + 1] = 32; px[o + 2] = 78; px[o + 3] = Math.round(Math.min(1.15, -v) * 92); }
+    else { px[o] = 255; px[o + 1] = 190; px[o + 2] = 56; px[o + 3] = Math.round(v * 96); }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function sunWhy(d, c) {
+  const pos = d.sunPos, why = [];
+  if (c.night) return { title: 'Sonne: noch nicht aufgegangen oder schon unter', elev: c.elev, why: ['Die Sonne steht unter dem Horizont'] };
+  why.push(`Sonne ${Math.round(pos.elev)}° hoch im ${dirLabel(pos.az)}`);
+  if (c.cast) why.push(`Schatten: ${dirLabel(pos.az)} von hier liegt in ${c.dist.toFixed(1).replace('.0', '')} km Gelände, das rund ${Math.round(c.dh / 50) * 50} m höher ist`);
+  else if (c.self) why.push(`${dirLabel(c.aspect)}-Hang: von der Sonne abgewandt`);
+  else {
+    why.push(c.slope >= 8 ? `${dirLabel(c.aspect)}-Hang, ${c.slope}° steil: ${c.cosi >= 0.6 ? 'die Sonne trifft fast senkrecht auf' : c.cosi >= 0.3 ? 'die Sonne trifft schräg auf' : 'die Sonne streift nur flach'}` : 'flaches Gelände in der Sonne');
+    if (c.sky < 0.45) why.push('Wolken dämpfen die Sonne deutlich');
+    else if (c.sky < 0.8) why.push('Etwas Bewölkung, die Sonne kommt nur teilweise durch');
+  }
+  why.push('Schattenwurf aus dem Geländemodell (250 m): schmale Felsbänder und Wald fehlen');
+  return { title: c.cast || c.self ? 'Schatten' : 'Sonne', elev: c.elev, why };
+}
+
+/** Bild einer Ebene. step 2 rechnet nur jede zweite Zelle (viermal schneller, für den Tagesfilm; beim Anhalten kommt das genaue Bild). */
+function thermalImage(d, g, mode, step = 1) {
+  const W2 = Math.floor((g.nx - 1) / step) + 1, H2 = Math.floor((g.ny - 1) / step) + 1;
+  const c = document.createElement('canvas'); c.width = W2; c.height = H2;
+  const ctx = c.getContext('2d'), img = ctx.createImageData(W2, H2);
+  if (mode === 'sun') { sunImage(d, g, ctx, img, step); return c; }
+  for (let y = 0; y < H2; y++) {
+    const gy = y * step, lat = g.la0 + gy * g.dla, row = (H2 - 1 - y) * W2;      // Bild beginnt im Norden
+    for (let x = 0; x < W2; x++) {
+      const k = gy * g.nx + x * step, lon = g.lo0 + x * step * g.dlo;
       let col;
-      if (mode === 'lee') col = rampRgba(LEE_RAMP, leeCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo).v);
-      else if (mode === 'soar') { const c = soarCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo); col = c.strong ? SOAR_STRONG : rampRgba(SOAR_RAMP, c.v); }
-      else col = rampRgba(THERMAL_RAMP, thermalCell(d, g, y * g.nx + x, lat, g.lo0 + x * g.dlo).v);
+      if (mode === 'lee') col = rampRgba(LEE_RAMP, leeCell(d, g, k, lat, lon).v);
+      else if (mode === 'soar') { const c = soarCell(d, g, k, lat, lon); col = c.strong ? SOAR_STRONG : rampRgba(SOAR_RAMP, c.v); }
+      else col = rampRgba(THERMAL_RAMP, thermalCell(d, g, k, lat, lon).v);
       if (col) img.data.set(col, (row + x) * 4);
     }
   }
   ctx.putImageData(img, 0, 0);
-  return c.toDataURL();
+  return c;
 }
+
+/** Bild-Ebene, die direkt aus einer Zeichenfläche kommt: zwei Stunden lassen sich stufenlos überblenden. */
+const CanvasOverlay = typeof L === 'undefined' ? null : L.ImageOverlay.extend({
+  _initImage() {
+    const c = this._image = L.DomUtil.create('canvas', 'leaflet-image-layer ' + (this._zoomAnimated ? 'leaflet-zoom-animated ' : '') + (this.options.className || ''));
+    c.width = this.options.w; c.height = this.options.h;
+    c.onselectstart = L.Util.falseFn; c.onmousemove = L.Util.falseFn;
+    this._ctx2 = c.getContext('2d');
+  },
+  /** Bild a, oder Mischung aus a und b (f = Anteil von b, 0–1). */
+  blend(a, b, f = 0) {
+    const ctx = this._ctx2; if (!ctx || !a) return;
+    const w = ctx.canvas.width, h = ctx.canvas.height;
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalCompositeOperation = 'copy'; ctx.globalAlpha = b ? 1 - f : 1; ctx.drawImage(a, 0, 0, w, h);
+    if (b && f > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = f; ctx.drawImage(b, 0, 0, w, h); }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  }
+});
 
 /** Kurze Begründung beim Antippen der Karte. */
 function thermalWhy(lat, lon) {
@@ -2396,6 +2533,7 @@ function thermalWhy(lat, lon) {
   const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
   if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return null;
   const k = y * g.nx + x, parts = [];
+  if (T.modes.has('sun')) parts.push(sunWhy(d, sunCell(d, g, k, lat, lon)));
   if (T.modes.has('thermal')) parts.push(thermikWhy(d, g, k, lat, lon));
   if (T.modes.has('soar')) parts.push(soarWhy(soarCell(d, g, k, lat, lon)));
   if (T.modes.has('lee')) parts.push(leeWhy(leeCell(d, g, k, lat, lon)));
@@ -2445,9 +2583,9 @@ async function thermalData(iso) {
   if (r.status === 202) return null;
   if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
   d = await r.json();
-  d.url = {};
+  d.img = {};
   T.cache.set(iso, d);
-  if (T.cache.size > 30) T.cache.delete(T.cache.keys().next().value);
+  if (T.cache.size > 40) T.cache.delete(T.cache.keys().next().value);
   return d;
 }
 
@@ -2565,32 +2703,183 @@ function routeSheetHtml() {
     <p class="fine">${RT.mode === 'safe' ? 'Sicher: bleibt bei Thermik, genug Abstand zum Gelände und Landeplätzen im Gleitbereich (300 m Reserve).' : 'Schnell: kürzeste Flugzeit, nimmt schwächere Abschnitte in Kauf.'} Gerechnet mit ${esc(window.AFCPilot?.GLIDERS?.[r.perf.key] || 'EN-B')} (Gleitzahl ${r.perf.glide}, ${r.perf.airspeed} km/h)${store.get('pilot')?.glider ? '' : ', Schirm im Profil ändern'}. ${r.laterHours ? `Wetter ab Start bis ${W.hour + r.laterHours} Uhr berücksichtigt.` : 'Schätzung für eine Uhrzeit.'} ${r.airOk ? 'Lufträume (SHV) sind berücksichtigt: Aktivzeiten und NOTAM im DABS selbst prüfen.' : '<b>Lufträume konnten nicht geladen werden</b>, vor dem Flug selbst prüfen.'}</p>`;
 }
 
+const thermalBounds = g => [[g.la0 - g.dla / 2, g.lo0 - g.dlo / 2], [g.la0 + (g.ny - 0.5) * g.dla, g.lo0 + (g.nx - 0.5) * g.dlo]];
+/** Ebenen anlegen oder entfernen, passend zu den gewählten Karten (Sonne zuunterst, Lee zuoberst). */
+function thermalLayers(g) {
+  for (const m of Object.keys(T.layers)) if (!T.modes.has(m)) { M.map.removeLayer(T.layers[m]); delete T.layers[m]; }
+  // mehrere Ebenen zusammen etwas durchsichtiger
+  const n = T.modes.size - (T.modes.has('sun') ? 1 : 0), op = n > 1 ? 0.62 : 0.75;
+  for (const [i, mode] of T_MODES.entries()) {
+    if (!T.modes.has(mode) || !g) continue;
+    const pane = 'aw-' + mode, o = mode === 'sun' ? 0.9 : op;
+    if (!M.map.getPane(pane)) M.map.createPane(pane).style.zIndex = 416 + i;
+    if (T.layers[mode]) T.layers[mode].setOpacity(o);
+    else T.layers[mode] = new CanvasOverlay('', thermalBounds(g), { pane, opacity: o, className: 'thermal-img', interactive: false, w: g.nx, h: g.ny }).addTo(M.map);
+  }
+}
 async function updateThermal() {
   syncWindBar();
-  if (!M.map) return;
-  // Nicht mehr gewählte Ebenen entfernen
-  for (const m of Object.keys(T.layers)) if (!T.modes.has(m)) { M.map.removeLayer(T.layers[m]); delete T.layers[m]; }
-  if (!T.modes.size) { T.data = null; return; }
+  if (!M.map || !CanvasOverlay) return;
+  if (!T.modes.size) { thermalLayers(null); T.data = null; sunArc(null); return; }
+  if (FILM.playing) {
+    try { thermalLayers(await thermalGrid()); if (await filmPrepare()) filmDraw(); }
+    catch (err) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); }
+    return;
+  }
   const iso = windTimeIso(), req = ++T.req;
   try {
     const g = await thermalGrid();
     const d = await thermalData(iso);
     if (!d) { mapMsg('Thermikkarte wird noch geladen, bitte in ein paar Minuten nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
-    if (req !== T.req) return;
+    if (req !== T.req || FILM.playing) return;
     T.data = d;
-    const b = [[g.la0 - g.dla / 2, g.lo0 - g.dlo / 2], [g.la0 + (g.ny - 0.5) * g.dla, g.lo0 + (g.nx - 0.5) * g.dlo]];
-    // Thermik zuunterst, Lee zuoberst; mehrere Ebenen zusammen etwas durchsichtiger
-    const op = T.modes.size > 1 ? 0.62 : 0.75;
-    for (const [n, mode] of T_MODES.entries()) {
+    thermalLayers(g);
+    for (const mode of T_MODES) {
       if (!T.modes.has(mode)) continue;
-      d.url[mode] ??= thermalImage(d, g, mode);
-      if (req !== T.req) return;
-      const pane = 'aw-' + mode;
-      if (!M.map.getPane(pane)) M.map.createPane(pane).style.zIndex = 420 + n;
-      if (T.layers[mode]) { T.layers[mode].setUrl(d.url[mode]); T.layers[mode].setOpacity(op); }
-      else T.layers[mode] = L.imageOverlay(d.url[mode], b, { pane, opacity: op, className: 'thermal-img', interactive: false }).addTo(M.map);
+      d.img[mode] ??= thermalImage(d, g, mode);
+      if (req !== T.req || FILM.playing) return;
+      T.layers[mode]?.blend(d.img[mode]);
     }
+    sunArc(d.sunPos);
   } catch (err) { if (req === T.req) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } }
+}
+
+/* ---- Tagesfilm: der ganze Tag läuft auf der Karte ab. Wind, Sonne und Schatten, Thermik, Soaring und Lee
+   werden zwischen den Prognosestunden stufenlos überblendet. Alle Stunden kommen in einem Abruf (/api/film). */
+const FILM = { playing: false, busy: false, starting: false, tok: 0, loadedAt: 0, t: 12, date: null, frames: null, raf: 0, last: 0, req: 0, H0: 6, H1: 20, perHour: 1300 };
+const filmIso = (date, h) => new Date(`${date}T${String(h).padStart(2, '0')}:00:00`).toISOString();
+const filmClock = t => { const m = Math.round(t * 6) * 10, h = Math.floor(m / 60); return `${h}:${String(m - h * 60).padStart(2, '0')}`; };
+const lerpArr = (a, b, f) => (!b || f <= 0 ? a : a.map((x, i) => (x == null || b[i] == null ? x : x + (b[i] - x) * f)));
+const lerpDeg = (a, b, f) => a + ((((b - a) % 360) + 540) % 360 - 180) * f;
+
+/** Alle Stunden des gewählten Tages laden (einmal je Tag und Datenstand). */
+async function filmLoad() {
+  const date = S.plan?.dates?.[S.day];
+  if (!date) throw new Error('noch keine Wetterdaten');
+  if (FILM.frames && FILM.date === date && Date.now() - FILM.loadedAt < 30 * 60000) return FILM.frames;   // nach 30 Minuten frisch holen (neue Prognose)
+  const r = await fetch(`/api/film?t=${encodeURIComponent(filmIso(date, FILM.H0))}&n=${FILM.H1 - FILM.H0 + 1}`);
+  if (r.status === 202) throw new Error('die Daten werden noch geladen, bitte in einer Minute nochmals versuchen');
+  if (!r.ok) throw new Error(r.status === 404 ? 'für diesen Tag gibt es keine Stundenwerte' : 'Fehler ' + r.status);
+  const j = await r.json();
+  const frames = new Array(FILM.H1 - FILM.H0 + 1).fill(null);
+  for (const h of j.hours) {
+    const i = Math.round((Date.parse(h.t) - Date.parse(filmIso(date, FILM.H0))) / 3600000);
+    if (i < 0 || i >= frames.length) continue;
+    const iso = filmIso(date, FILM.H0 + i);
+    // gleiche Daten wie die Einzelstunde: was schon gerechnet ist, wird wiederverwendet
+    const d = T.cache.get(iso) || { ...h, grid: j.grid, fetchedAt: j.fetchedAt, img: {} };
+    d.film ??= {};
+    if (!T.cache.has(iso)) T.cache.set(iso, d);
+    frames[i] = d;
+  }
+  if (frames.filter(Boolean).length < 2) throw new Error('für diesen Tag gibt es zu wenig Stundenwerte');
+  // Lücken am Rand (z.B. letzter Prognosetag) mit der nächsten vorhandenen Stunde füllen
+  for (let i = 1; i < frames.length; i++) frames[i] ??= frames[i - 1];
+  for (let i = frames.length - 2; i >= 0; i--) frames[i] ??= frames[i + 1];
+  Object.assign(FILM, { frames, date, loadedAt: Date.now() });
+  return frames;
+}
+/** Bilder aller Stunden für die gewählten Ebenen rechnen, mit Fortschritt; false = abgebrochen. */
+async function filmPrepare() {
+  const req = ++FILM.req, modes = T_MODES.filter(m => T.modes.has(m));
+  const done = () => { if (req !== FILM.req) return false; if (FILM.busy) { FILM.busy = false; syncWindBar(); } if (/^Tagesfilm wird/.test($('#mapMsg').textContent)) mapMsg(''); return true; };
+  if (!modes.length || !FILM.frames) return done();
+  let g;
+  try { g = await thermalGrid(); } catch (err) { done(); throw err; }
+  if (req !== FILM.req) return false;
+  const todo = [];
+  for (const d of new Set(FILM.frames)) for (const m of modes) if (!d.film[m]) todo.push([d, m]);
+  if (!todo.length) return done();
+  FILM.busy = true; syncWindBar();
+  let last = performance.now();
+  for (const [n, [d, m]] of todo.entries()) {
+    d.film[m] ??= d.img[m] || thermalImage(d, g, m, 2);
+    if (performance.now() - last > 40) {
+      mapMsg(`Tagesfilm wird vorbereitet … ${Math.round((n + 1) / todo.length * 100)} %`);
+      await new Promise(r => setTimeout(r, 0)); last = performance.now();
+      if (req !== FILM.req) return false;
+    }
+  }
+  return done();
+}
+/** Den Film am Zeitpunkt FILM.t zeichnen. */
+function filmDraw() {
+  const fr = FILM.frames; if (!fr || !M.map) return;
+  const x = Math.min(FILM.H1, Math.max(FILM.H0, FILM.t)) - FILM.H0, i = Math.min(fr.length - 1, Math.floor(x)), f = x - i, a = fr[i], b = fr[Math.min(fr.length - 1, i + 1)];
+  for (const m of T_MODES) if (T.layers[m] && a.film[m]) T.layers[m].blend(a.film[m], b.film[m] && b !== a ? b.film[m] : null, f);
+  if (W.layer && W.level !== 'off' && a.wind?.[W.level]) {
+    const wa = a.wind[W.level], wb = b.wind?.[W.level] || wa;
+    W.layer.setField({ grid: a.grid, u: lerpArr(wa.u, wb.u, f), v: lerpArr(wa.v, wb.v, f) });
+  }
+  T.data = f < 0.5 ? a : b;                                       // Antippen der Karte erklärt die nächstgelegene Stunde
+  const pos = { elev: a.sunPos.elev + (b.sunPos.elev - a.sunPos.elev) * f, az: lerpDeg(a.sunPos.az, b.sunPos.az, f) };
+  sunArc(pos);
+  const sl = $('#windHour'), clock = filmClock(FILM.t), lbl = $('#windHourT');
+  if (sl.step !== 'any') sl.step = 'any';
+  sl.value = FILM.t;
+  if (lbl.textContent !== clock) lbl.textContent = clock;
+}
+function filmTick(ts) {
+  if (!FILM.playing) return;
+  FILM.raf = requestAnimationFrame(filmTick);
+  // Tag gewechselt oder Karte verlassen: Film beenden statt Falsches zu zeigen
+  if (S.plan?.dates?.[S.day] !== FILM.date || !$('#map')?.offsetParent) return filmStop();
+  if (document.hidden || FILM.busy) { FILM.last = ts; return; }
+  const dt = Math.min(100, ts - (FILM.last || ts)); FILM.last = ts;
+  if (FILM.hold > 0) { FILM.hold -= dt; return; }
+  FILM.t += dt / FILM.perHour;
+  if (FILM.t >= FILM.H1) { FILM.t = FILM.H1; filmDraw(); FILM.t = FILM.H0; FILM.hold = 1400; return; }   // am Abend kurz stehen bleiben, dann von vorn
+  // die Bilder ändern sich langsam: 20 Schritte pro Sekunde reichen und schonen Akku und schwächere Handys
+  if (ts - (FILM.drawn || 0) < 48) return;
+  FILM.drawn = ts;
+  filmDraw();
+}
+async function filmStart() {
+  if (FILM.playing || FILM.starting) return;
+  const tok = ++FILM.tok;
+  FILM.starting = true;
+  try {
+    // ohne gewählte Karte zeigt der Film das, was den Tag am besten erklärt
+    if (W.level === 'off' && !T.modes.size) { W.level = '10m'; T.modes.add('sun'); T.modes.add('thermal'); store.set('wind', W.level); store.set('thermal', [...T.modes]); }
+    FILM.busy = true; syncWindBar();
+    await filmLoad();
+    const g = await thermalGrid();
+    if (tok !== FILM.tok) return;                                 // inzwischen angehalten
+    Object.assign(FILM, { playing: true, t: W.hour >= FILM.H1 - 1 ? FILM.H0 : W.hour, last: 0, hold: 0, drawn: 0 });
+    // die Schleife läuft ab jetzt; solange Bilder gerechnet werden (busy), wartet sie
+    cancelAnimationFrame(FILM.raf); FILM.raf = requestAnimationFrame(filmTick);
+    await updateWind();
+    thermalLayers(g);
+    if (await filmPrepare()) filmDraw();
+  } catch (err) {
+    if (tok !== FILM.tok) return;
+    cancelAnimationFrame(FILM.raf); FILM.raf = 0;
+    FILM.playing = false; FILM.busy = false; FILM.req++;
+    mapMsg('Tagesfilm: ' + err.message); setTimeout(() => { if (/^Tagesfilm: /.test($('#mapMsg').textContent)) mapMsg(''); }, 6000);
+    syncWindBar(); updateWind(); updateThermal();
+  } finally { FILM.starting = false; }
+}
+/** Film anhalten: die Karte bleibt auf der nächsten vollen Stunde stehen und verhält sich wieder wie gewohnt. */
+function filmStop() {
+  if (!FILM.playing && !FILM.busy && !FILM.starting) return;
+  cancelAnimationFrame(FILM.raf); FILM.raf = 0; FILM.req++; FILM.tok++;
+  const was = FILM.playing;
+  FILM.playing = false; FILM.busy = false;
+  if (was) W.hour = Math.min(FILM.H1, Math.max(FILM.H0, Math.round(FILM.t)));
+  if (/^Tagesfilm wird/.test($('#mapMsg').textContent)) mapMsg('');
+  syncWindBar(); updateWind(); updateThermal();
+}
+/** Kleiner Sonnenbogen neben der Uhrzeit: wo die Sonne gerade steht (Ost links, West rechts). */
+function sunArc(pos) {
+  const el = $('#sunArc'); if (!el) return;
+  el.toggleAttribute('hidden', !pos);
+  if (!pos) return;
+  const x = 4 + 36 * Math.min(1, Math.max(0, (pos.az - 60) / 240)), up = pos.elev > 0;
+  const y = up ? 19 - 15 * Math.min(1, pos.elev / 66) : 19 + Math.min(3, -pos.elev / 4);
+  const dot = el.querySelector('circle');
+  dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+  el.classList.toggle('down', !up);
+  el.setAttribute('aria-label', up ? `Sonne ${Math.round(pos.elev)}° hoch im ${dirLabel(pos.az)}` : 'Sonne unter dem Horizont');
 }
 
 function mapSheet(kind, id) {
@@ -2618,7 +2907,7 @@ function mapSheet(kind, id) {
   } else if (kind === 'thermal') {
     const t = thermalWhy(id.lat, id.lng);
     if (!t) { el.hidden = true; return; }
-    h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${airHere(id.lat, id.lng)}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+    h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${T.data?.t ? new Date(T.data.t).getHours() : W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${airHere(id.lat, id.lng)}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else {
     const st = S.plan.stations.find(x => x.code === id);
     h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · ${ageTxt(ageMin(st.time, st.age))}</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
@@ -2731,6 +3020,7 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'film': FILM.playing || FILM.busy || FILM.starting ? filmStop() : filmStart(); break;
     case 'tab': if (dlgEl) closeDlg(dlgEl); setTab(b.dataset.tab); break;
     case 'grpday': G.date = b.dataset.v || null; G.data = null; renderGroup(); break;
     case 'grplike': try { groupSet(await jsonPost(`/api/community/${id}/like${G.date ? '?date=' + G.date : ''}`)); } catch (err) { toast(err.message); } break;
@@ -2877,7 +3167,7 @@ document.addEventListener('drop', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.closest?.('#profForm')) profHint();
-  if (e.target.id === 'windHour') { W.hour = Number(e.target.value); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
+  if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
