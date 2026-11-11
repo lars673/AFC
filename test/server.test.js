@@ -318,7 +318,7 @@ test('Handy: Karte kommt vom eigenen Server, nichts von cdnjs', async () => {
   try {
     const html = await (await fetch(s.base + '/')).text();
     assert.ok(!/cdnjs/.test(html));
-    for (const f of ['/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/leaflet/images/marker-icon.png', '/igc.js', '/sw.js']) assert.equal((await fetch(s.base + f)).status, 200, f);
+    for (const f of ['/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/leaflet/images/marker-icon.png', '/igc.js', '/view3d.js', '/sw.js']) assert.equal((await fetch(s.base + f)).status, 200, f);
   } finally { await s.stop(); }
 });
 

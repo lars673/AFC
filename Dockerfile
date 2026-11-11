@@ -6,7 +6,7 @@ ENV AFC_DATA_DIR=/app/data
 # Fallback-Port. Railway/Render überschreiben PORT zur Laufzeit; der Server übernimmt die Variable.
 ENV PORT=8787
 
-COPY package.json server.js index.html app.js app.css manifest.json sw.js privacy.html README.md ./
+COPY package.json server.js index.html app.js view3d.js app.css manifest.json sw.js privacy.html README.md ./
 COPY lib ./lib
 COPY icon-192.png icon-512.png ./
 

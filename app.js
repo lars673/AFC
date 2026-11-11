@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '11.0';
+const APP_VER = '12.0';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -192,7 +192,7 @@ function ribbon(scores, best, o = {}) {
     if (o.now === hour) c.push('now');
     if (o.sel === hour) c.push('sel');
     h += o.btn
-      ? `<button type="button" class="${c.join(' ')}" data-act="hour" data-h="${hour}" aria-label="${hour} Uhr, ${num(s) ? 'Score ' + s : 'keine Bewertung'}">${num(s) ? s : ''}</button>`
+      ? `<button type="button" class="${c.join(' ')}" style="--i:${i}" data-act="hour" data-h="${hour}" aria-label="${hour} Uhr, ${num(s) ? 'Score ' + s : 'keine Bewertung'}">${num(s) ? s : ''}</button>`
       : `<i class="${c.join(' ')}">${o.big && num(s) ? s : ''}</i>`;
   }
   const label = `Stundenscore 6 bis 21 Uhr${best ? ', bestes Fenster ' + winText(best) : ''}`;
@@ -206,6 +206,24 @@ const nowHourToday = () => (isToday() ? Number(new Date().toLocaleString('en-GB'
 function pill(score, small = true) {
   const c = cls(score);
   return `<div class="pill s-${c}">${num(score) ? score : '–'}${small ? `<small>${DECISION[c]}</small>` : ''}</div>`;
+}
+/** Score als Ring, der sich füllt (Startplatz-Ansicht). from: Wert davor, damit der Ring beim Stundenwechsel weiterläuft statt neu zu beginnen. */
+function ringHtml(score, from = 0) {
+  const c = cls(score), v = num(score) ? Math.min(100, Math.max(0, score)) : 0;
+  return `<div class="ring r-${c}" role="img" aria-label="Score ${num(score) ? score : 'unbekannt'}, ${DECISION[c]}" style="--p:${v};--from:${Math.min(100, Math.max(0, from))}"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="ring-bg" cx="40" cy="40" r="34"/><circle class="ring-fg" cx="40" cy="40" r="34" pathLength="100"/></svg><b>${num(score) ? score : '–'}</b></div>`;
+}
+/** Zahl weich hochzählen (ohne Bewegung bei «Bewegung reduzieren»). */
+function countUp(el, from, to, ms = 600) {
+  if (!el || !num(to) || !num(from) || from === to || noMotion()) return;
+  const t0 = performance.now();
+  const step = t => {
+    if (!el.isConnected) return;
+    const k = Math.min(1, (t - t0) / ms);
+    el.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) requestAnimationFrame(step);
+  };
+  el.textContent = Math.round(from);
+  requestAnimationFrame(step);
 }
 function starBtn(id) {
   const on = S.fav.has(id);
@@ -420,7 +438,7 @@ function renderDecide() {
     <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p>${confHtml(p.days[S.day]?.conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
-    ${favSites.length ? `<h2 class="sec-h">Meine Startplätze</h2><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
+    ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
@@ -1236,7 +1254,7 @@ async function importIgc(files) {
 }
 
 /** Spur als kleine Karte und Höhenprofil, darunter die Thermiken. */
-function trackHtml(t) {
+function trackHtml(t, id) {
   const line = t.line || [];
   let svg = '', prof = '';
   if (line.length > 1) {
@@ -1250,6 +1268,7 @@ function trackHtml(t) {
   }
   const th = (t.thermals || []).slice().sort((a, b) => b.gain - a.gain).slice(0, 4);
   return `<div class="lb-wide lb-track"><span class="lb-type">Spur${t.file ? ' · ' + esc(t.file) : ''}</span>${svg}${prof}
+    ${id && line.length > 2 ? `<button class="btn replay-btn" type="button" data-act="replay" data-id="${esc(id)}">${PLAY_SVG} Flug in 3D ansehen</button>` : ''}
     <p class="fine" style="margin:4px 0 0">${(t.thermals || []).length} Thermiken · bestes Steigen ${t.climbMax ?? '–'} m/s${num(t.maxDistKm) ? ` · bis ${t.maxDistKm} km vom Start` : ''}</p>
     ${th.length ? `<p class="fine" style="margin:2px 0 0">${th.map(h => `${h.at}: ${h.base} → ${h.alt} m (${h.rate} m/s)`).join(' · ')}</p>` : ''}</div>`;
 }
@@ -1294,7 +1313,7 @@ function flightForm(id, copyId) {
       ${f ? reviewHtml(f) : ''}
       <div class="fld lb-wide"><span id="lbVerdL">AFC-Bewertung${num(v.afcScore) ? ` (AFC sagte ${v.afcScore})` : ''}</span><div class="stars lb-verd" role="radiogroup" aria-labelledby="lbVerdL">${Object.entries(L.VERDICTS).map(([k, n]) => `<label><input type="radio" name="afcVerdict" value="${k}" ${v.afcVerdict === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
       <div class="fld lb-wide"><span id="lbRateL">Bewertung</span><div class="stars" role="radiogroup" aria-labelledby="lbRateL">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="rating" value="${n}" ${v.rating === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div></div>
-      ${v.track ? trackHtml(v.track) : ''}
+      ${v.track ? trackHtml(v.track, f?.id) : ''}
       <label class="fld lb-wide"><span>Notiz (Bedingungen, Lernpunkte)</span><textarea name="note" maxlength="500" rows="3">${esc(v.note || '')}</textarea></label>
     </div>
     <datalist id="lbSites">${sites.map(n => `<option value="${esc(n)}"${num(siteMap.get(n).alt) ? ` label="${Math.round(siteMap.get(n).alt)} m"` : ''}>`).join('')}</datalist><datalist id="lbLands">${lands.map(n => `<option value="${esc(n)}"${num(landMap.get(n).alt) ? ` label="${Math.round(landMap.get(n).alt)} m"` : ''}>`).join('')}</datalist>
@@ -1436,18 +1455,38 @@ function ask({ title, text, ok = 'OK', danger = false, cancel = 'Abbrechen' }) {
   });
 }
 /* ---- Kurze Einführung beim ersten Öffnen (später unter Profil nochmals aufrufbar) */
-const INTRO_VER = 1;
+const INTRO_VER = 2;
+const INTRO_ART = {
+  score: `<svg viewBox="0 0 240 120" aria-hidden="true"><g class="ia-ring"><circle cx="60" cy="60" r="38" class="ia-bg"/><circle cx="60" cy="60" r="38" pathLength="100" class="ia-fg"/></g><text x="60" y="71" class="ia-num">84</text>
+    <g class="ia-pop" style="--d:.5s"><rect x="124" y="20" width="100" height="22" rx="6" class="ia-go"/><text x="174" y="36" class="ia-t">ab 80 gut</text></g>
+    <g class="ia-pop" style="--d:.75s"><rect x="124" y="49" width="100" height="22" rx="6" class="ia-wait"/><text x="174" y="65" class="ia-t">55–79 Vorsicht</text></g>
+    <g class="ia-pop" style="--d:1s"><rect x="124" y="78" width="100" height="22" rx="6" class="ia-no"/><text x="174" y="94" class="ia-t ia-tw">darunter Boden</text></g></svg>`,
+  why: `<svg viewBox="0 0 240 120" aria-hidden="true">${[['ia-go', 'M-5 0l4 4 7-8', 150], ['ia-wait', 'M0-6v7M0 5v.5', 120], ['ia-no', 'M-5-5l10 10M5-5l-10 10', 136]].map(([c, d, w], i) => `<g class="ia-pop" style="--d:${0.15 + i * 0.3}s"><rect x="24" y="${12 + i * 34}" width="192" height="28" rx="8" class="ia-card"/><circle cx="42" cy="${26 + i * 34}" r="10" class="${c}"/><path d="${d}" transform="translate(42 ${26 + i * 34})" class="ia-ico"/><rect x="60" y="${19 + i * 34}" width="${w * 0.45}" height="5" rx="2.5" class="ia-l1"/><rect x="60" y="${29 + i * 34}" width="${w}" height="4" rx="2" class="ia-l2"/></g>`).join('')}</svg>`,
+  film: `<svg viewBox="0 0 240 120" aria-hidden="true"><path d="M30 92a90 78 0 0 1 180 0" class="ia-arc"/><g class="ia-sun"><circle cx="120" cy="14" r="9"/></g>
+    <path d="M0 120V92l34-30 26 20 38-44 34 40 30-22 42 34 36-20v50z" class="ia-hill"/><path d="M98 38l-38 44-26-20L0 92v28h120z" class="ia-shade"/>
+    ${[70, 84, 98].map((y, i) => `<path d="M${10 + i * 14} ${y}q50 -14 100 0t110 -4" class="ia-wind" style="--d:${i * 0.35}s"/>`).join('')}</svg>`,
+  d3: `<svg viewBox="0 0 240 120" aria-hidden="true"><ellipse cx="120" cy="98" rx="104" ry="16" class="ia-disc"/><path d="M26 98l44-52 22 22 30-48 34 44 20-16 40 50z" class="ia-hill"/><path d="M122 20l-30 48-22-22-44 52h96z" class="ia-shade"/>
+    <path d="M124 24c40 4 62 22 44 36s-58 2-70 20 24 22 78 14" class="ia-track"/><circle r="5" class="ia-glider"><animateMotion dur="4.5s" repeatCount="indefinite" path="M124 24c40 4 62 22 44 36s-58 2-70 20 24 22 78 14"/></circle>
+    <path d="M60 58l36 22M150 46l40 26" class="ia-cable"/></svg>`,
+  brief: `<svg viewBox="0 0 240 120" aria-hidden="true"><rect x="88" y="6" width="64" height="108" rx="10" class="ia-phone"/><g class="ia-ring ia-small"><circle cx="120" cy="46" r="18" class="ia-bg"/><circle cx="120" cy="46" r="18" pathLength="100" class="ia-fg"/></g>
+    ${[0, 1, 2, 3, 4, 5].map(i => `<rect x="${98 + i * 8}" y="${86 - [10, 16, 20, 14, 8, 5][i]}" width="6" height="${[10, 16, 20, 14, 8, 5][i]}" rx="1.5" class="ia-bar ${i < 4 ? 'ia-go' : 'ia-wait'}" style="--d:${0.5 + i * 0.1}s"/>`).join('')}
+    <rect x="98" y="98" width="44" height="4" rx="2" class="ia-l2"/><rect x="98" y="98" width="44" height="4" rx="2" class="ia-prog"/>
+    <g class="ia-pop" style="--d:1.2s"><circle cx="190" cy="40" r="15" class="ia-card"/><path d="M185 40h10M191 35l5 5-5 5" class="ia-ico ia-ink"/></g><g class="ia-pop" style="--d:1.45s"><circle cx="50" cy="74" r="15" class="ia-card"/><path d="M45 69v10l9-5z" class="ia-ink-f"/></g></svg>`,
+  test: `<svg viewBox="0 0 240 120" aria-hidden="true"><g class="ia-pop" style="--d:.1s"><path d="M40 20h110a10 10 0 0 1 10 10v34a10 10 0 0 1-10 10H78l-18 16V74H40a10 10 0 0 1-10-10V30a10 10 0 0 1 10-10z" class="ia-card"/><rect x="46" y="34" width="70" height="6" rx="3" class="ia-l1"/><rect x="46" y="48" width="98" height="5" rx="2.5" class="ia-l2"/></g>
+    <g class="ia-pop" style="--d:.55s"><path d="M200 46h-78a10 10 0 0 0-10 10v30a10 10 0 0 0 10 10h56l16 14V96h6a10 10 0 0 0 10-10V56a10 10 0 0 0-10-10z" class="ia-go"/><path d="M146 71l8 8 16-17" class="ia-ico"/></g></svg>`
+};
 const INTRO = [
-  ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.'],
-  ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.'],
-  ['Karte, Thermik und Soaring', 'Auf der Karte unten «Thermik» oder «Soaring» wählen. Tippe irgendwo auf die Karte, dann erklärt AFC, warum es dort steigt oder nicht. Unter «Ebenen» kannst du die Thermik-Hotspots und Flugspuren von kk7 einblenden.'],
-  ['Route von A nach B', 'Auf der Karte «Route» tippen, dann Startpunkt A und Ziel B. AFC sucht eine Strecke über die Thermik, mit genug Höhe und Landeplätzen im Gleitbereich, bleibt unter Lufträumen und markiert kritische Stellen. Tippst du auf eine rote Fläche, siehst du den Luftraum mit seinen Höhen.'],
-  ['Dein Profil', 'Unter «Profil» trägst du Flüge, Stunden, Schirm und letzten Flug ein. Daraus wählt AFC deine Grenzen für Wind und Thermik und rechnet die Route mit deiner Gleitzahl. AFC ersetzt nie deine eigene Beurteilung am Startplatz.'],
-  ['Testphase: deine Rückmeldung zählt', 'Oben rechts beim Sprechblasen-Knopf schickst du Lars jederzeit eine Idee, einen Fehler oder ein Bildschirmfoto. Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat, und unter «Flugtag» meldest du auch Tage ohne Start. Genau das macht AFC besser.']
+  ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.', 'score'],
+  ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.', 'why'],
+  ['Die Karte lebt', 'Auf der Karte lässt der Play-Knopf den ganzen Tag ablaufen: Sonne und Schatten wandern, die Thermik baut auf, der Wind fliesst dem Gelände entlang. Tippe irgendwo hin, dann erklärt AFC, warum es dort steigt oder nicht. Mit «Route» planst du eine Strecke von A nach B.', 'film'],
+  ['Startplatz und Flug in 3D', 'Bei jedem Startplatz zeigt «In 3D ansehen» den Berg mit Kabeln, Lee, Wind und der Landevolte. Im Flugbuch fliegst du einen Flug mit IGC-Datei nochmals ab und siehst, wo die Prognose gestimmt hat.', 'd3'],
+  ['Briefing in 15 Sekunden', 'Merke dir deine Startplätze mit dem Stern. «Briefing» zeigt für jeden einen kurzen Film mit Score, bestem Fenster und den wichtigsten Gründen. Du kannst ihn als Video sichern oder in der Gruppe teilen.', 'brief'],
+  ['Testphase: deine Rückmeldung zählt', 'Unter «Profil» trägst du Erfahrung und Schirm ein, daraus wählt AFC deine Grenzen. Beim Sprechblasen-Knopf oben rechts schickst du Lars jederzeit eine Idee oder einen Fehler, und nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. AFC ersetzt nie deine eigene Beurteilung am Startplatz.', 'test']
 ];
 function showIntro(i = 0) {
-  const last = i === INTRO.length - 1, [t, x] = INTRO[i];
+  const last = i === INTRO.length - 1, [t, x, art] = INTRO[i];
   const d = dlg('#msgDlg', `<div class="dlg-in intro"><div class="dlg-h"><h2 id="msgDlgT">${esc(t)}</h2><button class="x-btn" type="button" data-intro="end" aria-label="Schliessen">×</button></div>
+    <div class="intro-art">${INTRO_ART[art] || ''}</div>
     <p>${esc(x)}</p>
     <div class="intro-dots" aria-label="Schritt ${i + 1} von ${INTRO.length}">${INTRO.map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('')}</div>
     <div class="btn-row">${i ? `<button class="btn sec" type="button" data-intro="${i - 1}">Zurück</button>` : `<button class="btn sec" type="button" data-intro="end">Überspringen</button>`}<button class="btn" type="button" data-intro="${last ? (store.get('pilot')?.flights != null ? 'end' : 'profile') : i + 1}" autofocus>${last ? (store.get('pilot')?.flights != null ? 'Los gehts' : 'Profil ausfüllen') : 'Weiter'}</button></div></div>`);
@@ -1478,7 +1517,7 @@ async function openSite(id) {
     S.detailData = d;
     const best = d.days[S.day]?.best;
     S.hour = best?.peak ?? d.days[S.day]?.hours.find(h => num(h.score))?.h ?? null;
-    renderSite();
+    renderSite(true);
   } catch (e) {
     dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="empty">Details konnten nicht geladen werden: ${esc(e.message)}</div></div>`);
   }
@@ -1489,12 +1528,8 @@ function nearestLanding(s) {
   const cand = (S.plan?.landings || []).filter(l => num(l.lat)).map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) }));
   return (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => a.d - b.d)[0];
 }
-function landingHtml(s, hr) {
-  const L = nearestLanding(s);
-  if (!L && !hr?.valley) return '';
-  const l = L?.l, [warn, bad] = [22, 28];
-  const fc = hr?.valley, fv = fc ? Math.max(fc[0], 0.75 * (fc[1] ?? 0)) : null;
-  const fl = fv == null ? 'none' : fv >= bad ? 'bad' : fv >= warn ? 'warn' : 'ok';
+/** Nächste Messstation zum Landeplatz (nur heute): höchstens 12 km und 400 m Höhenunterschied. */
+function landStation(l) {
   let st = null;
   if (l && S.day === 0) {
     for (const x of S.plan.stations || []) {
@@ -1503,6 +1538,27 @@ function landingHtml(s, hr) {
       if (d <= 12 && Math.abs((x.alt ?? 0) - (l.alt ?? 0)) <= 400 && (!st || d < st.d)) st = { x, d };
     }
   }
+  return st;
+}
+/** Wind am Landeplatz für die Volte: gemessen, sonst Talwind-Prognose, sonst Prognose am Start. */
+function landWind(l, hr) {
+  const sx = landStation(l)?.x;
+  return sx && num(sx.dir) && sx.wind >= 4 ? { dir: sx.dir, src: 'gemessen' } : hr?.valleyDir != null ? { dir: hr.valleyDir, src: 'Prognose' } : num(hr?.dir) ? { dir: hr.dir, src: 'Prognose am Start' } : null;
+}
+/** Volte für einen Landeplatz: eigene Angabe, sonst Vorschlag gegen den Wind; Seite nach Platzregel. */
+function volteFor(l, wind) {
+  const mine = LB.data?.settings?.lands?.[l.id];
+  const h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
+  const R = l.volte, tal = R && wind ? wind.dir >= R.talFrom[0] && wind.dir < R.talFrom[1] : null;
+  return { mine, h, R, tal, side: mine?.side || (R && tal != null ? (tal ? R.tal : R.berg) : 'L') };
+}
+function landingHtml(s, hr) {
+  const L = nearestLanding(s);
+  if (!L && !hr?.valley) return '';
+  const l = L?.l, [warn, bad] = [22, 28];
+  const fc = hr?.valley, fv = fc ? Math.max(fc[0], 0.75 * (fc[1] ?? 0)) : null;
+  const fl = fv == null ? 'none' : fv >= bad ? 'bad' : fv >= warn ? 'warn' : 'ok';
+  const st = landStation(l);
   const sx = st?.x, sv = sx ? Math.max(sx.wind, 0.75 * (sx.gust ?? 0)) : null, sl = sv == null ? 'none' : sv >= bad ? 'bad' : sv >= warn ? 'warn' : 'ok';
   return `<div class="panel land" style="margin:0"><h3>Landeplatz</h3>
     ${l ? `<p style="margin:0 0 8px"><b>${esc(l.name)}</b> <span class="fine">${l.alt ?? '–'} m · ${L.d.toFixed(1)} km vom Start · ${num(l.alt) ? (s.alt - l.alt) + ' m tiefer' : ''}</span></p>` : ''}
@@ -1511,7 +1567,7 @@ function landingHtml(s, hr) {
       ${S.day === 0 ? `<div class="land-c stc-${sl}"><small>Gemessen jetzt</small><b>${sx ? Math.round(sx.wind) + ' / ' + (num(sx.gust) ? Math.round(sx.gust) : '–') : '–'}</b><small>${sx ? `${esc(sx.name)}, ${st.d.toFixed(0)} km · ${ageTxt(ageMin(sx.time, sx.age))}${num(sx.dir) ? ' · aus ' + dirLabel(sx.dir) : ''}` : 'keine Station in der Nähe'}</small></div>` : ''}
     </div>
     <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p>
-    ${l ? volteHtml(l, sx && num(sx.dir) && sx.wind >= 4 ? { dir: sx.dir, src: 'gemessen' } : hr?.valleyDir != null ? { dir: hr.valleyDir, src: 'Prognose' } : num(hr?.dir) ? { dir: hr.dir, src: 'Prognose am Start' } : null) : ''}</div>`;
+    ${l ? volteHtml(l, landWind(l, hr)) : ''}</div>`;
 }
 
 /* ---- Landevolte: eigene Angabe je Landeplatz (Endanflug und Seite), sonst Vorschlag gegen den Wind */
@@ -1534,11 +1590,8 @@ function volteSvg(h, side, wind) {
     <circle cx="${q(T).split(',')[0]}" cy="${q(T).split(',')[1]}" r="5" class="vp"/></svg>`;
 }
 function volteHtml(l, wind) {
-  const mine = LB.data?.settings?.lands?.[l.id];
-  const h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
   // Regel des Landeplatzes (z.B. Lehn: Rechtsvolte bei Talwind, Linksvolte bei Bergwind)
-  const R = l.volte, tal = R && wind ? wind.dir >= R.talFrom[0] && wind.dir < R.talFrom[1] : null;
-  const side = mine?.side || (R && tal != null ? (tal ? R.tal : R.berg) : 'L');
+  const { mine, h, R, tal, side } = volteFor(l, wind);
   // Rückenwind auf dem eigenen Endanflug? (Wind kommt von hinten, wenn er mehr als 100° neben der Anflugrichtung liegt)
   const off = mine && wind ? Math.abs(((wind.dir - mine.dir) % 360 + 540) % 360 - 180) : null;
   const tail = off != null && off > 100;
@@ -1648,7 +1701,7 @@ async function camSet(id) {
   try { await lbSave('settings', { ...d.settings, cams }); toast(v.trim() ? 'Webcam gespeichert' : 'Webcam entfernt'); if (S.detailData?.site?.id === id) renderSite(); }
   catch (err) { toast('Nicht gespeichert: ' + err.message); }
 }
-function renderSite() {
+function renderSite(fresh = false) {
   const d = S.detailData, day = d.days[S.day];
   const s = d.site, hrs = day?.hours || [];
   const hr = hrs.find(h => h.h === S.hour) || hrs[0];
@@ -1657,9 +1710,12 @@ function renderSite() {
   const fav = S.fav.has(s.id);
   const c = hr ? cls(hr.score) : 'none';
   const nc = d.nowcast;
+  const ringFrom = fresh ? 0 : S.ringPrev ?? 0;
+  S.ringPrev = num(hr?.score) ? hr.score : 0;
   const actionsHtml = `<div class="site-acts">
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
       <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
+      <div class="act-row act-row2"><button class="btn sec" type="button" data-act="site3d" data-id="${esc(s.id)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M2 19l6.5-11 4 6.5 2.5-3.5L22 19z" fill="currentColor"/></svg> In 3D ansehen</button><button class="btn sec" type="button" data-act="brief" data-id="${esc(s.id)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z" fill="currentColor"/></svg> Briefing</button></div>
       ${(siteById(s.id)?.notes || []).length ? `<ul class="site-notes">${siteById(s.id).notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       ${groupLineFor(s.id)}
       ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
@@ -1667,7 +1723,7 @@ function renderSite() {
     </div>`;
   const detailHtml = hr ? `
     <div class="hr-detail">
-      <div class="hr-head">${pill(hr.score, false)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
+      <div class="hr-head">${ringHtml(hr.score, ringFrom)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
       ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
       ${actionsHtml}
       <details class="why-more"><summary>Alle Gründe für den Score</summary>
@@ -1708,6 +1764,8 @@ function renderSite() {
     ${table}
     <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
   </div>`);
+  $('#siteDlg .dlg-in')?.classList.toggle('fresh', fresh);
+  countUp($('#siteDlg .ring b'), ringFrom, hr?.score);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
   fillCam(s);
@@ -2078,6 +2136,22 @@ const windColor = kmh => WIND_COLORS.find(c => kmh < c[0])[1];
 const WIND_WIDTH = { '#2a7fd4': 1.5, '#2fa84f': 1.8, '#d9b300': 2.1, '#ef8a1f': 2.4, '#d93a32': 2.7 };   // stärkerer Wind, kräftigere Spur
 const W = { level: 'off', hour: 12, data: null, cache: new Map(), layer: null, req: 0 };
 
+/** Bodenwind dem Gelände entlang: an Hängen steiler als 8° strömt die Luft dem Hang entlang statt durch den Berg (Schätzung). */
+function terrainFlow(w, g, lat, lon) {
+  if (!w || !g) return w;
+  const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
+  if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return w;
+  const k = y * g.nx + x, slope = g.slope[k];
+  if (slope <= 8) return w;
+  const a = g.aspect[k] * 360 / 256 * D2R, ax = Math.sin(a), ay = Math.cos(a), sp = Math.hypot(w[0], w[1]);
+  if (sp < 0.5) return w;
+  const f = Math.min(0.8, (slope - 8) / 22), c = (w[0] * ax + w[1] * ay) * f;
+  let u = w[0] - c * ax, v = w[1] - c * ay;
+  const n = Math.hypot(u, v);
+  if (n < 0.2 * sp) return [u, v];
+  const keep = sp * (1 - 0.25 * f) / n;                        // Betrag bleibt fast erhalten, am Hang etwas gebremst
+  return [u * keep, v * keep];
+}
 function windSample(d, lat, lon) {
   const g = d.grid, fx = (lon - g.lo0) / g.dlo, fy = (lat - g.la0) / g.dla;
   if (fx < 0 || fy < 0 || fx > g.nx - 1 || fy > g.ny - 1) return null;
@@ -2121,22 +2195,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
   },
   /** Geländeraster für den Bodenwind: an steilen Hängen strömt die Luft dem Hang entlang statt durch den Berg. */
   setTerrain(g) { this._g = g || null; },
-  _flow(lat, lon) {
-    const w = windSample(this._d, lat, lon), g = this._g;
-    if (!w || !g) return w;
-    const x = Math.round((lon - g.lo0) / g.dlo), y = Math.round((lat - g.la0) / g.dla);
-    if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return w;
-    const k = y * g.nx + x, slope = g.slope[k];
-    if (slope <= 8) return w;
-    const a = g.aspect[k] * 360 / 256 * D2R, ax = Math.sin(a), ay = Math.cos(a), sp = Math.hypot(w[0], w[1]);
-    if (sp < 0.5) return w;
-    const f = Math.min(0.8, (slope - 8) / 22), c = (w[0] * ax + w[1] * ay) * f;
-    let u = w[0] - c * ax, v = w[1] - c * ay;
-    const n = Math.hypot(u, v);
-    if (n < 0.2 * sp) return [u, v];
-    const keep = sp * (1 - 0.25 * f) / n;                        // Betrag bleibt fast erhalten, am Hang etwas gebremst
-    return [u * keep, v * keep];
-  },
+  _flow(lat, lon) { return terrainFlow(windSample(this._d, lat, lon), this._g, lat, lon); },
   _stop() { cancelAnimationFrame(this._raf); this._raf = 0; if (this._ctx) this._ctx.clearRect(0, 0, this._c.width, this._c.height); },
   _reset() {
     this._stop();
@@ -3020,6 +3079,27 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'brief': briefOpen([id]); break;
+    case 'briefall': briefOpen([...S.fav]); break;
+    case 'briefpost': { const i = S.plan?.dates.indexOf(b.dataset.d) ?? -1; if (i < 0) { toast('Dieser Tag ist nicht mehr in der Prognose.'); break; } if (i !== S.day) { S.day = i; render(); } briefOpen([id]); break; }
+    case 'briefplay': briefPlay(!BR.playing); break;
+    case 'briefnav': if (!BR.rec && BR.ids.length > 1) briefLoad((BR.k + Number(b.dataset.v) + BR.ids.length) % BR.ids.length); break;
+    case 'briefrec': briefRecord(); break;
+    case 'briefshare': briefShare(); break;
+    case 'site3d': open3dSite(id); break;
+    case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(err.message)); break;
+    case 'v3dclose': closeDlg($('#v3dDlg')); break;
+    case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
+    case 'v3dnorth': v3dCam({ az: 0 }, 600); break;
+    case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
+    case 'v3dtog': { const k = b.dataset.v === 'wind' ? 'wind' : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k])); if (k === 'wind') v3dWind(V3.d); else v3dCables(); if (V3.mode === 'site') v3dSiteHud(); break; }
+    case 'v3dlayer': V3.layer = V3.layer === b.dataset.v ? null : b.dataset.v; $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer))); v3dApply(); break;
+    case 'v3dvolte': v3dVolte(!V3.volte); b.setAttribute('aria-pressed', String(!!V3.volte)); break;
+    case 'v3dplay': if (!b.classList.contains('busy')) v3dPlay(!V3.playing); break;
+    case 'v3dfplay': v3dFlightPlay(!V3.fl?.playing); break;
+    case 'v3dspeed': if (V3.fl) { V3.fl.speed = Number(b.dataset.v) || 60; $$('#v3dBar [data-act="v3dspeed"]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); } break;
+    case 'v3dfollow': if (V3.fl) { V3.fl.follow = !V3.fl.follow; b.setAttribute('aria-pressed', String(V3.fl.follow)); V3.scene?.invalidate(); } break;
+    case 'v3dcmp': { const c = $('#v3dCard'); c.hidden = !c.hidden; b.setAttribute('aria-pressed', String(!c.hidden)); break; }
     case 'film': FILM.playing || FILM.busy || FILM.starting ? filmStop() : filmStart(); break;
     case 'tab': if (dlgEl) closeDlg(dlgEl); setTab(b.dataset.tab); break;
     case 'grpday': G.date = b.dataset.v || null; G.data = null; renderGroup(); break;
@@ -3167,8 +3247,15 @@ document.addEventListener('drop', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.closest?.('#profForm')) profHint();
+  if (e.target.id === 'v3dHour') {
+    const v = Number(e.target.value);
+    if (V3.playing) { V3.t = v; v3dPlay(false); } else { V3.hour = V3.t = Math.round(v); $('#v3dHourT').textContent = `${V3.hour} Uhr`; v3dApply(); }
+  }
+  if (e.target.id === 'v3dScrub' && V3.fl) { const F = V3.fl; F.drag = true; F.i = Number(e.target.value) / 1000 * (F.n - 1); v3dFlightPose(); V3.scene?.invalidate(); }
   if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
+document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
+$('#v3dDlg')?.addEventListener('close', v3dEnd);
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
 });
@@ -3540,6 +3627,627 @@ function noflyForm(siteId) {
       <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Senden</button></div>
     </form></div>`);
 }
+/* ------------------------------------------------------------------ 3D-Ansicht (view3d.js): Startplatz im Gelände und Flug-Replay */
+const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
+const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const V3_LAYERS = {
+  thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform.'],
+  soar: ['Soaring', 'Soaring: wo der Wind frontal auf einen steilen Hang trifft.'],
+  lee: ['Lee', 'Lee: absinkende Luft und Rotoren hinter höheren Kreten, gegen den Wind gesehen.']
+};
+const PLAY_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i-play" d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z"/><path class="i-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
+const GLIDER_SVG = '<svg class="v3d-gl" viewBox="0 0 40 34" width="40" height="34" aria-hidden="true"><path d="M3 12C8 3 32 3 37 12c-5-3.5-29-3.5-34 0z" fill="#ff5a36" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 12l14 15M35 12L21 27M14 9.6l5.4 17M26 9.6l-5.4 17" stroke="#fff" stroke-width="1" fill="none" opacity=".9"/><circle cx="20" cy="28.5" r="3.6" fill="#101c15" stroke="#fff" stroke-width="1.6"/></svg>';
+const v3dChip = (act, v, label, on) => `<button type="button" class="v3d-chip" data-act="${act}" data-v="${v}" aria-pressed="${!!on}">${label}</button>`;
+
+function v3dShell(title, sub, bar) {
+  return `<div class="v3d">
+    <div class="v3d-top"><div><h2 id="v3dT">${esc(title)}</h2><p class="fine" id="v3dSub">${esc(sub)}</p></div><button class="x-btn" type="button" data-act="v3dclose" aria-label="Schliessen">×</button></div>
+    <div class="v3d-stage" id="v3dStage">
+      <div class="v3d-load" id="v3dLoad"><div class="spinner"></div><span>3D-Gelände wird aufgebaut …</span></div>
+      <div class="v3d-hud" id="v3dHud" aria-live="off"></div>
+      <div class="v3d-tools">
+        <button type="button" data-act="v3dzoom" data-v="0.7" aria-label="Näher heran" title="Näher heran">+</button>
+        <button type="button" data-act="v3dzoom" data-v="1.43" aria-label="Weiter weg" title="Weiter weg">−</button>
+        <button type="button" data-act="v3dnorth" aria-label="Nach Norden ausrichten" title="Nach Norden ausrichten"><svg id="v3dNorth" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 2.5l4.6 9.5H7.4z" fill="#e0453c"/><path d="M12 21.5L7.4 12h9.2z" fill="currentColor" opacity=".5"/></svg></button>
+        <button type="button" data-act="v3dbase" id="v3dBaseBtn" aria-pressed="${!!V3.base}" aria-label="Luftbild ein oder aus" title="Luftbild ein oder aus" hidden><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 18l6-9 4 6 2.5-3.5L21 18z" fill="currentColor"/><circle cx="17" cy="6.5" r="2.2" fill="currentColor"/></svg></button>
+      </div>
+      <p class="v3d-attr" id="v3dAttr" hidden>Luftbild © swisstopo</p>
+    </div>
+    <div class="v3d-card" id="v3dCard" hidden></div>
+    <div class="v3d-bar" id="v3dBar">${bar}</div>
+  </div>`;
+}
+/** 3D beenden: Zeichenfläche freigeben, laufende Abläufe abbrechen. */
+function v3dEnd() {
+  V3.tok++;
+  if (typeof briefStop === 'function') briefStop();
+  V3.scene?.destroy();
+  Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null });
+}
+function v3dFail(msg) { const el = $('#v3dLoad'); if (el) { el.hidden = false; el.innerHTML = `<span>${esc(msg)}</span>`; } }
+function v3dScene(g, area) {
+  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g);
+  sc.still = noMotion();
+  sc.setArea(area);
+  sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen dreht, zwei Finger zoomen und verschieben. Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
+  sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.cam.az).toFixed(1)}deg)`; };
+  // Luftbild von swisstopo über das Relief; ohne Netz bleibt das gezeichnete Relief stehen
+  sc.drapeOn = !!V3.base;
+  sc.setDrape(BASES.photo.url).then(ok => { if (V3.scene !== sc || !ok) return; $('#v3dBaseBtn').hidden = false; $('#v3dAttr').hidden = !V3.base; });
+  $('#v3dLoad').hidden = true;
+  return sc;
+}
+function v3dCam(to, ms) { V3.scene?.flyTo(to, noMotion() ? 0 : ms); }
+
+/* ---- Startplatz in 3D */
+function v3dSiteBar() {
+  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : ''}</div>
+    <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="1" value="${V3.hour}" aria-label="Uhrzeit in der 3D-Ansicht"></div>
+    <p class="fine v3d-note" id="v3dNote"></p>`;
+}
+async function open3dSite(id) {
+  const s = siteById(id);
+  if (!s || !S.plan) return;
+  if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann die 3D-Ansicht nicht darstellen.'); return; }
+  v3dEnd();
+  const tok = V3.tok, l = nearestLanding(s)?.l || null;
+  const hour = Math.min(20, Math.max(6, S.site === id && num(S.hour) ? S.hour : W.hour));
+  Object.assign(V3, { mode: 'site', site: s, land: l, hour, t: hour, layer: null });
+  dlg('#v3dDlg', v3dShell(`${s.name} in 3D`, `${s.alt} m · ${dayName(S.day)} ${dayDate(S.day)}`, v3dSiteBar()));
+  try {
+    const g = await thermalGrid();
+    if (tok !== V3.tok) return;
+    const dL = l ? haversineKm(s.lat, s.lon, l.lat, l.lon) * 1000 : 0, R = Math.min(9000, Math.max(4500, dL + 1800));
+    const sc = v3dScene(g, { lat: s.lat, lon: s.lon, radius: R });
+    // Blick von vorne auf den Hang: Kamera steht dort, wohin der Startplatz schaut
+    const face = num(s.aspects?.[0]) ? s.aspects[0] : 180, az = (face + 162) % 360;
+    V3.home = { lat: s.lat, lon: s.lon, alt: sc.ground(s.lat, s.lon) - 250, az, el: 27, dist: R * 1.75 };
+    sc.flyTo({ ...V3.home, az: az - 80, el: 60, dist: R * 2.5 }, 0);
+    v3dCam(V3.home, 2600);
+    sc.onFrame = v3dSiteFrame;
+    v3dSiteMarkers(); v3dApply(); v3dCables();
+  } catch (e) { if (tok === V3.tok) v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + e.message); }
+}
+/** Bewertung der Stunde aus den Details (wenn geladen), sonst der Score aus dem Plan. */
+function v3dHourData() {
+  const s = V3.site, det = S.detailData?.site?.id === s.id ? S.detailData : S.detail.get(`${S.level}:${s.id}`)?.data;
+  const hr = det?.days?.[S.day]?.hours?.find(h => h.h === V3.hour) || null;
+  V3.hr = hr;
+  return { hr, score: hr?.score ?? siteById(s.id)?.days?.[S.day]?.scores?.[V3.hour - S.plan.h0] ?? null };
+}
+function v3dSiteMarkers() {
+  const sc = V3.scene, s = V3.site, l = V3.land;
+  if (!sc) return;
+  const { score } = v3dHourData();
+  const ms = [{ id: 'start', lat: s.lat, lon: s.lon, cls: 'top', html: `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(s.name)}</span>` }];
+  if (l) ms.push({ id: 'land', lat: l.lat, lon: l.lon, cls: 'top', html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(l.name)}</span>` });
+  for (const o of S.plan.sites) {
+    if (o.id === s.id || o.blocked || !num(o.lat) || haversineKm(s.lat, s.lon, o.lat, o.lon) * 1000 > sc.R * 0.88) continue;
+    ms.push({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'other', yield: true, title: o.name + ' in 3D ansehen', html: `<span class="v3d-dot s-${cls(o.days?.[S.day]?.best?.score)}"></span><span class="v3d-name sm">${esc(o.name)}</span>` });
+  }
+  if (V3.volte) { const p = V3.volte.pts[0]; ms.push({ id: 'gl', lat: p[0], lon: p[1], alt: p[2], air: true, center: true, cls: 'glider', html: GLIDER_SVG }); }
+  sc.setMarkers(ms);
+}
+function v3dSiteHud(err = '') {
+  const { hr, score } = v3dHourData(), el = $('#v3dHud');
+  if (!el) return;
+  el.innerHTML = `<div class="v3d-box">${num(score) ? `<span class="mini-pill s-${cls(score)}">${score}</span>` : ''}${hr ? `<span>Wind <b>${hr.speed ?? '–'}</b> km/h ${arrow(hr.dir)} ${dirLabel(hr.dir)}${num(hr.gust) ? ` · Böen <b>${hr.gust}</b>` : ''}</span>` : `<span>${V3.hour} Uhr</span>`}</div>${err ? `<div class="v3d-box warn" role="status">${esc(err)}</div>` : ''}`;
+  const cab = V3.cables && V3.obstN != null ? (V3.obstN ? `${V3.obstN} Kabel und Seilbahnen im Ausschnitt (BAZL, nur meldepflichtige). ` : 'Keine erfassten Kabel im Ausschnitt (BAZL, nur meldepflichtige). ') : '';
+  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? 'Wind am Boden folgt dem Gelände (Schätzung). ' : ''}${cab}Relief aus dem 250-m-Geländemodell: zeigt die Lage, nicht jede Kante.`;
+  const m = V3.scene?.markers.find(x => x.id === 'start');
+  if (m) V3.scene.moveMarker('start', V3.site.lat, V3.site.lon, null, `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(V3.site.name)}</span>`);
+}
+/** Sonne, Ebene und Wind für die gewählte Stunde. */
+async function v3dApply() {
+  const sc = V3.scene, tok = V3.tok, s = V3.site, iso = filmIso(S.plan.dates[S.day], V3.hour);
+  if (!sc || V3.mode !== 'site') return;
+  let d = null, err = '';
+  try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + e.message + ').'; }
+  if (tok !== V3.tok || V3.scene !== sc) return;
+  V3.d = d;
+  if (!V3.playing) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
+  sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
+  v3dWind(d);
+  v3dSiteHud(err);
+}
+/** Windfäden: Stromlinien des Bodenwinds, dem Gelände entlang, als fliessende Linien 45 m über Grund. */
+function windLines3d(sc, d) {
+  const g = T.grid, R = sc.R, n = 12, lines = [];
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    let x = (-1 + (i + 0.15 + 0.7 * rnd()) * 2 / n) * R, z = (-1 + (j + 0.15 + 0.7 * rnd()) * 2 / n) * R;
+    const ph = rnd(), pts = []; let sum = 0;
+    for (let k = 0; k < 15 && Math.hypot(x, z) < R * 0.93; k++) {
+      const [lat, lon] = sc.toGeo(x, z), w = terrainFlow(windLevels(d, lat, lon)[0], g, lat, lon), v = w ? Math.hypot(w[0], w[1]) : 0;
+      if (v < 1.5) break;
+      pts.push([lat, lon, null]); sum += v;
+      x += w[0] / v * 170; z -= w[1] / v * 170;
+    }
+    if (pts.length < 4) continue;
+    const kmh = sum / pts.length;
+    lines.push({ pts, agl: 45, color: windColor(kmh), width: 2.4, speed: 0.1 + kmh * 0.0095, phase: ph * 2400 });
+  }
+  return lines;
+}
+function v3dWind(d) {
+  const sc = V3.scene;
+  if (!sc) return;
+  sc.setLines('wind', V3.wind && d ? windLines3d(sc, d) : null, { flow: 2400, alpha: 0.95, bias: 0.001 });
+}
+/** Kabel, Seilbahnen und hohe Hindernisse des BAZL im Ausschnitt. */
+async function v3dCables() {
+  const sc = V3.scene, tok = V3.tok;
+  if (!sc) return;
+  const clear = () => { for (const k of ['cabH', 'cab', 'rope', 'obpt']) sc.setLines(k, null); };
+  if (!V3.cables) return clear();
+  if (!V3.obst) {
+    const dLa = sc.R / 111320, dLo = sc.R / sc.mLon, c = sc.c;
+    try {
+      const r = await fetch('/api/obstacles?b=' + [c.lat - dLa, c.lon - dLo, c.lat + dLa, c.lon + dLo].map(v => v.toFixed(3)).join(','));
+      const j = await r.json().catch(() => ({}));
+      if (tok !== V3.tok) return;
+      if (r.status === 202) { setTimeout(() => { if (tok === V3.tok) v3dCables(); }, 8000); return; }
+      if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      V3.obst = j.items || [];
+    } catch { V3.obstN = null; return; }
+  }
+  const inside = p => haversineKm(sc.c.lat, sc.c.lon, p[0], p[1]) * 1000 < sc.R * 0.96;
+  const wire = [], rope = [], halo = [], pole = [];
+  let n = 0;
+  for (const it of V3.obst) {
+    if (it.k === 'pt') { const p = it.g?.[0]?.[0]; if (p && inside(p) && num(it.h)) { const h0 = sc.ground(p[0], p[1]); pole.push({ pts: [[p[0], p[1], h0], [p[0], p[1], h0 + Math.max(25, it.h)]], color: '#ff453a', width: 3 }); } continue; }
+    let any = false;
+    for (const ln of it.g || []) {
+      // nur Abschnitte ganz im Ausschnitt, sonst hingen Linien neben der Reliefscheibe in der Luft
+      let run = [];
+      const flush = () => { if (run.length > 1) { any = true; halo.push({ pts: run, agl: 14, color: [1, 1, 1, 0.85], width: it.k === 'rope' ? 5.5 : 4.5 }); (it.k === 'rope' ? rope : wire).push({ pts: run, agl: 14, color: it.k === 'rope' ? '#b36bff' : '#ff453a', width: it.k === 'rope' ? 3 : 2.4 }); } run = []; };
+      for (const p of ln) { if (inside(p)) run.push([p[0], p[1], null]); else flush(); }
+      flush();
+    }
+    if (any) n++;
+  }
+  V3.obstN = n;
+  sc.setLines('cabH', halo, { xray: true, bias: 0.0008 });
+  sc.setLines('cab', wire, { xray: true, dash: 70, bias: 0.001 });
+  sc.setLines('rope', rope, { xray: true, bias: 0.001 });
+  sc.setLines('obpt', pole, { xray: true });
+  if (V3.mode === 'site') v3dSiteHud();
+}
+/** Landevolte am Landeplatz im Gelände: Gegenanflug, Queranflug, Endanflug, mit Wind und einem Schirm, der sie abfliegt. */
+function v3dVolte(on) {
+  const sc = V3.scene, l = V3.land;
+  if (!sc || !l) return;
+  const card = $('#v3dCard');
+  if (!on) {
+    V3.volte = null;
+    for (const k of ['volte', 'volteF', 'volteW']) sc.setLines(k, null);
+    sc.setTris('volteC', null); card.hidden = true;
+    v3dSiteMarkers(); v3dCam(V3.home, 1500);
+    return;
+  }
+  const wind = landWind(l, V3.hr), v = volteFor(l, wind);
+  if (v.h == null) { toast('Für die Volte fehlt eine Windangabe. Du kannst sie beim Landeplatz selbst eintragen.'); return; }
+  const mLo = 111320 * Math.cos(l.lat * D2R), go = (p, deg, m) => [p[0] + Math.cos(deg * D2R) * m / 111320, p[1] + Math.sin(deg * D2R) * m / mLo];
+  const T0 = [l.lat, l.lon], P2 = go(T0, v.h + 180, 200), P1 = go(P2, v.side === 'R' ? v.h + 90 : v.h - 90, 160), P0 = go(P1, v.h, 280);
+  const g0 = sc.ground(l.lat, l.lon), at = (p, agl) => [p[0], p[1], Math.max(sc.ground(p[0], p[1]), g0) + agl];
+  const pts = [at(P0, 170), at(P1, 105), at(P2, 55), at(T0, 3)];
+  sc.setLines('volte', [{ pts: pts.slice(0, 3), color: '#ffffff', width: 5 }], { dash: 34, xray: true });
+  sc.setLines('volteF', [{ pts: pts.slice(2), color: '#35d07f', width: 6 }], { xray: true });
+  sc.setTris('volteC', sc.curtain(pts, '#ffffff', 0.2, 0.02));
+  if (wind) {
+    // drei Windfäden über dem Platz: zeigen, wohin der Wind weht
+    const side = d => go(T0, wind.dir + 90, d);
+    sc.setLines('volteW', [-130, 0, 130].map((d, i) => ({ pts: [go(side(d), wind.dir, 330), side(d), go(side(d), wind.dir + 180, 330)].map(p => at(p, 30)), color: '#4aa8ff', width: 3, speed: 0.55, phase: i * 220 })), { flow: 660, xray: true });
+  } else sc.setLines('volteW', null);
+  const len = [0]; for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + haversineKm(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) * 1000);
+  V3.volte = { pts, len, t0: performance.now() };
+  const off = v.mine && wind ? Math.abs(((wind.dir - v.mine.dir) % 360 + 540) % 360 - 180) : null;
+  card.innerHTML = `<b>Volte ${v.side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(v.h)}</b>
+    <p class="fine">${v.mine ? 'Deine Angabe.' : `Vorschlag gegen den Wind${v.R ? `, Seite nach Platzregel bei ${v.tal ? 'Talwind' : 'Bergwind'}` : ', Seite und Hindernisse vor Ort klären'}.`}${wind ? ` Blau: Wind aus ${dirLabel(wind.dir)} (${esc(wind.src)}).` : ''} Grün ist der Endanflug.</p>
+    ${off != null && off > 100 ? '<p class="volte-warn" role="alert">Rückenwind auf deinem Endanflug. Anders einteilen.</p>' : ''}${(l.notes || []).slice(0, 1).map(n => `<p class="volte-warn">${esc(n)}</p>`).join('')}`;
+  card.hidden = false;
+  v3dSiteMarkers();
+  v3dCam({ lat: (P1[0] + T0[0]) / 2, lon: (P1[1] + T0[1]) / 2, alt: g0 + 60, az: (v.h + (v.side === 'R' ? -38 : 38) + 360) % 360, el: 40, dist: Math.max(1150, sc.R * 0.125) }, 1700);
+}
+function v3dSiteFrame(ts, dt) {
+  const sc = V3.scene;
+  let busy = false;
+  if (V3.playing) {
+    V3.t = Math.min(20, V3.t + dt / 1500);
+    const h = Math.min(19, Math.floor(V3.t)), f = V3.t - h, a = FILM.frames?.[h - FILM.H0], b = FILM.frames?.[h + 1 - FILM.H0];
+    if (a && b && ts - V3.shT > 130) { V3.shT = ts; sc.setSun({ elev: a.sunPos.elev + (b.sunPos.elev - a.sunPos.elev) * f, az: lerpDeg(a.sunPos.az, b.sunPos.az, f) }); }
+    $('#v3dHourT').textContent = filmClock(V3.t) + ' Uhr'; $('#v3dHour').value = V3.t;
+    const hh = Math.round(V3.t);
+    if (hh !== V3.hour) { V3.hour = hh; v3dApply(); }
+    if (V3.t >= 20) v3dPlay(false); else busy = true;
+  }
+  const vo = V3.volte;
+  if (vo && !noMotion()) {
+    // Schirm fliegt die Volte in 9 s ab, hält kurz am Boden und beginnt neu
+    const u = Math.min(1, ((performance.now() - vo.t0) % 10500) / 9000) * vo.len[3];
+    let i = 1; while (i < 3 && vo.len[i] < u) i++;
+    const k = (u - vo.len[i - 1]) / Math.max(1, vo.len[i] - vo.len[i - 1]), a = vo.pts[i - 1], b = vo.pts[i];
+    sc.moveMarker('gl', a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k);
+    busy = true;
+  }
+  return busy;
+}
+async function v3dPlay(on) {
+  const sc = V3.scene, btn = $('#v3dPlay'), sl = $('#v3dHour');
+  if (!sc || V3.mode !== 'site' || !btn) return;
+  if (!on) {
+    V3.playing = false; V3.hour = Math.min(20, Math.max(6, Math.round(V3.t))); V3.t = V3.hour;
+    btn.setAttribute('aria-pressed', 'false'); btn.classList.remove('busy'); sl.step = '1'; sl.value = V3.hour; $('#v3dHourT').textContent = V3.hour + ' Uhr';
+    return v3dApply();
+  }
+  const tok = V3.tok;
+  btn.classList.add('busy');
+  try { await filmLoad(); } catch (e) { if (tok === V3.tok) { btn.classList.remove('busy'); toast('Tag abspielen: ' + e.message); } return; }
+  if (tok !== V3.tok) return;
+  btn.classList.remove('busy'); btn.setAttribute('aria-pressed', 'true'); sl.step = 'any';
+  if (V3.t >= 19.9) V3.t = FILM.H0;
+  V3.playing = true; V3.shT = 0; sc.invalidate();
+}
+
+/* ---- Flug-Replay in 3D: Spur aus dem Flugbuch im Gelände, daneben was AFC vorhergesagt hat */
+const VARIO_RAMP = [[-3, [0.16, 0.5, 0.83]], [-1, [0.47, 0.7, 0.92]], [0, [0.96, 0.96, 0.94]], [1, [0.96, 0.76, 0.29]], [3, [0.91, 0.27, 0.17]]];
+function varioCol(v) {
+  const R = VARIO_RAMP;
+  if (v <= R[0][0]) return [...R[0][1], 1];
+  for (let i = 1; i < R.length; i++) if (v <= R[i][0]) { const f = (v - R[i - 1][0]) / (R[i][0] - R[i - 1][0]); return [...R[i - 1][1].map((c, k) => c + (R[i][1][k] - c) * f), 1]; }
+  return [...R[R.length - 1][1], 1];
+}
+function v3dFlightBar() {
+  const F = V3.fl;
+  return `<div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dfplay" aria-pressed="false" aria-label="Flug abspielen" title="Flug abspielen">${PLAY_SVG}</button><b id="v3dHourT">${esc(F.f.start || '')}</b><input id="v3dScrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Zeitpunkt im Flug"></div>
+    <div class="v3d-chips" role="group" aria-label="Wiedergabe">${[30, 60, 150].map(v => v3dChip('v3dspeed', v, v + '×', F.speed === v)).join('')}${v3dChip('v3dfollow', '', 'Schirm folgen', F.follow)}${v3dChip('v3dcmp', '', 'Prognose', true)}</div>
+    <p class="fine v3d-note">Spur: rot steigt, blau sinkt. Orange Säulen sind deine Thermiken${num(F.f.afcFc?.top) ? ', der blaue Ring zeigt, bis wohin AFC die Thermik vorhergesagt hat' : ''}. Relief aus dem 250-m-Geländemodell.</p>`;
+}
+function v3dCmpHtml(f) {
+  const fc = f.afcFc, L = LG(), sym = { ok: '✓', more: '↑', less: '↓' };
+  if (!fc) return '<b>Prognose gegen Flug</b><p class="fine">Für diesen Flug hat AFC keine Prognose festgehalten. Das geht bei Flügen, die du einträgst, solange der Tag noch in der Prognose steht.</p>';
+  const rv = L.flightReview(f);
+  return `<b>AFC sagte für ${fc.h}–${fc.h + 1} Uhr</b>
+    <p class="fine">Score ${fc.score ?? '–'} · Wind ${fc.speed ?? '–'} km/h${num(fc.dir) ? ' aus ' + dirLabel(fc.dir) : ''} · Böen ${fc.gust ?? '–'}${num(fc.top) ? ' · Thermik bis ' + fc.top + ' m' : ''}</p>
+    ${rv.length ? `<div class="v3d-rv">${rv.map(x => `<div class="rv-${x.lvl}"><i aria-hidden="true">${sym[x.lvl]}</i><span><b>${esc(x.k)}:</b> ${esc(x.note)}<small>Prognose ${esc(x.fc)} · Flug ${esc(x.real)}</small></span></div>`).join('')}</div>` : ''}
+    ${f.afcVerdict ? `<p class="fine">Dein Urteil: ${esc(L.VERDICTS[f.afcVerdict])}.</p>` : ''}`;
+}
+async function open3dFlight(id) {
+  const f = LB.data?.flights.find(x => x.id === id), line = f?.track?.line;
+  if (!f || !Array.isArray(line) || line.length < 3) { toast('Zu diesem Flug gibt es keine Spur. Mit einer IGC-Datei zeigt AFC den Flug in 3D.'); return; }
+  if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann die 3D-Ansicht nicht darstellen.'); return; }
+  v3dEnd();
+  const tok = V3.tok, n = line.length, dur = Math.max(60, (f.durMin || 0) * 60 || n * 10), dtp = dur / (n - 1);
+  const t0 = Date.parse(`${f.date}T${f.start || '12:00'}:00`);
+  const la = line.map(p => p[0]), lo = line.map(p => p[1]), cLat = (Math.min(...la) + Math.max(...la)) / 2, cLon = (Math.min(...lo) + Math.max(...lo)) / 2;
+  const ext = Math.max(...line.map(p => haversineKm(cLat, cLon, p[0], p[1]))) * 1000, R = Math.min(32000, Math.max(3500, ext * 1.35 + 1500));
+  const vario = line.map((p, i) => (line[Math.min(n - 1, i + 1)][2] - line[Math.max(0, i - 1)][2]) / ((Math.min(n - 1, i + 1) - Math.max(0, i - 1)) * dtp));
+  const F = V3.fl = { f, n, dtp, t0, i: 0, speed: 60, playing: false, follow: true, vario, shown: -1, hudT: 0, sunT: 0, drag: false };
+  V3.mode = 'flight';
+  dlg('#v3dDlg', v3dShell(`${f.siteName || 'Flug'} · ${ddmm(f.date)}${f.date.slice(0, 4)}`, [f.start && f.start + ' Uhr', f.durMin && LG().fmtDur(f.durMin) + ' h', num(f.km) && f.km + ' km', num(f.maxAlt) && 'max. ' + Math.round(f.maxAlt) + ' m'].filter(Boolean).join(' · '), v3dFlightBar()));
+  try {
+    const g = await thermalGrid();
+    if (tok !== V3.tok) return;
+    const sc = v3dScene(g, { lat: cLat, lon: cLon, radius: R });
+    // Spur nie unter das (weichgezeichnete) Relief: am Start und bei der Landung liegt sie sonst im Berg
+    const pts = F.pts = line.map(p => [p[0], p[1], Math.max(p[2], sc.ground(p[0], p[1]) + 4)]);
+    sc.setLines('trackH', [{ pts, color: [0, 0, 0, 0.45], width: 6.5 }], { xray: false });
+    sc.setLines('track', [{ pts, colors: vario.map(varioCol), width: 3.6 }], { xray: true });
+    sc.setTris('curt', sc.curtain(pts, '#ffffff', 0.2, 0.02));
+    const th = (f.track.thermals || []).filter(x => num(x.lat) && num(x.alt) && num(x.base));
+    sc.setTris('therm', th.flatMap(x => sc.column(x.lat, x.lon, x.base, x.alt, Math.max(55, R * 0.012), [1, 0.55, 0.12])));
+    const ms = [
+      { id: 'st', lat: pts[0][0], lon: pts[0][1], cls: 'top', html: `<span class="v3d-pin st">S</span><span class="v3d-name">${esc(f.siteName || 'Start')}</span>` },
+      { id: 'ld', lat: pts[n - 1][0], lon: pts[n - 1][1], cls: 'top', html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(f.landingName || 'Landung')}</span>` },
+      ...th.slice().sort((a, b) => b.gain - a.gain).slice(0, 5).map((x, i) => ({ id: 'th' + i, lat: x.lat, lon: x.lon, alt: x.alt, air: true, yield: true, cls: 'tag th', html: `+${x.rate} m/s<small>${esc(x.at || '')} · bis ${x.alt} m</small>` })),
+      { id: 'gl', lat: pts[0][0], lon: pts[0][1], alt: pts[0][2], air: true, center: true, cls: 'glider', html: GLIDER_SVG }
+    ];
+    const fc = f.afcFc, rr = Math.min(R * 0.8, Math.max(700, ext * 0.8));
+    const ring = (alt, key, color, label) => {
+      const c = Array.from({ length: 49 }, (_, i) => { const a = i / 48 * 2 * Math.PI; return [cLat + Math.cos(a) * rr / 111320, cLon + Math.sin(a) * rr / sc.mLon, alt]; });
+      sc.setLines(key, [{ pts: c, color, width: 2.6 }], { dash: Math.max(90, rr / 14), xray: true });
+      ms.push({ id: key, lat: c[0][0], lon: c[0][1], alt, air: true, cls: 'tag fc', html: label });
+    };
+    if (num(fc?.top)) ring(fc.top, 'fcTop', '#6cc3e2', `AFC: Thermik bis ${Math.round(fc.top)} m`);
+    if (num(fc?.base) && (!num(fc?.top) || Math.abs(fc.base - fc.top) > 150)) ring(fc.base, 'fcBase', '#ffffff', `AFC: Wolkenbasis ${Math.round(fc.base)} m`);
+    sc.setMarkers(ms);
+    sc.setSun(AFC3D.sunAt(t0 + dur * 500, cLat, cLon)); F.sunT = t0 + dur * 500;
+    $('#v3dHud').innerHTML = '<div class="v3d-box v3d-stats"><span><b id="fAlt">–</b><small>m ü. M.</small></span><span><b id="fVar">–</b><small>m/s</small></span><span><b id="fAgl">–</b><small>m über Grund</small></span><span><b id="fDist">–</b><small>km vom Start</small></span></div>';
+    const card = $('#v3dCard'); card.innerHTML = v3dCmpHtml(f); card.hidden = false;
+    // erst der Überblick über den ganzen Flug, dann zum Start und los
+    const brg = (Math.atan2((pts[n - 1][1] - pts[0][1]) * sc.mLon, (pts[n - 1][0] - pts[0][0]) * 111320) / D2R + 360) % 360;
+    V3.home = { lat: cLat, lon: cLon, alt: (Math.min(...pts.map(p => p[2])) + Math.max(...pts.map(p => p[2]))) / 2, az: (brg + 300) % 360, el: 38, dist: Math.max(R * 1.25, 3000) };
+    sc.flyTo(V3.home, 0);
+    sc.onFrame = v3dFlightFrame; sc.onUser = () => {};
+    v3dFlightPose();
+    if (!noMotion()) setTimeout(() => { if (tok === V3.tok && V3.fl === F && !F.playing && F.i === 0) v3dFlightPlay(true); }, 1400);
+  } catch (e) { if (tok === V3.tok) v3dFail('Der Flug konnte nicht in 3D gezeigt werden: ' + e.message); }
+}
+function v3dFlightPlay(on) {
+  const F = V3.fl, btn = $('#v3dPlay');
+  if (!F || !btn) return;
+  if (on && F.i >= F.n - 1) F.i = 0;
+  F.playing = on; btn.setAttribute('aria-pressed', String(on));
+  if (on && F.follow) v3dCam({ dist: Math.min(V3.scene.cam.dist, Math.max(2600, V3.scene.R * 0.45)), el: 30 }, 1600);
+  V3.scene?.invalidate();
+}
+function v3dFlightFrame(ts, dt) {
+  const F = V3.fl;
+  if (!F) return false;
+  if (F.playing) { F.i = Math.min(F.n - 1, F.i + dt / 1000 * F.speed / F.dtp); if (F.i >= F.n - 1) v3dFlightPlay(false); }
+  if (F.i !== F.shown || F.follow) v3dFlightPose(ts);
+  return F.playing;
+}
+/** Schirm an die Stelle F.i setzen, Anzeige nachführen, Kamera folgt weich. */
+function v3dFlightPose(ts = performance.now()) {
+  const F = V3.fl, sc = V3.scene;
+  if (!F || !sc || !F.pts) return;
+  const i0 = Math.min(F.n - 2, Math.floor(F.i)), k = F.i - i0, a = F.pts[i0], b = F.pts[i0 + 1];
+  const lat = a[0] + (b[0] - a[0]) * k, lon = a[1] + (b[1] - a[1]) * k, alt = a[2] + (b[2] - a[2]) * k, gr = sc.ground(lat, lon);
+  if (F.i !== F.shown) {
+    sc.moveMarker('gl', lat, lon, alt);
+    sc.setLines('drop', [{ pts: [[lat, lon, alt], [lat, lon, Math.min(alt, gr)]], color: [1, 1, 1, 0.85], width: 1.6 }], { bias: 0.001 });
+  }
+  if (F.follow && !sc.flying) {
+    const p = sc.toLocal(lat, lon, alt), t = sc.cam.t, q = F.playing ? 0.09 : 0.25;
+    if (Math.hypot(p[0] - t[0], p[1] - t[1], p[2] - t[2]) > 2) { for (let j = 0; j < 3; j++) t[j] += (p[j] - t[j]) * q; sc.invalidate(); }
+  }
+  const now = F.t0 + F.i * F.dtp * 1000;
+  if (Math.abs(now - F.sunT) > 15 * 60000) { F.sunT = now; sc.setSun(AFC3D.sunAt(now, lat, lon)); }
+  if (F.i !== F.shown && (ts - F.hudT > 110 || !F.playing)) {
+    F.hudT = ts;
+    const v = F.vario[i0] + (F.vario[i0 + 1] - F.vario[i0]) * k, set = (id, t) => { const el = $('#' + id); if (el) el.textContent = t; };
+    set('fAlt', Math.round(alt)); set('fVar', (v >= 0 ? '+' : '') + v.toFixed(1)); set('fAgl', Math.max(0, Math.round((alt - gr) / 10) * 10)); set('fDist', haversineKm(F.pts[0][0], F.pts[0][1], lat, lon).toFixed(1));
+    set('v3dHourT', new Date(now).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' }));
+    const fv = $('#fVar'); if (fv) fv.className = v > 0.5 ? 'up' : v < -1.5 ? 'down' : '';
+    if (!F.drag && $('#v3dScrub')) $('#v3dScrub').value = Math.round(F.i / (F.n - 1) * 1000);
+  }
+  F.shown = F.i;
+}
+
+/* ------------------------------------------------------------------ Briefing: 15-Sekunden-Film je Startplatz (Zeichenfläche 720 × 1280), als Video speicherbar */
+const BR = { ids: [], k: 0, t: 0, last: 0, raf: 0, scene: null, data: null, playing: false, rec: null, file: null, tok: 0 };
+const BR_LEN = 15, BR_W = 720, BR_H = 1280;
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const WHY_ORDER = { bad: 0, warn: 1, ok: 2 };
+
+function briefShell() {
+  return `<div class="v3d brief">
+    <div class="v3d-top"><div><h2 id="v3dT">Briefing</h2><p class="fine" id="v3dSub"></p></div><button class="x-btn" type="button" data-act="v3dclose" aria-label="Schliessen">×</button></div>
+    <div class="v3d-stage brief-stage"><canvas id="briefC" width="${BR_W}" height="${BR_H}" role="img" aria-label="Briefing als kurzer Film. Der Inhalt steht als Text unter dem Film."></canvas>
+      <div class="v3d-load" id="v3dLoad"><div class="spinner"></div><span>Briefing wird vorbereitet …</span></div></div>
+    <div class="v3d-bar">
+      <div class="brief-prog" id="briefProg" aria-hidden="true"></div>
+      <div class="brief-acts">
+        <button type="button" class="film-btn" id="briefPlay" data-act="briefplay" aria-pressed="false" aria-label="Briefing abspielen oder anhalten" title="Abspielen oder anhalten">${PLAY_SVG}</button>
+        ${BR.ids.length > 1 ? '<button type="button" class="v3d-chip" data-act="briefnav" data-v="-1" aria-label="Vorheriger Startplatz">‹</button><button type="button" class="v3d-chip" data-act="briefnav" data-v="1" aria-label="Nächster Startplatz">›</button>' : ''}
+        <button type="button" class="v3d-chip" id="briefRec" data-act="briefrec" ${typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream ? 'hidden' : ''}>Als Video speichern</button>
+        <button type="button" class="v3d-chip" id="briefShare" data-act="briefshare">In der Gruppe teilen</button>
+      </div>
+      <p class="fine v3d-note" id="briefNote" aria-live="polite"></p>
+    </div>
+  </div>`;
+}
+function briefOpen(ids) {
+  ids = (ids || []).filter(id => siteById(id) && !siteById(id).blocked);
+  if (!ids.length || !S.plan) { toast('Für das Briefing fehlt ein Startplatz. Markiere Startplätze mit dem Stern.'); return; }
+  v3dEnd();
+  V3.mode = 'brief';
+  Object.assign(BR, { ids, k: 0, file: null });
+  dlg('#v3dDlg', briefShell());
+  briefLoad(0);
+}
+/** Aufnahme und Wiedergabe anhalten, 3D-Hintergrund freigeben. */
+function briefStop() {
+  BR.tok++; cancelAnimationFrame(BR.raf); BR.raf = 0; BR.playing = false;
+  if (BR.rec) { try { BR.rec.onstop = null; BR.rec.stop(); } catch { /* lief nicht */ } BR.rec = null; }
+  BR.scene?.destroy(); BR.scene = null; BR.data = null;
+}
+/** Text zum Briefing: steht unter dem Film, im Beitrag für die Gruppe und beim Teilen des Videos. */
+function briefText(D) {
+  const hr = D.hr, c = cls(D.score);
+  return `${D.s.name}, ${dayName(D.day)} ${dayDate(D.day)}: Score ${num(D.score) ? D.score : '–'} (${DECISION[c]}), ${D.best ? 'bestes Fenster ' + winText(D.best) : 'kein Fenster'}${hr ? `. Um ${hr.h} Uhr Wind ${hr.speed ?? '–'} km/h aus ${dirLabel(hr.dir)}, Böen ${hr.gust ?? '–'}${num(hr.cloudBase) ? ', Basis ' + hr.cloudBase + ' m' : ''}` : ''}.`;
+}
+async function briefLoad(k) {
+  briefStop();
+  const tok = BR.tok, s = siteById(BR.ids[k]), day = S.day;
+  Object.assign(BR, { k, t: 0, last: 0, file: null });
+  $('#v3dSub').textContent = `${s.name} · ${dayName(day)} ${dayDate(day)}${BR.ids.length > 1 ? ` · ${k + 1} von ${BR.ids.length}` : ''}`;
+  $('#briefProg').innerHTML = BR.ids.map((_, i) => `<i class="${i < k ? 'done' : ''}"><b></b></i>`).join('');
+  $('#briefRec').textContent = 'Als Video speichern'; $('#briefRec').disabled = false;
+  $('#v3dLoad').hidden = false;
+  try {
+    const [det, g] = await Promise.all([loadDetail(s.id), thermalGrid().catch(() => null), document.fonts?.load?.('700 60px "Barlow Condensed"').catch(() => {})]);
+    if (tok !== BR.tok || V3.mode !== 'brief') return;
+    const dd = det.days[day], best = dd?.best || null, hours = dd?.hours || [];
+    const hr = hours.find(h => h.h === best?.peak) || hours.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0] || null;
+    const scores = Array(16).fill(null);
+    for (const h of hours) scores[h.h - S.plan.h0] = h.score;
+    const face = num(s.aspects?.[0]) ? s.aspects[0] : 180;
+    const D = BR.data = { s, day, date: S.plan.dates[day], best, hr, scores, score: best?.score ?? hr?.score ?? null, az0: face + 135, why: (hr?.why || []).slice().sort((a, b) => (WHY_ORDER[a.lvl] ?? 3) - (WHY_ORDER[b.lvl] ?? 3)).slice(0, 3), saved: det._savedAt || null };
+    $('#briefNote').textContent = briefText(D) + (D.saved ? ' Gespeicherter Stand ohne Empfang, nicht für den Startentscheid verwenden.' : '') + ' Der Entscheid fällt vor Ort.';
+    // 3D-Hintergrund: der Startplatz dreht sich langsam, Sonne und Wind zur besten Stunde
+    let sc = null;
+    if (g && window.AFC3D?.supported()) {
+      try {
+        sc = new AFC3D.Scene(null, g, { size: [BR_W, BR_H], interactive: false, manual: true, fov: 42 });
+        sc.setArea({ lat: s.lat, lon: s.lon, radius: 5200, n: 121 });
+        sc.flyTo({ lat: s.lat, lon: s.lon, alt: sc.ground(s.lat, s.lon) - 200, az: D.az0, el: 23, dist: 8200 }, 0);
+        const iso = filmIso(D.date, hr?.h ?? 12);
+        // Licht der besten Stunde, aber nie tiefer als 20°: der Hintergrund soll auch früh und spät erkennbar sein
+        const light = p => ({ az: p.az, elev: Math.max(20, p.elev) });
+        sc.setSun(light(AFC3D.sunAt(Date.parse(iso), s.lat, s.lon)));
+        thermalData(iso).then(d => { if (d && BR.scene === sc) { sc.setSun(light(d.sunPos)); sc.setLines('wind', windLines3d(sc, d), { flow: 2400, alpha: 0.9, bias: 0.001 }); } }).catch(() => {});
+        sc.setDrape(BASES.photo.url);
+      } catch { sc?.destroy(); sc = null; }
+    }
+    BR.scene = sc;
+    $('#v3dLoad').hidden = true;
+    if (noMotion()) { BR.t = 13; briefDraw(0); briefSync(); } else briefPlay(true);
+  } catch (e) { if (tok === BR.tok) v3dFail('Das Briefing konnte nicht geladen werden: ' + e.message); }
+}
+function briefSync() {
+  const b = $('#briefPlay'); if (b) b.setAttribute('aria-pressed', String(BR.playing));
+  const p = $('#briefProg')?.children[BR.k]?.firstElementChild; if (p) p.style.width = Math.min(100, BR.t / BR_LEN * 100).toFixed(1) + '%';
+}
+function briefPlay(on) {
+  if (!BR.data) return;
+  if (on && BR.t >= BR_LEN) BR.t = 0;
+  BR.playing = on; BR.last = 0; briefSync();
+  if (on && !BR.raf) BR.raf = requestAnimationFrame(briefTick);
+}
+function briefTick(ts) {
+  BR.raf = 0;
+  if (V3.mode !== 'brief' || !BR.data || !BR.playing) return;
+  const dt = Math.min(0.1, (ts - (BR.last || ts)) / 1000); BR.last = ts;
+  BR.t += dt;
+  briefDraw(dt); briefSync();
+  if (BR.t >= BR_LEN + (BR.rec ? 0.15 : 1.3)) {
+    if (BR.rec) return briefRecEnd();
+    if (BR.k < BR.ids.length - 1) return briefLoad(BR.k + 1);     // nächster Favorit
+    BR.playing = false; BR.t = BR_LEN; return briefSync();
+  }
+  BR.raf = requestAnimationFrame(briefTick);
+}
+/** Ein Bild des Briefings zum Zeitpunkt BR.t zeichnen. */
+function briefDraw(dt) {
+  const cv = $('#briefC'), D = BR.data;
+  if (!cv || !D) return;
+  const x = cv.getContext('2d'), t = BR.t, W = BR_W, H = BR_H, sc = BR.scene;
+  const ph = (a, b) => Math.min(1, Math.max(0, (t - a) / (b - a))), eo = v => 1 - Math.pow(1 - v, 3);
+  const NUM = '"Barlow Condensed", "Barlow", system-ui, sans-serif', TXT = '"Barlow", system-ui, -apple-system, sans-serif';
+  const col = { go: cssVar('--go'), ready: cssVar('--ready'), check: cssVar('--check'), wait: cssVar('--wait'), no: cssVar('--no'), none: '#6b7a70' };
+  const text = (s, px, py, font, fill, align = 'left', a = 1) => { x.globalAlpha = a; x.font = font; x.fillStyle = fill; x.textAlign = align; x.fillText(s, px, py); x.globalAlpha = 1; };
+  const fit = (s, max) => { if (x.measureText(s).width <= max) return s; let n = s.length; while (n > 3 && x.measureText(s.slice(0, n) + '…').width > max) n--; return s.slice(0, n).trimEnd() + '…'; };
+  const box = (px, py, w, h, r, fill) => { x.beginPath(); if (x.roundRect) x.roundRect(px, py, w, h, r); else x.rect(px, py, w, h); x.fillStyle = fill; x.fill(); };
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.textBaseline = 'alphabetic';
+  // Hintergrund: 3D-Gelände, sonst ein ruhiger Verlauf
+  let pin = null;
+  if (sc) {
+    sc.cam.az = D.az0 + t * 5.2; sc.renderNow(dt); x.drawImage(sc.canvas, 0, 0, W, H);
+    pin = sc.project(sc.toLocal(D.s.lat, D.s.lon, null));
+  } else { const g = x.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#34526f'); g.addColorStop(1, '#16241c'); x.fillStyle = g; x.fillRect(0, 0, W, H); }
+  let g = x.createLinearGradient(0, 0, 0, 470); g.addColorStop(0, 'rgba(6,14,10,.9)'); g.addColorStop(0.55, 'rgba(6,14,10,.55)'); g.addColorStop(1, 'rgba(6,14,10,0)'); x.fillStyle = g; x.fillRect(0, 0, W, 470);
+  g = x.createLinearGradient(0, 640, 0, H); g.addColorStop(0, 'rgba(6,14,10,0)'); g.addColorStop(0.36, 'rgba(6,14,10,.9)'); g.addColorStop(1, 'rgba(6,14,10,.97)'); x.fillStyle = g; x.fillRect(0, 640, W, H - 640);
+  // Startplatz im Gelände
+  if (pin && pin.y > 430 && pin.y < 800) {
+    const pu = (t % 1.7) / 1.7;
+    x.beginPath(); x.arc(pin.x, pin.y, 10 + pu * 30, 0, 7); x.strokeStyle = `rgba(255,255,255,${(0.75 * (1 - pu)).toFixed(3)})`; x.lineWidth = 3; x.stroke();
+    x.beginPath(); x.arc(pin.x, pin.y, 9, 0, 7); x.fillStyle = col[cls(D.score)]; x.fill(); x.lineWidth = 3; x.strokeStyle = '#fff'; x.stroke();
+  }
+  // Kopf
+  let a = eo(ph(0.15, 0.9)), dy = (1 - a) * -18;
+  x.save(); if ('letterSpacing' in x) x.letterSpacing = '5px';
+  text('AFC BRIEFING', 40, 92 + dy, `600 26px ${TXT}`, '#6cc3e2', 'left', a); x.restore();
+  let px = 78; x.font = `700 ${px}px ${NUM}`;
+  while (px > 50 && x.measureText(D.s.name).width > 640) { px -= 4; x.font = `700 ${px}px ${NUM}`; }
+  text(fit(D.s.name, 640), 40, 176 + dy, `700 ${px}px ${NUM}`, '#fff', 'left', a);
+  a = eo(ph(0.45, 1.2));
+  text(`${dayName(D.day)} · ${new Date(D.date + 'T12:00').toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' })}`, 40, 226, `500 30px ${TXT}`, '#d5e2d8', 'left', a);
+  // Score-Ring füllt sich, Zahl zählt hoch
+  const c = cls(D.score), sv = num(D.score) ? D.score : 0, k = eo(ph(1.1, 2.9)), cx = 150, cy = 880, R = 92;
+  a = eo(ph(0.8, 1.4));
+  x.globalAlpha = a; x.lineWidth = 20; x.lineCap = 'round';
+  x.beginPath(); x.arc(cx, cy, R, 0, 7); x.strokeStyle = 'rgba(255,255,255,.14)'; x.stroke();
+  if (sv * k > 0.5) { x.beginPath(); x.arc(cx, cy, R, -Math.PI / 2, -Math.PI / 2 + sv / 100 * k * 2 * Math.PI); x.strokeStyle = col[c]; x.stroke(); }
+  x.globalAlpha = 1;
+  text(num(D.score) ? String(Math.round(sv * k)) : '–', cx, cy + 30, `700 88px ${NUM}`, '#fff', 'center', a);
+  a = eo(ph(2.8, 3.4));
+  text(DECISION[c] === '–' ? 'Keine Bewertung' : DECISION[c], 285 + (1 - a) * 24, 858, `700 58px ${NUM}`, c === 'none' ? '#d5e2d8' : col[c], 'left', a);
+  a = eo(ph(3.2, 3.8));
+  text('Bestes Fenster', 285, 906, `500 26px ${TXT}`, '#a9b9ad', 'left', a);
+  text(D.best ? winText(D.best) : 'kein Fenster', 285 + (1 - a) * 24, 966, `700 60px ${NUM}`, '#fff', 'left', a);
+  // Stundenband 6 bis 21 Uhr
+  for (let i = 0; i < 16; i++) {
+    const s = D.scores[i], u = eo(ph(4.3 + i * 0.06, 4.8 + i * 0.06)), h = (num(s) ? 16 + 54 * s / 100 : 8) * u, bx = 40 + i * 40;
+    if (u <= 0) continue;
+    box(bx, 1100 - h, 37, h, 5, num(s) ? col[cls(s)] : 'rgba(255,255,255,.18)');
+    if (i % 3 === 0) text(String(S.plan.h0 + i), bx + 18, 1130, `500 21px ${TXT}`, '#a9b9ad', 'center', u);
+  }
+  if (D.best) {
+    const u = eo(ph(5.3, 5.9)), x0 = 40 + (D.best.from - S.plan.h0) * 40, x1 = 40 + (D.best.to - S.plan.h0) * 40 - 3;
+    if (u > 0 && x1 > x0) { x.globalAlpha = u; x.fillStyle = '#fff'; x.fillRect(x0, 1016, (x1 - x0) * u, 4); x.globalAlpha = 1; }
+  }
+  // Kennzahlen zur besten Stunde
+  const hr = D.hr;
+  if (hr) {
+    const facts = [[`${hr.speed ?? '–'} km/h`, `Wind ${dirLabel(hr.dir)}`], [`${hr.gust ?? '–'} km/h`, 'Böen'], [num(hr.cloudBase) ? `${hr.cloudBase} m` : '–', 'Wolkenbasis'], [num(hr.thermalTop) ? `${hr.thermalTop} m` : '–', 'Thermik bis']];
+    facts.forEach(([v, l], i) => {
+      const u = eo(ph(6.4 + i * 0.22, 7 + i * 0.22)), fx = 40 + i * 163;
+      text(v, fx, 1190 + (1 - u) * 14, `700 38px ${NUM}`, '#fff', 'left', u); text(l, fx, 1218, `500 20px ${TXT}`, '#a9b9ad', 'left', u);
+    });
+    if (num(hr.dir)) {
+      const u = eo(ph(6.4, 7.2));
+      x.save(); x.globalAlpha = u; x.font = `700 38px ${NUM}`; x.translate(40 + x.measureText(facts[0][0]).width + 24, 1177); x.rotate((hr.dir + 180 + (1 - u) * 160) * Math.PI / 180);
+      x.strokeStyle = '#6cc3e2'; x.lineWidth = 4; x.lineCap = 'round'; x.lineJoin = 'round'; x.beginPath(); x.moveTo(0, 12); x.lineTo(0, -12); x.moveTo(-7, -4); x.lineTo(0, -12); x.lineTo(7, -4); x.stroke(); x.restore();
+    }
+  }
+  // Kurz erklärt: die drei wichtigsten Gründe
+  const out = 1 - ph(13.2, 13.6);
+  D.why.forEach((w, i) => {
+    const u = eo(ph(9 + i * 0.75, 9.6 + i * 0.75)) * out, y = 462 + i * 96, bx = 40 - (1 - u) * 46;
+    if (u <= 0) return;
+    x.globalAlpha = u; box(bx, y, 640, 82, 16, 'rgba(8,16,12,.8)');
+    x.beginPath(); x.arc(bx + 42, y + 41, 22, 0, 7); x.fillStyle = w.lvl === 'ok' ? col.go : w.lvl === 'warn' ? col.check : col.no; x.fill();
+    x.globalAlpha = 1;
+    text(w.lvl === 'ok' ? '✓' : w.lvl === 'warn' ? '!' : '✕', bx + 42, y + 51, `700 28px ${TXT}`, '#0a140e', 'center', u);
+    x.font = `700 26px ${TXT}`; text(fit(String(w.k || ''), 540), bx + 80, y + 35, `700 26px ${TXT}`, '#fff', 'left', u);
+    x.font = `400 22px ${TXT}`; text(fit(String(w.t || ''), 540), bx + 80, y + 65, `400 22px ${TXT}`, '#c9d6cc', 'left', u);
+  });
+  // Schluss
+  a = eo(ph(13.6, 14.2));
+  if (a > 0) {
+    x.globalAlpha = a * 0.82; box(40, 520, 640, 150, 20, 'rgba(8,16,12,.86)'); x.globalAlpha = 1;
+    text('Der Entscheid fällt vor Ort', W / 2, 588 + (1 - a) * 12, `700 50px ${NUM}`, '#fff', 'center', a);
+    text('Wind, Wolken und Schirme am Start anschauen', W / 2, 636, `500 25px ${TXT}`, '#c9d6cc', 'center', a);
+  }
+  text(`AFC · Prognose von ${whenTxt(D.saved || S.plan.fetchedAt)}${sc?.draped ? ' · Luftbild © swisstopo' : ''}`, W / 2, 1262, `500 18px ${TXT}`, '#8fa095', 'center', 1);
+}
+/* ---- Video aufnehmen (so lange wie der Film) und danach teilen oder sichern */
+function briefRecord() {
+  const cv = $('#briefC'), btn = $('#briefRec');
+  if (!BR.data || !cv || BR.rec) return;
+  if (BR.file) return briefSend();
+  const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } });
+  if (!mime) { toast('Dieses Gerät kann hier kein Video aufnehmen.'); return; }
+  let rec;
+  try { rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime, videoBitsPerSecond: 5000000 }); } catch (e) { toast('Die Aufnahme liess sich nicht starten: ' + e.message); return; }
+  const parts = [], D = BR.data, tok = BR.tok;
+  rec.ondataavailable = e => { if (e.data?.size) parts.push(e.data); };
+  rec.onstop = () => {
+    if (tok !== BR.tok) return;
+    BR.rec = null;
+    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+    BR.file = new File(parts, `AFC-Briefing-${D.s.id}-${D.date}.${ext}`, { type: mime.split(';')[0] });
+    btn.disabled = false; btn.textContent = navigator.canShare?.({ files: [BR.file] }) ? 'Video teilen' : 'Video sichern';
+    toast('Das Video ist bereit.');
+  };
+  BR.rec = rec; BR.t = 0; btn.disabled = true; btn.textContent = 'Aufnahme läuft …';
+  rec.start(); briefPlay(true);
+}
+function briefRecEnd() { BR.playing = false; BR.t = BR_LEN; briefSync(); try { BR.rec?.stop(); } catch { BR.rec = null; } }
+async function briefSend() {
+  const f = BR.file, D = BR.data;
+  if (!f || !D) return;
+  if (navigator.canShare?.({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: 'AFC Briefing ' + D.s.name, text: briefText(D) }); } catch (e) { if (e.name !== 'AbortError') toast('Teilen nicht möglich: ' + e.message); }
+    return;
+  }
+  const u = URL.createObjectURL(f), a = document.createElement('a');
+  a.href = u; a.download = f.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000);
+}
+/** Briefing als Beitrag in die Gruppe: die anderen sehen den Film mit ihrem aktuellen Stand der Prognose. */
+async function briefShare() {
+  const D = BR.data;
+  if (!D) return;
+  if (!ME.user) { toast('Zum Teilen in der Gruppe brauchst du ein Konto.'); return; }
+  const btn = $('#briefShare'); btn.disabled = true;
+  try {
+    groupSet(await jsonPost('/api/community', { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
+    toast('In der Gruppe geteilt'); btn.textContent = 'Geteilt ✓';
+  } catch (e) { btn.disabled = false; toast('Nicht geteilt: ' + e.message); }
+}
+
 /* ------------------------------------------------------------------ Austausch unter den Piloten */
 const G = { data: null, date: null, req: null, form: store.get('grpForm', null) };
 async function groupLoad(date = G.date) {
@@ -3563,7 +4271,7 @@ function groupDot() {
   const fresh = (G.data?.posts || []).some(p => !p.mine && (p.at > seen || p.replies.some(r => !r.mine && r.at > seen)));
   b.classList.toggle('has-new', fresh && S.tab !== 'group');
 }
-const GRP_ICON = { report: '🪂', plan: '📅', ask: '💬', warn: '⚠️' };
+const GRP_ICON = { report: '🪂', plan: '📅', ask: '💬', warn: '⚠️', brief: '🎬' };
 /** Bester AFC-Score des Tages für einen Startplatz (aus dem geladenen Plan). */
 function afcBestOn(siteId, date) {
   const s = siteById(siteId), i = S.plan?.dates.indexOf(date);
@@ -3580,10 +4288,11 @@ function groupSiteHtml(x, reasons) {
     ${num(afc) ? `<span class="grp-afc"><small>AFC</small>${pill(afc)}</span>` : ''}</button>`;
 }
 function groupPostHtml(p) {
-  const head = `${avatarHtml(p.who, 'grp-av')}<div class="grp-meta"><b>${esc(p.who.name)}</b> <span class="fine">${whenTxt(p.at)}</span>${p.kind ? `<div class="grp-kind">${GRP_ICON[p.kind] || ''} ${esc(G.data.kinds[p.kind] || '')}${p.kind === 'plan' ? ` · <b>${esc(dayWord(p.date))}</b>` : p.date && p.date !== p.at.slice(0, 10) ? ` · ${esc(dayWord(p.date))}` : ''}${p.siteId ? ` · <button type="button" class="linkbtn" data-act="site" data-id="${esc(p.siteId)}">${esc(p.siteName || siteById(p.siteId)?.name || p.siteId)}</button>` : p.siteName ? ` · ${esc(p.siteName)}` : ''}</div>` : ''}</div>`;
+  const head = `${avatarHtml(p.who, 'grp-av')}<div class="grp-meta"><b>${esc(p.who.name)}</b> <span class="fine">${whenTxt(p.at)}</span>${p.kind ? `<div class="grp-kind">${GRP_ICON[p.kind] || ''} ${esc(G.data.kinds[p.kind] || '')}${p.kind === 'plan' || p.kind === 'brief' ? ` · <b>${esc(dayWord(p.date))}</b>` : p.date && p.date !== p.at.slice(0, 10) ? ` · ${esc(dayWord(p.date))}` : ''}${p.siteId ? ` · <button type="button" class="linkbtn" data-act="site" data-id="${esc(p.siteId)}">${esc(p.siteName || siteById(p.siteId)?.name || p.siteId)}</button>` : p.siteName ? ` · ${esc(p.siteName)}` : ''}</div>` : ''}</div>`;
   const like = p.kind === 'plan' ? (p.liked ? 'Bin dabei ✓' : 'Bin dabei') : (p.liked ? '👍 Gefällt mir' : '👍');
   const reps = p.replies.map(r => `<div class="grp-rep">${avatarHtml(r.who, 'grp-av sm')}<div><b>${esc(r.who.name)}</b> <span class="fine">${whenTxt(r.at)}</span><p>${esc(r.text)}</p>${r.canDel ? `<button type="button" class="linkbtn fine" data-act="grpdel" data-id="${r.id}">löschen</button>` : ''}</div></div>`).join('');
   return `<article class="grp-post grp-${esc(p.kind || 'report')}" id="post-${p.id}"><div class="grp-head">${head}</div><p class="grp-text">${esc(p.text)}</p>
+    ${p.kind === 'brief' && p.siteId && siteById(p.siteId) && S.plan?.dates.includes(p.date) ? `<button type="button" class="btn sec brief-btn" data-act="briefpost" data-id="${esc(p.siteId)}" data-d="${esc(p.date)}">${PLAY_SVG} Briefing ansehen</button>` : ''}
     <div class="grp-acts"><button type="button" class="btn sec sm${p.liked ? ' on' : ''}" data-act="grplike" data-id="${p.id}" aria-pressed="${p.liked}">${like}${p.likes ? ` <b>${p.likes}</b>` : ''}</button>${p.canDel ? `<button type="button" class="linkbtn fine" data-act="grpdel" data-id="${p.id}">löschen</button>` : ''}</div>
     ${reps ? `<div class="grp-reps">${reps}</div>` : ''}
     <form class="grp-reply" data-parent="${p.id}"><input type="text" name="text" maxlength="600" placeholder="Antworten …" aria-label="Antwort an ${esc(p.who.name)}"><button class="btn sec sm" type="submit">Senden</button></form></article>`;
@@ -3595,7 +4304,7 @@ function groupFormHtml() {
   const opts = [...favs, ...all.filter(x => !S.fav.has(x.id)).sort((a, b) => a.name.localeCompare(b.name))];
   const t = todayKey(), dates = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(t) + i * 86400000).toISOString().slice(0, 10));
   return `<form id="grpForm" class="prof-form grp-form">
-    <div class="chips" role="radiogroup" aria-label="Art">${Object.entries(G.data.kinds).map(([k, v]) => `<label class="chip"><input type="radio" name="kind" value="${k}" ${k === kind ? 'checked' : ''}><span>${GRP_ICON[k]} ${esc(v)}</span></label>`).join('')}</div>
+    <div class="chips" role="radiogroup" aria-label="Art">${Object.entries(G.data.kinds).filter(([k]) => k !== 'brief').map(([k, v]) => `<label class="chip"><input type="radio" name="kind" value="${k}" ${k === kind ? 'checked' : ''}><span>${GRP_ICON[k]} ${esc(v)}</span></label>`).join('')}</div>
     <div class="fld-pair"><label class="fld"><span>Startplatz (freiwillig)</span><select name="siteId"><option value="">–</option>${opts.map(x => `<option value="${esc(x.id)}" ${x.id === f.siteId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
     <label class="fld grp-date" ${kind === 'plan' ? '' : 'hidden'}><span>Wann?</span><select name="date">${dates.map(d => `<option value="${d}" ${d === f.date ? 'selected' : ''}>${esc(dayWord(d))}</option>`).join('')}</select></label></div>
     <label class="fld"><span>Text</span><textarea name="text" rows="3" maxlength="600" placeholder="${kind === 'plan' ? 'z.B. Ich gehe morgen um 11 Uhr an den Niesen, wer kommt mit?' : kind === 'warn' ? 'z.B. Am Start Bise mit 35 km/h Böen, wir sind wieder runtergelaufen' : kind === 'ask' ? 'z.B. Wo ging heute Nachmittag die Thermik?' : 'z.B. Super Thermik am Grat bis 2600 m, Landung ruhig'}">${esc(f.text || '')}</textarea></label>
