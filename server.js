@@ -31,6 +31,8 @@ import { cleanPost, siteDay, POST_KINDS } from './lib/community.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { zipHas, parseObstacleKmz, indexObstacles, obstaclesInBox, obstaclesNear } from './lib/obstacles.js';
 import { httpGet } from './lib/http.js';
+import { fetchEnsemble, ensembleCheck, pairDiff, ENS_MIN } from './lib/ensemble.js';
+import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -117,7 +119,8 @@ const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
 // eine Anmeldung; neue Piloten kommen nur über einen Einladungslink dazu.
 db.exec(`CREATE TABLE IF NOT EXISTS reg_fc (target TEXT PRIMARY KEY, lead REAL, fdp REAL, bdp REAL);
 CREATE TABLE IF NOT EXISTS reg_obs (time TEXT PRIMARY KEY, odp REAL, obdp REAL, foehn REAL, bise REAL);
-CREATE TABLE IF NOT EXISTS model_fc (area TEXT NOT NULL, target TEXT NOT NULL, lead REAL, ig REAL, eg REAL, iw REAL, ew REAL, PRIMARY KEY(area,target));`);
+CREATE TABLE IF NOT EXISTS model_fc (area TEXT NOT NULL, target TEXT NOT NULL, lead REAL, ig REAL, eg REAL, iw REAL, ew REAL, PRIMARY KEY(area,target));
+CREATE TABLE IF NOT EXISTS ens_fc (time TEXT PRIMARY KEY, made TEXT, n INTEGER, pbise REAL, pfoehn REAL);`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
@@ -191,6 +194,7 @@ const ingest = {
   forecast: { ok: false, at: null, error: null, model: null, points: 0 },
   pressure: { ok: false, at: null, error: null },
   ecmwf: { ok: false, at: null, error: null },
+  ensemble: { ok: false, at: null, error: null, model: null, members: 0 },
   foehn: { ok: false, at: null, error: null },
   stations: { ok: false, at: null, error: null, note: null },
   windgrid: { ok: false, at: null, error: null },
@@ -248,6 +252,7 @@ async function collectObservations() {
   } catch (e) { ingest.foehn = { ok: false, at: nowIso(), error: errMsg(e) }; }
   state.obs = latestObs();
   state.regional = Object.keys(state.obs).length ? regionalFromObs(state.obs, state.foehnIndex, state.qff) : null;
+  try { state.fogObs = fogFromObs(state.obs, state.stationList); } catch (e) { state.fogObs = null; console.warn('Nebel', errMsg(e)); }
   state.trend = foehnTrend();
   if (state.regional) {
     // Stündlich das Stärkste festhalten: gemessener Druckunterschied und Föhn-/Bise-Signal (für das Nachschärfen)
@@ -286,6 +291,46 @@ async function collectForecast() {
   storePredictions(raw);
   invalidate();
   fs.writeFile(path.join(dataDir, 'raw.json.tmp'), JSON.stringify(raw)).then(() => fs.rename(path.join(dataDir, 'raw.json.tmp'), path.join(dataDir, 'raw.json'))).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ Wettervarianten (Ensemble) */
+// Alle 6 Stunden (so oft rechnet MeteoSwiss neue Varianten), nur Gebietspunkte und die drei Druckorte, 3 Tage.
+const ENS_ON = process.env.AFC_ENSEMBLE ? process.env.AFC_ENSEMBLE === '1' : !process.env.AFC_OPENMETEO_URL;
+const ENS_EVERY_MS = Number(process.env.AFC_ENSEMBLE_MIN || 360) * 60000;
+const ENS_FILE = () => path.join(dataDir, 'ensemble.json');
+async function collectEnsemble() {
+  const pts = [...AREAS.map(a => ({ id: a.id, lat: a.lat, lon: a.lon })), ...FOEHN_POINTS];
+  const r = await fetchEnsemble(pts, { days: 3, model: state.ens?.model || null });
+  const at = nowIso();
+  if (!r.members) { ingest.ensemble = { ...ingest.ensemble, ok: !!state.ens, at, error: r.errors.slice(-2).join(' | ') || 'keine Varianten' }; return; }
+  state.ens = { byId: r.byId, model: r.model, members: r.members, at: Date.now() };
+  ingest.ensemble = { ok: true, at, error: null, model: r.model, members: r.members, points: Object.keys(r.byId).length };
+  storeEnsemble(state.ens);
+  invalidate();
+  fs.writeFile(ENS_FILE() + '.tmp', JSON.stringify(state.ens)).then(() => fs.rename(ENS_FILE() + '.tmp', ENS_FILE())).catch(() => {});
+}
+/** Für die Selbstprüfung: Anteil der Varianten mit Bise/Föhn je Stunde, die letzte Prognose mindestens 2 h vorher. */
+function storeEnsemble(E) {
+  const PL = learnGuard().mode === 'off' || learnGuard().off ? null : pressureLearned();
+  const t = E.byId.KLO?.t || [], made = nowIso(), min = Date.now() + 2 * 3600000;
+  for (const ms of t) {
+    if (ms < min) continue;
+    const b = pairDiff(E.byId.KLO, E.byId.GVE, ms, PL?.bise?.bias || 0), f = pairDiff(E.byId.LUG, E.byId.KLO, ms, PL?.foehn?.bias || 0);
+    if (b.length < ENS_MIN) continue;
+    const p = (a, thr) => (a.length >= ENS_MIN ? Math.round(a.filter(x => x >= thr).length / a.length * 100) / 100 : null);
+    dbRun('INSERT INTO ens_fc(time,made,n,pbise,pfoehn) VALUES(?,?,?,?,?) ON CONFLICT(time) DO UPDATE SET made=excluded.made, n=excluded.n, pbise=excluded.pbise, pfoehn=excluded.pfoehn',
+      [new Date(ms).toISOString(), made, b.length, p(b, PL?.bise?.warn ?? 2), p(f, PL?.foehn?.warn ?? 4)]);
+  }
+}
+/** Selbstprüfung der Varianten (60 Tage, 6 bis 20 Uhr): kam die Bise, obwohl höchstens 1 von 10 Varianten sie hatte? */
+function ensCheck() {
+  if (state.ensCheck && Date.now() - state.ensCheckAt < 3600000) return state.ensCheck;
+  const since = new Date(Date.now() - 60 * 86400000).toISOString();
+  const rows = dbAll('SELECT e.time, e.pbise p, o.bise b FROM ens_fc e JOIN reg_obs o ON o.time=e.time WHERE e.time>=? AND e.pbise IS NOT NULL', [since])
+    .filter(r => { const h = zurichParts(Date.parse(r.time)).hour; return h >= 6 && h <= 20; })
+    .map(r => ({ p: r.p, hit: (r.b || 0) >= 40 }));
+  state.ensCheck = ensembleCheck(rows); state.ensCheckAt = Date.now();
+  return state.ensCheck;
 }
 
 /* ------------------------------------------------------------------ Windkarte */
@@ -375,9 +420,30 @@ function windResponse(ms, level) {
   state.payloads.set(key, p);
   return p;
 }
-/** Wolkenbasis und Nebelmeer einer Stunde für die 3D-Ansicht (lib/clouds.js); null, wenn die Prognose fehlt. */
+/** Wolkenbasis und Nebelmeer einer Stunde für die 3D-Ansicht (lib/clouds.js); null, wenn die Prognose fehlt.
+ *  Heute gilt, solange er hält, der gemessene Nebel (lib/fog.js) statt des geschätzten. */
 function cloudAt(grid, ms) {
-  try { return state.raw ? cloudField(cloudPoints(state.raw, ms, SITES, AREAS, REF_POINT), grid) : null; } catch { return null; }
+  let c = null;
+  try { c = state.raw ? cloudField(cloudPoints(state.raw, ms, SITES, AREAS, REF_POINT), grid) : null; } catch { c = null; }
+  const F = fogNow();
+  if (F?.obs?.top && fogStateAt(F.tl, ms) === 'measured') c = { ...(c || { base: null, up: null }), fog: { top: F.obs.top, measured: true } };
+  return c;
+}
+/** Gemessener Nebel und wie lange er laut Prognose hält (heute, 10 Minuten zwischengespeichert). */
+function fogNow() {
+  const o = state.fogObs;
+  if (!o) return null;
+  if (state.fogTl?.key === o.at + (state.raw?.fetchedAt || 0)) return state.fogTl.v;
+  const fc = {};
+  if (o.top && state.raw) {
+    const t0 = Math.floor(Date.parse(o.at) / 3600000) * 3600000, today = zurichParts(Date.now()).date;
+    for (let ms = t0 - 3600000; zurichParts(ms).date === today && zurichParts(ms).hour <= 21; ms += 3600000) {
+      try { fc[ms] = cloudField(cloudPoints(state.raw, ms, SITES, AREAS, REF_POINT), null)?.fog?.top ?? null; } catch { fc[ms] = null; }
+    }
+  }
+  const v = { obs: o, tl: o.top ? fogTimeline(o, fc) : null };
+  state.fogTl = { key: o.at + (state.raw?.fetchedAt || 0), v };
+  return v;
 }
 function thermalResponse(ms) {
   const hourMs = Math.round(ms / 3600000) * 3600000;
@@ -546,6 +612,8 @@ function currentModel() {
     state.model = new PlanModel({
       now, raw: state.raw, obs: state.obs, stationMeta: state.stationList, regional: state.regional, trend: state.trend, learned: learnedForModel(), pressureLearn: learnGuard().mode === 'off' || learnGuard().off ? null : pressureLearned(), modelLearn: ['off', 'simple'].includes(learnGuard().mode) || learnGuard().off ? null : modelLearned(),
       thermLearn: thermalLearned(),
+      ens: state.ens && Date.now() - state.ens.at < 18 * 3600000 ? { ...state.ens, check: ensCheck() } : null,
+      fog: fogNow(),
       feedbackByLevel: siteFeedbackByLevel(feedbackRecords()),
       sites: SITES, fetchedAt: state.raw.fetchedAt
     });
@@ -1247,8 +1315,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
-        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1450,6 +1518,13 @@ async function loadSnapshot() {
         ingest.ecmwf = { ok: areas.some(a => a?.ecmwf), at, error: null };
         state.fcFresh = true;
       }
+    }
+  } catch { /* kein Zwischenspeicher */ }
+  try {
+    const e = JSON.parse(await fs.readFile(ENS_FILE(), 'utf8'));
+    if (Date.now() - e.at < 12 * 3600000 && e.members) {
+      state.ens = e; state.ensFresh = Date.now() - e.at < ENS_EVERY_MS / 2;
+      ingest.ensemble = { ok: true, at: new Date(e.at).toISOString(), error: null, model: e.model, members: e.members, points: Object.keys(e.byId || {}).length };
     }
   } catch { /* kein Zwischenspeicher */ }
   try {
@@ -1735,6 +1810,7 @@ async function start() {
     await tick('obs', collectObservations);
     if (state.fcFresh) invalidate(); else await tick('fc', collectForecast);
     if (!state.wgFresh) await tick('wind', collectWindGrid);
+    if (ENS_ON && !state.ensFresh) await tick('ens', collectEnsemble);
     await tick('air', collectAirspace);
     await tick('obst', collectObstacles);
     if (BACKFILL_ON) await backfillRegional().catch(e => console.warn('Nachlernen', errMsg(e)));
@@ -1742,6 +1818,7 @@ async function start() {
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));
   timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
+  if (ENS_ON) timers.push(setInterval(() => tick('ens', collectEnsemble), ENS_EVERY_MS));
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   timers.push(setInterval(() => tick('obst', collectObstacles), 3 * 3600000));   // prüft alle 3 h, lädt höchstens alle 20 h neu

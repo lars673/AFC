@@ -1230,3 +1230,11 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .lp { min-height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--panel); color: var(--ink); font: 600 14px/1 var(--f-body); transition: background var(--t1) var(--ease), color var(--t1) var(--ease); }
 .lp[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg, #fff); }
 .volte .vc { stroke: #e0453c; stroke-width: 2.5; fill: none; stroke-dasharray: 5 3; stroke-linecap: round; }
+/* Nebel gemessen (Lage) */
+.fogbox { margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: var(--panel2, rgba(127,127,127,.08)); }
+.fogbox h3 { margin: 0 0 8px; font-size: 15px; }
+.fogbox p { margin: 6px 0 0; }
+.fog-fig { position: relative; height: 54px; border-radius: 10px; overflow: hidden; background: linear-gradient(#8ec5ff, #d8ecff); }
+.fog-fig .fog-layer { position: absolute; left: 0; right: 0; bottom: calc(var(--b) * 100%); height: calc((var(--t) - var(--b)) * 100%); min-height: 8px; background: linear-gradient(rgba(255,255,255,.95), rgba(225,229,236,.95)); box-shadow: 0 -4px 10px rgba(255,255,255,.7); animation: fogdrift 9s ease-in-out infinite alternate; }
+@keyframes fogdrift { from { transform: translateX(-2%); } to { transform: translateX(2%); } }
+@media (prefers-reduced-motion: reduce) { .fog-fig .fog-layer { animation: none; } }

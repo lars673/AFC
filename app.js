@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.6.1';
+const APP_VER = '12.7';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -397,7 +397,7 @@ function headlineFor(d) {
   const p = S.plan, h = p.headline;
   if (d === h.day) {
     if (!h.site || !h.win) return { tone: h.tone, title: h.title, text: h.text };       // älterer gespeicherter Stand: nur Text
-    return { tone: h.tone, title: h.title, text: h.text, site: h.site, score: h.score, win: h.win, notes: [h.over ? 'Der Flugtag ist vorbei.' : '', ...(h.why || []), h.region ? 'Regional: ' + h.region : ''].filter(Boolean) };
+    return { tone: h.tone, title: h.title, text: h.text, site: h.site, score: h.score, win: h.win, notes: [h.over ? 'Der Flugtag ist vorbei.' : '', ...(h.why || []), h.region ? 'Regional: ' + h.region : '', h.after || ''].filter(Boolean) };
   }
   const t = p.days[d].top;
   if (!t) {
@@ -758,7 +758,19 @@ function renderLage() {
       ${num(nowS.dpBise) ? `<div class="${nowS.dpBise >= 4 ? 'kv-bad' : nowS.dpBise >= 2 ? 'kv-warn' : ''}"><b>${nowS.dpBise > 0 ? '+' : ''}${nowS.dpBise.toFixed(1)} hPa</b><span>Bisedruck Kloten–Genf</span></div>` : ''}
       <div><b>${nowS.talwind}</b><span>Talwind Richtung Alpen</span></div></div>
       ${nowS.reasons?.length ? `<ul class="why">${nowS.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+      ${fogHtml(nowS.fog)}
       <p class="fine">Messwerte zählen nur für die nächsten Stunden. Für spätere Stunden und andere Tage gilt allein die Modellprognose.</p></div>` : ''}`;
+}
+
+/** Nebelmeer, gemessen an den Stationen: Schicht, wer drin und wer darüber ist, bis wann es laut Prognose hält. */
+function fogHtml(f) {
+  if (!f || f.none) return '';
+  const st = [f.inn?.length ? `${f.inn.map(x => `${x.name} (${x.alt} m)`).join(', ')} im Nebel` : '', f.under?.length ? `${f.under.map(x => `${x.name} (${x.alt} m)`).join(', ')} grau darunter` : '', f.above?.length ? `${f.above.map(x => `${x.name} (${x.alt} m)`).join(', ')} in der Sonne` : ''].filter(Boolean).join('; ');
+  const when = f.allDay ? 'Laut Prognose hält er den ganzen Tag.' : f.lift != null ? `Laut Prognose löst er sich gegen ${f.lift} Uhr auf (mit einer Stunde Reserve).` : 'Die Prognose sieht diesen Nebel nicht: wann er sich auflöst, ist unsicher. AFC rechnet 3 Stunden sicher mit ihm, danach mit Vorsicht.';
+  return `<div class="fogbox"><h3>${f.ground ? 'Nebel' : 'Hochnebel'} gemessen</h3>
+    <div class="fog-fig" aria-hidden="true"><span class="fog-sky"></span><span class="fog-layer" style="--b:${Math.max(0, Math.min(1, (f.base - 400) / 2400))};--t:${Math.max(0, Math.min(1, (f.top - 400) / 2400))}"></span></div>
+    <p><b>${f.ground ? 'Vom Boden' : `Von ca. ${f.base} m`} bis ca. ${f.top} m.</b> ${esc(when)}</p>
+    <p class="fine">${esc(st)}. Stand ${timeOf(f.at)} Uhr. Startplätze und Landeplätze in der Schicht sind bis dann K.-o., und niemand fliegt durch die Decke hinunter.</p></div>`;
 }
 
 /* ---- Flugtag */
@@ -828,6 +840,7 @@ function sourcesHtml() {
     ['Prognose (MeteoSchweiz ICON über Open-Meteo)', s.forecast, s.forecast?.model],
     ['Höhenwind auf Druckflächen (DWD ICON)', s.pressure],
     ['Zweites Modell (ECMWF) für den Modellvergleich', s.ecmwf],
+    ['Wettervarianten (Ensemble) für «wie sicher»', s.ensemble, s.ensemble?.members ? `${s.ensemble.members} Varianten, ${String(s.ensemble.model || '').replace(/_/g, ' ')}` : ''],
     ['Messwerte (SwissMetNet)', s.observations, s.observations?.source],
     ['Föhnindex (MeteoSchweiz)', s.foehn],
     ['Stationsliste', s.stations, s.stations?.note]
@@ -2249,6 +2262,7 @@ function renderSite(fresh = false) {
         <div><b>${hr.valley ? hr.valley[0] + ' / ' + hr.valley[1] : '–'}</b><span>Landewind Wind / Böen km/h</span></div>
         <div><b>${hr.shear ?? '–'}</b><span>Scherung 500 m über Start km/h</span></div>
         ${hr.spread != null ? `<div><b>${hr.spread}</b><span>Modell-Unterschied km/h (ICON gegen ECMWF${hr.spread >= 10 ? ', unsicher' : ''})</span></div>` : ''}
+        ${hr.ens ? `<div><b>${hr.ens.g[0]}–${hr.ens.g[1]}</b><span>Böen km/h in 8 von 10 der ${hr.ens.n} Wettervarianten</span></div>` : ''}
       </div>
       <h3 style="font:700 18px var(--f-num);margin:10px 0 4px">Wind über dem Startplatz</h3>
       ${profileHtml(hr.prof)}`, { open: !!store.get('proOpen') }) : '';
