@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.5.2';
+const APP_VER = '12.6';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1255,7 +1255,7 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function pushPrefs() {
   const p = store.get('pushPrefs', {});
-  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, health: p.health !== false, review: p.review !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
+  return { good: p.good !== false, foehn: p.foehn !== false, gear: p.gear !== false, health: p.health !== false, review: p.review !== false, group: p.group !== false, replies: p.replies !== false, threshold: p.threshold || 75, favs: [...S.fav], level: S.level };
 }
 async function pushInit() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { PU.state = isIOS() && !isStandalone() ? 'install' : 'unsupported'; return; }
@@ -1307,7 +1307,7 @@ async function pushTest() {
 }
 const renderPush = () => { const el = $('#pushPanel'); if (el) el.innerHTML = pushHtml(); };
 function pushHtml() {
-  const what = 'Abends um 19 Uhr, wenn morgen ein guter Flugtag wird (an deinen Favoriten, sonst überall) und bei Föhn. Morgens um 7 Uhr bei Föhn und wenn Retter packen oder Schirm-Check fällig ist. Tagsüber sofort, wenn bei AFC etwas nicht stimmt. Dafür muss der Mac wach sein.';
+  const what = 'Abends um 19 Uhr, wenn morgen ein guter Flugtag wird (an deinen Favoriten, sonst überall) und bei Föhn. Morgens um 7 Uhr bei Föhn und wenn Retter packen oder Schirm-Check fällig ist. Tagsüber sofort bei neuen Beiträgen in der Gruppe (nicht nachts zwischen 22 und 7 Uhr) und wenn bei AFC etwas nicht stimmt.';
   switch (PU.state) {
     case null: return '<p class="fine" style="margin:0">Wird geprüft …</p>';
     case 'install': return `<p class="fine" style="margin:0">${what}</p><p class="fine"><b>So geht es auf dem iPhone:</b> AFC in Safari öffnen, unten auf Teilen tippen, «Zum Home-Bildschirm» wählen und AFC dann von dort öffnen. Hier erscheint danach «Einschalten».</p>`;
@@ -1321,6 +1321,8 @@ function pushHtml() {
         <label class="chk"><input type="checkbox" name="foehn" ${p.foehn ? 'checked' : ''}><span>Föhn- und Bisewarnung</span></label>
         <label class="chk"><input type="checkbox" name="gear" ${p.gear ? 'checked' : ''}><span>Retter packen und Schirm-Check fällig</span></label>
         <label class="chk"><input type="checkbox" name="review" ${p.review ? 'checked' : ''}><span>Abends: Rückblick auf deinen Flug von heute</span></label>
+        <label class="chk"><input type="checkbox" name="group" ${p.group ? 'checked' : ''}><span>Gruppe: neue Beiträge (wer geht fliegen, Warnungen, Berichte)</span></label>
+        <label class="chk"><input type="checkbox" name="replies" ${p.replies ? 'checked' : ''}><span>Gruppe: Antworten in Gesprächen, bei denen du dabei bist</span></label>
         <label class="chk"><input type="checkbox" name="health" ${p.health ? 'checked' : ''}><span>Störungen von AFC (Wetterdaten veraltet, Sicherung fehlgeschlagen)</span></label>
       </form>
       <p class="fine">${what}</p>
@@ -3458,7 +3460,9 @@ document.addEventListener('click', async e => {
     case 'invite': inviteCreate(); break;
     case 'invgroup': groupInviteCreate(); break;
     case 'admin': openAdmin(); break;
-    case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); break;
+    case 'bakkey': backupKey(); break;
+    case 'bakkeydel': if (await ask({ title: 'Mac-Sicherung beenden?', text: 'Der Mac kann danach nichts mehr abholen, bis du einen neuen Schlüssel erstellst.', ok: 'Beenden', danger: true })) { try { await jsonPost('/api/admin/backup/key', undefined, 'DELETE'); await openAdmin('bak'); } catch (e) { toast(e.message); } } break;
+    case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); $('#siteDlg .adm-tabs [aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }); break;
     case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(err.message); } break;
     case 'admdel': {
       if (!(await ask({ title: `${b.dataset.v} entfernen?`, text: 'Konto, Flugbuch, Profil und Rückmeldungen werden gelöscht (vorher legt AFC eine Sicherung an).', ok: 'Entfernen', danger: true }))) break;
@@ -3472,7 +3476,7 @@ document.addEventListener('click', async e => {
     case 'invshow': { const i = ADM.data?.invites?.find(x => x.code === id); inviteShow(id, b.dataset.v, i?.note || '', i?.max || 0, i?.expires || ''); break; }
     case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
     case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
-    case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast('Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
+    case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast(ADM.share.toast || 'Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
     case 'day': goDay(Number(b.dataset.i)); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break;
     case 'reload': loadPlan(true); break;
     case 'sources': setTab('profile'); setTimeout(() => $$('#v-profile .panel h3').find(h => h.textContent === 'Datenquellen')?.scrollIntoView({ behavior: 'smooth' }), 80); break;
@@ -3690,7 +3694,7 @@ document.addEventListener('change', e => {
   }
   if (t.closest('#pushForm')) {
     const f = new FormData($('#pushForm'));
-    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), review: f.has('review'), threshold: Number(f.get('threshold')) || 75 });
+    store.set('pushPrefs', { good: f.has('good'), foehn: f.has('foehn'), gear: f.has('gear'), health: f.has('health'), review: f.has('review'), group: f.has('group'), replies: f.has('replies'), threshold: Number(f.get('threshold')) || 75 });
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
@@ -5477,9 +5481,12 @@ const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
 function adminHtml() {
   const d = ADM.data, t = ADM.tab;
   if (!d) return '<div class="dlg-in"><div class="warm"><div class="spinner"></div>Lade …</div></div>';
-  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['types', 'Typen'], ['inv', 'Einladen'], ['err', `Fehler ${d.errors.length}`]];
+  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['types', 'Typen'], ['learn', 'Gelernt'], ['inv', 'Einladen'], ['bak', 'Sicherung'], ['err', `Fehler ${d.errors.length}`]];
   let body = '';
-  if (t === 'users') body = `<div class="adm-users">${d.users.map(u => `<div class="adm-u">${avatarHtml(u)}<div><b>${esc(u.name)}</b>${u.role === 'admin' ? ' <small class="tag">Admin</small>' : ''}<small>${esc(u.email)} · zuletzt ${esc(agoTxt(u.lastSeen))}</small>
+  const us = d.usage, byUse = d.users.slice().sort((a, b) => (b.days14 ?? 0) - (a.days14 ?? 0) || String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
+  if (t === 'users') body = `${us ? `<h3 class="adm-h" style="margin-top:0">Wer nutzt AFC?</h3><div class="pcard-stats" style="margin-bottom:6px"><div><b>${us.today}</b><span>heute</span></div><div><b>${us.week}</b><span>letzte 7 Tage</span></div><div><b>${us.month}</b><span>letzte 30 Tage</span></div><div><b>${us.posts7}</b><span>Beiträge in 7 Tagen</span></div></div>
+    <p class="fine" style="margin:0 0 10px">Gezählt wird jeder Tag, an dem jemand AFC geöffnet hat${us.since ? ` (seit ${new Date(us.since).toLocaleDateString('de-CH')})` : ''}. Die Liste ist nach Nutzung sortiert.</p>` : ''}
+    <div class="adm-users">${byUse.map(u => `<div class="adm-u">${avatarHtml(u)}<div><b>${esc(u.name)}</b>${u.role === 'admin' ? ' <small class="tag">Admin</small>' : ''}<small>${esc(u.email)} · zuletzt ${esc(agoTxt(u.lastSeen))}${u.days14 != null ? ` · aktiv an ${u.days14} von 14 Tagen` : ''}</small>
       <small>${u.stats.flights} Flüge (${u.stats.logged} im Flugbuch, ${u.stats.igc} IGC) · ${u.stats.verdicts} bewertet · ${u.feedback} Rückmeldungen · ${u.push ? 'Push an' : 'Push aus'}</small>
       ${u.profile.license ? `<small>${esc(LICENSES[u.profile.license] || '')}${u.profile.since ? ', seit ' + u.profile.since : ''}${u.profile.wing ? ' · ' + esc(u.profile.wing) : ''}</small>` : '<small>Profil noch leer</small>'}
       ${u.profile.styles?.length ? `<small>Fliegt: ${esc(u.profile.styles.map(x => d.styles?.[x] || x).join(', '))}</small>` : ''}
@@ -5505,6 +5512,23 @@ function adminHtml() {
     body = `<p class="fine" style="margin:0 0 8px">Was die verschiedenen Pilotentypen sagen. Wer mehrere Flugstile angibt, zählt bei jedem. AFC lernt getrennt nach Stufe: «zu streng» gilt nur für die eigene Stufe und erfahrenere, «zu mild» als Warnung für alle.</p>
       <h3 class="adm-h">Nach Flugstil</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('s:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>
       <h3 class="adm-h">Nach Stufe</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('l:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>`;
+  }
+  if (t === 'learn') {
+    const L = d.learned || [], lvN = { careful: 'Vorsichtig', normal: 'Normal', expert: 'Erfahren' };
+    const adjTxt = v => (v > 0 ? `<b style="color:var(--good, #2e9d5b)">+${v}</b>` : v < 0 ? `<b style="color:var(--bad, #d0453b)">${v}</b>` : '<b>0</b>');
+    const changed = L.filter(x => Object.values(x.adj).some(v => v)), rest = L.length - changed.length;
+    body = `<p class="fine" style="margin:0 0 8px">So passt AFC die Bewertung je Startplatz an, weil Piloten nach dem Flug «lag richtig», «zu streng» oder «zu mild» gesagt oder «nicht gestartet» gemeldet haben. Pro Pilot, Platz und Tag zählt eine Stimme. Ein einzelner Pilot macht höchstens einen Drittel aus, grosszügiger wird ein Platz erst, wenn mindestens 2 Piloten das sagen. Höchstens 4 Punkte grosszügiger oder 8 vorsichtiger.</p>
+      ${changed.length ? `<div class="adm-fb">${changed.map(x => `<div class="adm-f"><div class="adm-f-h"><b>${esc(x.name)}</b><small>${x.n} Rückmeldungen von ${x.pilots} ${x.pilots === 1 ? 'Pilot' : 'Piloten'}</small></div>
+        <p>${Object.entries(lvN).map(([k, n]) => `${n} ${adjTxt(x.adj[k] ?? 0)}`).join(' · ')}</p>
+        <small>richtig ${x.richtig} · zu streng ${x.streng} · zu mild ${x.mild}${x.capped ? ` · ${x.capped} ${x.capped === 1 ? 'Vielflieger' : 'Vielflieger'} auf einen Drittel begrenzt` : ''}</small></div>`).join('')}</div>` : '<p>Die Gruppe hat AFC noch an keinem Platz verändert.</p>'}
+      ${rest ? `<p class="fine">An ${rest} weiteren ${rest === 1 ? 'Platz' : 'Plätzen'} sammelt AFC noch Rückmeldungen (ab 3 pro Platz).</p>` : ''}`;
+  }
+  if (t === 'bak') {
+    const b = d.backup || {};
+    body = `<p>Jede Nacht legt AFC auf dem Server eine Kopie der Datenbank ab (die letzten 14). Liegt der Server aber selbst kaputt, wären die weg. Darum zusätzlich eine Kopie bei dir: alle Konten, Flugbücher, die Gruppe und das Gelernte.</p>
+      <p class="fine" style="margin:0 0 8px">Letzte Kopie auf dem Server: ${b.nightly ? esc(whenTxt(b.nightly)) : 'noch keine'}<br>Zuletzt heruntergeladen: ${b.last ? `${esc(whenTxt(b.last.at))} ${b.last.by === 'mac' ? 'vom Mac' : 'von dir'} (${b.last.mb} MB)` : 'noch nie'}<br>Mac holt jede Nacht: ${b.hasKey ? (b.mac ? `ja, zuletzt ${esc(whenTxt(b.mac))}` : 'Schlüssel erstellt, aber der Mac hat noch nichts abgeholt') : 'nicht eingerichtet'}</p>
+      <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><a class="btn" href="/api/admin/backup" download>Jetzt herunterladen</a><button class="btn sec" type="button" data-act="bakkey">${b.hasKey ? 'Neuer Schlüssel für den Mac' : 'Mac jede Nacht sichern lassen'}</button>${b.hasKey ? '<button class="linkbtn" type="button" data-act="bakkeydel">Mac-Sicherung beenden</button>' : ''}</div>
+      <p class="fine">Für den Mac: Schlüssel erstellen, dann im Ordner AFC › tools «AFC Sicherung auf den Mac.command» doppelklicken und Adresse und Schlüssel einfügen. Die Kopien landen in iCloud Drive › AFC-Sicherung › Server (die letzten 30). Zurückspielen geht wie der Umzug.</p>`;
   }
   if (t === 'inv') {
     const now = new Date().toISOString();
@@ -5542,6 +5566,19 @@ function inviteShow(code, kind = 'invite', note = '', max = 0, expires = '') {
     <p class="inv-url"><code>${esc(url)}</code></p>
     <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap">${navigator.share ? '<button class="btn" type="button" data-act="invshare">Teilen …</button>' : ''}<button class="btn ${navigator.share ? 'sec' : ''}" type="button" data-act="invcopy">Text kopieren</button><button class="btn sec" type="button" data-act="closemsg">Fertig</button></div></div>`);
   ADM.share = { text, url };
+}
+/** Schlüssel für die nächtliche Sicherung auf dem Mac: wird nur einmal gezeigt. */
+async function backupKey() {
+  try {
+    const j = await jsonPost('/api/admin/backup/key');
+    const text = `Adresse: ${location.origin}\nSchlüssel: ${j.key}`;
+    dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">Schlüssel für den Mac</h2>
+      <p>Auf dem Mac im Ordner AFC › tools «AFC Sicherung auf den Mac.command» doppelklicken und diese zwei Zeilen einfügen. Der Schlüssel wird nur jetzt gezeigt. Ein früherer Schlüssel gilt ab sofort nicht mehr.</p>
+      <p class="inv-url"><code>${esc(location.origin)}</code></p><p class="inv-url"><code>${esc(j.key)}</code></p>
+      <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invcopy">Kopieren</button><button class="btn sec" type="button" data-act="closemsg">Fertig</button></div></div>`);
+    ADM.share = { text, url: location.origin, toast: 'Kopiert. Jetzt im Mac-Fenster einfügen.' };
+    adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); }).catch(() => {});
+  } catch (e) { toast(e.message); }
 }
 async function groupInviteCreate() {
   const n = prompt('Für wie viele Personen soll der Gruppenlink gelten? (2 bis 50)', '13');

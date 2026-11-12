@@ -33,7 +33,7 @@ test('Morgens Föhn und Ausrüstung, abends Ausblick; abgeschaltete Arten fehlen
   assert.deepEqual(m.map(x => x.title), ['Föhnwarnung heute', 'Retter packen bald fällig']);
   assert.equal(buildNotices({ phase: 'morning', plan: p, prefs: cleanPrefs({ gear: false, foehn: false }), gear, now }).length, 0);
   assert.deepEqual(buildNotices({ phase: 'evening', plan: p, prefs: cleanPrefs({}), gear, now }).map(x => x.title), ['Morgen 86 am Amisbühl']);
-  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, health: true, review: true, threshold: 75, favs: [], level: 'normal' });
+  assert.deepEqual(cleanPrefs({ threshold: 99, level: 'x' }), { good: true, foehn: true, gear: true, health: true, review: true, group: true, replies: true, threshold: 75, favs: [], level: 'normal' });
 });
 
 test('Abends Rückblick für heutige Flüge ohne Rückmeldung', async () => {
@@ -46,4 +46,19 @@ test('Abends Rückblick für heutige Flüge ohne Rückmeldung', async () => {
   assert.match(rv[0].title, /Niesen/);
   assert.equal(rv[0].url, '/?tab=book&flight=a1');
   assert.equal(buildNotices({ phase: 'evening', plan, prefs: cleanPrefs({ review: false }), flights }).filter(x => x.key.startsWith('review:')).length, 0);
+});
+
+test('Gruppe: Mitteilung bei neuen Beiträgen, Antworten nur an Beteiligte, nie an sich selbst, nachts nicht', async () => {
+  const { groupNotice, cleanPrefs } = await import('../lib/notify.js');
+  const on = cleanPrefs({}), post = { id: 7, uid: 'a', parent: null, kind: 'plan', text: 'Morgen Niesen 11 Uhr', siteName: 'Niesen', name: 'Beat' };
+  assert.equal(on.group, true); assert.equal(on.replies, true);
+  const n = groupNotice(post, 'b', on, new Set(), 12);
+  assert.equal(n.title, 'Beat geht fliegen · Niesen'); assert.equal(n.url, '/?tab=group'); assert.equal(n.key, 'post:7');
+  assert.equal(groupNotice(post, 'a', on, new Set(), 12), null, 'nicht an sich selbst');
+  assert.equal(groupNotice(post, 'b', on, new Set(), 23), null, 'nachts nicht');
+  assert.equal(groupNotice(post, 'b', cleanPrefs({ group: false }), new Set(), 12), null);
+  const reply = { id: 8, uid: 'c', parent: 7, text: 'Bin dabei!', name: 'Sara' };
+  assert.equal(groupNotice(reply, 'b', on, new Set(['a', 'c']), 12), null, 'nicht beteiligt');
+  assert.equal(groupNotice(reply, 'a', on, new Set(['a', 'c']), 12).title, 'Sara hat geantwortet');
+  assert.equal(groupNotice(reply, 'a', cleanPrefs({ replies: false }), new Set(['a', 'c']), 12), null);
 });

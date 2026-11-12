@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 
 import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts, haversineKm } from './lib/util.js';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
 import { loadStationList, fetchObservations, fetchFoehnIndex, PRESSURE_STATIONS } from './lib/stations.js';
@@ -22,7 +22,7 @@ import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
 import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedbackByLevel, cleanPilotSnap, voterLevel } from './lib/logbook.js';
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
-import { buildNotices, cleanPrefs } from './lib/notify.js';
+import { buildNotices, cleanPrefs, groupNotice } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from './lib/learn.js';
@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS app_kv (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, uid TEXT NOT NULL, at TEXT NOT NULL, parent INTEGER, data TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_posts_at ON posts(at);
 CREATE TABLE IF NOT EXISTS post_likes (post_id INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY(post_id, uid));
+CREATE TABLE IF NOT EXISTS user_days (uid TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(uid, day));
 CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
 CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(at);`);
 {
@@ -155,6 +156,7 @@ const adminUid = () => dbGet("SELECT id FROM users WHERE role='admin' ORDER BY c
 const SESSION_DAYS = 90;
 const COOKIE = 'afc_s';
 /** Angemeldeter Pilot dieser Anfrage (oder null). */
+const seenDays = new Map();
 function userOf(req) {
   if (req._user !== undefined) return req._user;
   let u = null;
@@ -164,6 +166,9 @@ function userOf(req) {
     if (s && s.s_expires > nowIso()) {
       u = s;
       if (!s.last_seen || Date.now() - Date.parse(s.last_seen) > 5 * 60000) dbRun('UPDATE users SET last_seen=? WHERE id=?', [nowIso(), s.id]);
+      // Nutzung je Tag (für die Admin-Übersicht «Wer nutzt AFC?»), einmal pro Pilot und Tag
+      const day = zurichDay();
+      if (seenDays.get(s.id) !== day) { seenDays.set(s.id, day); dbRun('INSERT OR IGNORE INTO user_days(uid,day) VALUES(?,?)', [s.id, day]); }
     }
   }
   return (req._user = u);
@@ -766,6 +771,7 @@ function flightsWithPilot() {
   const snaps = new Map();
   return dbAll("SELECT uid, data FROM logbook WHERE kind='flight'").map(r => {
     const f = JSON.parse(r.data);
+    f.uid = r.uid;
     if (!f.pilot) { if (!snaps.has(r.uid)) snaps.set(r.uid, pilotSnap(r.uid)); f.pilot = snaps.get(r.uid); }
     return f;
   });
@@ -773,7 +779,7 @@ function flightsWithPilot() {
 /** Für das Lernen je Startplatz: alle Flüge plus «nicht gestartet» (Grund und AFC-Score von damals). */
 function feedbackRecords() {
   const snaps = new Map(), snap = uid => { if (!snaps.has(uid)) snaps.set(uid, pilotSnap(uid)); return snaps.get(uid); };
-  const nofly = dbAll("SELECT uid, at, data FROM feedback WHERE kind='nofly'").map(r => { const d = JSON.parse(r.data); return { kind: 'nofly', siteId: d.site, date: r.at.slice(0, 10), reason: d.reason, afcScore: d.score, pilot: snap(r.uid) }; });
+  const nofly = dbAll("SELECT uid, at, data FROM feedback WHERE kind='nofly'").map(r => { const d = JSON.parse(r.data); return { kind: 'nofly', uid: r.uid, siteId: d.site, date: r.at.slice(0, 10), reason: d.reason, afcScore: d.score, pilot: snap(r.uid) }; });
   return [...flightsWithPilot(), ...nofly];
 }
 /** Testphase nach Pilotentyp: je Flugstil und Stufe Piloten, Flüge, Urteile, Gründe fürs Nicht-Starten, Rückmeldungen. */
@@ -800,7 +806,7 @@ function meResponse(u) {
 function deleteUserData(uid) {
   db.exec('BEGIN');
   try {
-    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM post_likes WHERE uid=?', 'DELETE FROM posts WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
+    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM post_likes WHERE uid=?', 'DELETE FROM user_days WHERE uid=?', 'DELETE FROM posts WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
     for (const r of dbAll('SELECT endpoint FROM push_subs WHERE uid=?', [uid])) { dbRun('DELETE FROM push_sent WHERE endpoint=?', [r.endpoint]); dbRun('DELETE FROM push_subs WHERE endpoint=?', [r.endpoint]); }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -987,7 +993,8 @@ async function accountRoute(req, res, p, u) {
     if (!post) return sendJson(req, res, 400, { error: 'Bitte etwas schreiben' });
     if (post.parent && !dbGet('SELECT 1 x FROM posts WHERE id=? AND parent IS NULL', [post.parent])) return sendJson(req, res, 404, { error: 'Beitrag nicht mehr da' });
     const { parent, ...data } = post;
-    dbRun('INSERT INTO posts(uid,at,parent,data) VALUES(?,?,?,?)', [me.id, nowIso(), parent, JSON.stringify(data)]);
+    const ins = dbRun('INSERT INTO posts(uid,at,parent,data) VALUES(?,?,?,?)', [me.id, nowIso(), parent, JSON.stringify(data)]);
+    groupPush({ id: Number(ins.lastInsertRowid), uid: me.id, parent, name: me.name, ...data }).catch(e => console.warn('Gruppen-Push', errMsg(e)));
     return sendJson(req, res, 200, communityData(me, b.view));
   }
   const cm = p.match(/^\/api\/community\/(\d{1,12})(\/like)?$/);
@@ -1017,7 +1024,13 @@ async function accountRoute(req, res, p, u) {
       const errors = dbAll('SELECT id, uid, at, n, data FROM client_errors ORDER BY at DESC LIMIT 60').map(r => ({ id: r.id, at: r.at, n: r.n, who: names[r.uid] || '–', ...JSON.parse(r.data) }));
       const verdicts = {};
       for (const r of dbAll("SELECT data FROM logbook WHERE kind='flight'")) { const v = JSON.parse(r.data).afcVerdict; if (v) verdicts[v] = (verdicts[v] || 0) + 1; }
-      return sendJson(req, res, 200, { ok: true, users, invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
+      const today = zurichDay(), dAgo = n => zurichDay(Date.now() - n * 86400000);
+      const days = new Map();
+      for (const r of dbAll('SELECT uid, day FROM user_days WHERE day>=?', [dAgo(29)])) { if (!days.has(r.uid)) days.set(r.uid, []); days.get(r.uid).push(r.day); }
+      for (const x of users) { const ds = days.get(x.id) || []; x.days14 = ds.filter(d => d >= dAgo(13)).length; x.days30 = ds.length; }
+      const activeIn = n => users.filter(x => (days.get(x.id) || []).some(d => d >= dAgo(n - 1))).length;
+      const usage = { today: activeIn(1), week: activeIn(7), month: activeIn(30), posts7: dbGet('SELECT COUNT(*) n FROM posts WHERE at>=?', [new Date(Date.now() - 7 * 86400000).toISOString()]).n, since: dbGet('SELECT MIN(day) d FROM user_days')?.d || today };
+      return sendJson(req, res, 200, { ok: true, users, usage, learned: groupLearned(), backup: backupStatus(), invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
     }
     if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
     if (p === '/api/admin/invite' && req.method === 'POST') {
@@ -1038,6 +1051,14 @@ async function accountRoute(req, res, p, u) {
     if (fd && req.method === 'PUT') { const b = await body(); dbRun('UPDATE feedback SET done=? WHERE id=?', [b.done ? 1 : 0, Number(fd[1])]); return sendJson(req, res, 200, { ok: true }); }
     const fs2 = p.match(/^\/api\/admin\/feedback\/(\d+)\/shot$/);
     if (fs2 && req.method === 'GET') { const r = dbGet('SELECT data FROM feedback WHERE id=?', [Number(fs2[1])]); return sendJson(req, res, 200, { ok: true, shot: r ? JSON.parse(r.data).shot || null : null }); }
+    if (p === '/api/admin/backup' && req.method === 'GET') return sendFullBackup(req, res, 'admin');
+    if (p === '/api/admin/backup/status' && req.method === 'GET') return sendJson(req, res, 200, { ok: true, ...backupStatus() });
+    if (p === '/api/admin/backup/key' && req.method === 'POST') {
+      const key = newToken();
+      kvSet('backup-key', tokenHash(key)); kvSet('backup-key-at', nowIso());
+      return sendJson(req, res, 200, { ok: true, ...backupStatus(), key });
+    }
+    if (p === '/api/admin/backup/key' && req.method === 'DELETE') { kvSet('backup-key', null); kvSet('backup-key-at', null); return sendJson(req, res, 200, { ok: true, ...backupStatus() }); }
     if (p === '/api/admin/errors' && req.method === 'DELETE') { dbRun('DELETE FROM client_errors'); return sendJson(req, res, 200, { ok: true }); }
     const du = p.match(/^\/api\/admin\/user\/([\w-]{6,20})$/);
     if (du && req.method === 'DELETE') {
@@ -1121,6 +1142,13 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (p === '/api/umzug' && req.method === 'PUT') return umzugRoute(req, res);
+    // Nächtliche Sicherung durch den Mac: nur mit dem Sicherungs-Schlüssel (Profil › Sicherung), ohne Anmeldung
+    if (p === '/api/sicherung' && req.method === 'GET') {
+      if (limited(req, 'sicherung', 5)) return sendJson(req, res, 429, { error: 'zu viele Versuche, bitte eine Minute warten' });
+      if (!backupKeyOk(req.headers['x-afc-sicherung'])) return sendJson(req, res, 403, { error: 'Sicherungs-Schlüssel falsch oder nicht eingerichtet' });
+      kvSet('backup-mac', nowIso());
+      return sendFullBackup(req, res, 'mac');
+    }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
 
     // Öffentlicher Zugang (Tailscale Funnel) ohne Konten wäre ein offenes Flugbuch für alle: dann gesperrt.
@@ -1454,6 +1482,23 @@ async function pushTo(row, msg) {
   else dbRun('UPDATE push_subs SET last_ok=COALESCE(?,last_ok), last_error=? WHERE endpoint=?', [r.ok ? nowIso() : null, r.ok ? null : `${nowIso()} ${r.status || r.error}`, row.endpoint]);
   return r;
 }
+/** Mitteilung an die Gruppe nach einem neuen Beitrag oder einer Antwort (lib/notify.js groupNotice). */
+async function groupPush(post) {
+  if (!PUSH_ON) return 0;
+  const subs = dbAll('SELECT * FROM push_subs WHERE uid<>? AND uid<>\'\'', [post.uid]);
+  if (!subs.length) return 0;
+  const root = post.parent || post.id;
+  const involved = new Set(dbAll('SELECT uid FROM posts WHERE id=? OR parent=?', [root, root]).map(r => r.uid));
+  const hour = zurichParts(Date.now()).hour;
+  let sent = 0;
+  for (const row of subs) {
+    const n = groupNotice(post, row.uid, cleanPrefs(JSON.parse(row.prefs)), involved, hour);
+    if (!n || dbGet('SELECT 1 x FROM push_sent WHERE endpoint=? AND key=?', [row.endpoint, n.key])) continue;
+    const r = await pushTo(row, n);
+    if (r.ok) { dbRun('INSERT OR IGNORE INTO push_sent(endpoint,key,at) VALUES(?,?,?)', [row.endpoint, n.key, nowIso()]); sent++; }
+  }
+  return sent;
+}
 function pushPhase(ms = Date.now()) {
   const h = zurichParts(ms).hour;
   return h >= 19 && h <= 21 ? 'evening' : h >= 7 && h <= 9 ? 'morning' : null;
@@ -1665,6 +1710,7 @@ async function maintenance() {
     const cut120 = new Date(Date.now() - 120 * 86400000).toISOString();
     dbRun('DELETE FROM reg_fc WHERE target<?', [cut120]); dbRun('DELETE FROM reg_obs WHERE time<?', [cut120]);
     dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
+    for (const f of await fs.readdir(dataDir)) if (f.startsWith('tmp-sicherung-')) await fs.rm(path.join(dataDir, f), { recursive: true, force: true });
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;
     await backup(db, path.join(backupsDir, name));
     const files = (await fs.readdir(backupsDir)).filter(f => f.endsWith('.sqlite')).sort();
@@ -1766,6 +1812,54 @@ function learnedList() {
   }).sort((a, b) => (b.gain || 0) - (a.gain || 0) || b.n - a.n);
 }
 /** Was die Rückmeldungen nach Flügen je Startplatz bewirken (Stufe Normal), für «Selbst gelernt». */
+/* ------------------------------------------------------------------ Ganze Sicherung (alle Konten) */
+// Eine Kopie des data-Ordners als tar.gz: Datenbank (alle Konten, Flugbücher, Gruppe, Gelerntes), Push-Schlüssel und
+// die kleinen Lern-Dateien. Gleiches Format wie der Umzug, also mit «AFC Umzug ins Internet» bzw. PUT /api/umzug
+// wieder einspielbar. Abholen: der Admin im Browser oder der Mac jede Nacht mit dem Sicherungs-Schlüssel.
+const BACKUP_FILES = ['vapid.json', 'learn-guard.json', 'backtest-history.json', 'backtest-vergleich.json', 'openmeteo-usage.json'];
+async function fullBackupArchive() {
+  const dir = path.join(dataDir, `tmp-sicherung-${crypto.randomBytes(4).toString('hex')}`), inner = path.join(dir, 'data');
+  await fs.mkdir(inner, { recursive: true });
+  try {
+    await backup(db, path.join(inner, 'afc.sqlite'));
+    for (const f of BACKUP_FILES) await fs.copyFile(path.join(dataDir, f), path.join(inner, f)).catch(() => {});
+    await new Promise((r, j) => execFile('tar', ['-czf', path.join(dir, 'afc-sicherung.tgz'), '-C', dir, 'data'], { timeout: 120000 }, e => (e ? j(e) : r())));
+    return { file: path.join(dir, 'afc-sicherung.tgz'), dir };
+  } catch (e) { await fs.rm(dir, { recursive: true, force: true }); throw e; }
+}
+async function sendFullBackup(req, res, by) {
+  let a;
+  try { a = await fullBackupArchive(); } catch (e) { return sendJson(req, res, 500, { error: 'Sicherung fehlgeschlagen: ' + errMsg(e) }); }
+  const size = (await fs.stat(a.file)).size, name = `afc-sicherung-${zurichDay()}.tgz`;
+  kvSet('backup-last', JSON.stringify({ at: nowIso(), by, mb: Math.round(size / 104857.6) / 10 }));
+  res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Length': size, 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store', ...SEC });
+  const st = fsc.createReadStream(a.file);
+  const done = () => fs.rm(a.dir, { recursive: true, force: true }).catch(() => {});
+  st.on('close', done); st.on('error', () => { done(); res.destroy(); });
+  st.pipe(res);
+}
+const backupKeyOk = given => {
+  const h = kvGet('backup-key');
+  if (!h || typeof given !== 'string' || given.trim().length < 20) return false;
+  const a = Buffer.from(h), b = Buffer.from(tokenHash(given.trim()));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+function backupStatus() {
+  let last = null; try { last = JSON.parse(kvGet('backup-last') || 'null'); } catch {}
+  let nightly = null;
+  try { const f = fsc.readdirSync(backupsDir).filter(x => /^afc-\d{4}-/.test(x) && x.endsWith('.sqlite')).sort().at(-1); if (f) nightly = fsc.statSync(path.join(backupsDir, f)).mtime.toISOString(); } catch {}
+  return { last, mac: kvGet('backup-mac'), hasKey: !!kvGet('backup-key'), keyAt: kvGet('backup-key-at'), nightly, hosted: HOSTED };
+}
+/** Was die Gruppe AFC je Startplatz beigebracht hat: Anpassung je Stufe, Rückmeldungen, Piloten, begrenzte Vielflieger. */
+function groupLearned() {
+  const fb = siteFeedbackByLevel(feedbackRecords()), names = Object.fromEntries(SITES.map(x => [x.id, x.name])), out = {};
+  for (const [lv, sites] of Object.entries(fb)) for (const [id, x] of Object.entries(sites)) {
+    const o = (out[id] ||= { id, name: names[id] || id, adj: {}, n: 0, pilots: 0, richtig: 0, streng: 0, mild: 0, capped: 0 });
+    o.adj[lv] = x.adj;
+    if (x.n > o.n) Object.assign(o, { n: x.n, pilots: x.pilots, richtig: x.richtig, streng: x.streng, mild: x.mild, capped: x.capped });
+  }
+  return Object.values(out).sort((a, b) => Math.min(...Object.values(a.adj)) - Math.min(...Object.values(b.adj)) || b.n - a.n);
+}
 function feedbackSummary() {
   const fb = siteFeedbackByLevel(feedbackRecords()), names = Object.fromEntries(SITES.map(x => [x.id, x.name]));
   const list = Object.entries(fb.normal).map(([id, x]) => ({ id, name: names[id] || id, n: x.n, adj: x.adj, implicit: x.implicit, streng: x.streng, mild: x.mild, richtig: x.richtig }));

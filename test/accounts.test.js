@@ -130,7 +130,25 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal(xc.pilots, 1); assert.equal(xc.flights, 2, 'älterer Flug ohne Typ bekommt das heutige Profil'); assert.equal(xc.streng, 2); assert.equal(xc.nofly.wind, 1);
     assert.ok(ov.json.groups.find(g => g.key === 'l:expert').flights >= 1);
     assert.equal(ov.json.verdicts.streng, 2);
+    assert.equal(ov.json.usage.today, 2); assert.equal(ov.json.users[0].days14, 1);
+    assert.ok(Array.isArray(ov.json.learned)); assert.ok(ov.json.learned.length >= 1); assert.ok('normal' in ov.json.learned[0].adj);
+    assert.equal(ov.json.backup.hasKey, false);
     assert.equal(ov.json.invites.find(i => i.kind === 'invite').usedBy, 'Beat Muster');
+    // Ganze Sicherung: nur Admin im Browser, oder der Mac mit dem Sicherungs-Schlüssel
+    assert.equal((await call('GET', '/api/admin/backup', null, B)).status, 403);
+    assert.equal((await fetch(base + '/api/sicherung', { headers: { 'X-AFC-Sicherung': 'x'.repeat(40) } })).status, 403);
+    const bk = await fetch(base + '/api/admin/backup', { headers: { ...H, Cookie: A } });
+    assert.equal(bk.status, 200); assert.equal(bk.headers.get('content-type'), 'application/gzip');
+    const tgz = Buffer.from(await bk.arrayBuffer());
+    assert.equal(tgz[0], 0x1f); assert.equal(tgz[1], 0x8b);
+    const kr = await call('POST', '/api/admin/backup/key', null, A); const key = kr.json?.key || ''; if (!key) console.log('KEY', kr.status, kr.json);
+    assert.ok(key.length >= 40, JSON.stringify([kr.status, kr.json]));
+    const mac = await fetch(base + '/api/sicherung', { headers: { 'X-AFC-Sicherung': key } });
+    assert.equal(mac.status, 200); assert.ok((await mac.arrayBuffer()).byteLength > 1000);
+    const bs = (await call('GET', '/api/admin/backup/status', null, A)).json;
+    assert.equal(bs.hasKey, true); assert.ok(bs.mac); assert.equal(bs.last.by, 'mac');
+    for (let i = 0; i < 20 && fs.readdirSync(dir).some(f => f.startsWith('tmp-sicherung-')); i++) await new Promise(r => setTimeout(r, 100));
+    assert.ok(!fs.readdirSync(dir).some(f => f.startsWith('tmp-sicherung-')), 'Zwischenordner aufgeräumt');
     assert.equal((await call('PUT', '/api/admin/survey', { on: true }, A)).status, 200);
     assert.equal((await call('GET', '/api/me', null, B)).json.survey, true);
     assert.equal((await call('POST', '/api/feedback', { kind: 'survey', answers: { nps: 9, gut: 'Begründungen' } }, B)).status, 200);

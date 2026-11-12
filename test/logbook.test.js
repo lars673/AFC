@@ -175,3 +175,21 @@ test('seasonStats: Zahlen eines Flugjahrs für den Rückblick', () => {
   assert.equal(e.n, 0); assert.equal(e.bestDay, null); assert.equal(e.longest, null); assert.deepEqual(e.sites, []);
   assert.equal(seasonStats([{ date: '2026-05-01' }], 2026).longest, null);   // ohne Dauer kein «längster Flug»
 });
+
+test('Faires Lernen: eine Stimme pro Pilot und Tag, ein Pilot höchstens einen Drittel, lockerer erst ab 2 Piloten', () => {
+  const N = Date.parse('2026-11-12'), P = { level: 'normal' };
+  const good = Array.from({ length: 8 }, (_, i) => ({ uid: 'p' + i, siteId: 'x', date: '2026-11-10', afcScore: 75, rating: 4, pilot: P }));
+  // ein Pilot drückt dreimal «nicht gestartet» am selben Tag: zählt einmal
+  let r = siteFeedback([...good, ...[0, 1, 2].map(() => ({ uid: 'z', kind: 'nofly', siteId: 'x', date: '2026-11-10', reason: 'wind', afcScore: 72, pilot: P }))], N, 'normal');
+  assert.equal(r.x.n, 9); assert.equal(r.x.pilots, 9); assert.equal(r.x.adj, -3);
+  // an drei Tagen: er wird auf einen Drittel begrenzt
+  r = siteFeedback([...good, ...[1, 2, 3].map(d => ({ uid: 'z', kind: 'nofly', siteId: 'x', date: '2026-11-0' + d, reason: 'wind', afcScore: 72, pilot: P }))], N, 'normal');
+  assert.equal(r.x.capped, 1); assert.ok(r.x.wm <= (r.x.wr) / 2 + 1e-9);
+  // ein Experte allein findet es sechsmal zu streng: nicht lockerer
+  const E = { level: 'expert' };
+  r = siteFeedback([1, 2, 3, 4, 5, 6].map(d => ({ uid: 'e', siteId: 'x', date: '2026-11-0' + d, afcVerdict: 'streng', pilot: E })), N, 'expert');
+  assert.equal(r.x.adj, 0);
+  // zwei Experten: lockerer
+  r = siteFeedback([1, 2, 3].map(d => ({ uid: 'e', siteId: 'x', date: '2026-11-0' + d, afcVerdict: 'streng', pilot: E })).concat([{ uid: 'f', siteId: 'x', date: '2026-11-04', afcVerdict: 'streng', pilot: E }]), N, 'expert');
+  assert.equal(r.x.adj, 4);
+});
