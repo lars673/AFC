@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.3';
+const APP_VER = '12.4';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -395,7 +395,10 @@ function stateBox() {
 /* ---- Entscheid */
 function headlineFor(d) {
   const p = S.plan, h = p.headline;
-  if (d === h.day) return { tone: h.tone, title: h.title, text: h.text };
+  if (d === h.day) {
+    if (!h.site || !h.win) return { tone: h.tone, title: h.title, text: h.text };       // älterer gespeicherter Stand: nur Text
+    return { tone: h.tone, title: h.title, text: h.text, site: h.site, score: h.score, win: h.win, notes: [h.over ? 'Der Flugtag ist vorbei.' : '', ...(h.why || []), h.region ? 'Regional: ' + h.region : ''].filter(Boolean) };
+  }
   const t = p.days[d].top;
   if (!t) {
     const later = p.days.findIndex((x, i) => i > d && x.top);
@@ -409,8 +412,29 @@ function headlineFor(d) {
   let text = sc >= 55 ? `Bester Start: ${site.name}${site.name.startsWith(area.name) ? '' : ' (' + area.name + ')'}, ${winText(t.best)}, Score ${sc}.` : `Der beste Startplatz (${site.name}) erreicht nur ${sc} von 100.`;
   const dd = p.days[d];
   if (dd.regionStatus && dd.regionStatus !== 'ok') text += ` Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', bise: 'Bise', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}.`;
-  if (d > 2) text += ' Je weiter in der Zukunft, desto unsicherer.';
-  return { tone, title, text };
+  const notes = [];
+  if (dd.regionStatus && dd.regionStatus !== 'ok') notes.push(`Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', bise: 'Bise', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}`);
+  if (d > 2) { text += ' Je weiter in der Zukunft, desto unsicherer.'; notes.push('Je weiter in der Zukunft, desto unsicherer'); }
+  return { tone, title, text, site: t.siteId, score: sc, win: [t.best.from, t.best.to], notes };
+}
+
+/** Lebendiger Himmel hinter der Tagesaussage: dezent Sonne, ziehende Wolken, Regen. Reine Zierde aus dem Wetterbild des Tages
+    (zählt nicht zum Score). Die Uhrzeit bestimmt die Stellung, damit beim Neuzeichnen nichts springt. */
+const HL_SKY = { sun: [1, 0, 0], few: [1, 1, 0], part: [1, 2, 0], cloud: [0, 3, 0], shower: [.6, 2, 1], rain: [0, 3, 2], storm: [0, 3, 2] };
+function hlSkyHtml(sky) {
+  const k = typeof sky === 'string' ? sky : sky?.k, c = HL_SKY[k];
+  if (!c) return '';
+  const now = (Date.now() / 1000) % 3600;
+  const cl = [[2, 1, 62, 0], [24, .7, 80, 29], [10, .55, 71, 50]].slice(0, c[1]).map(([y, sc, dur, ph]) => `<svg class="hs-cl" viewBox="0 0 64 32" style="--y:${y}px;--s:${sc};animation-duration:${dur}s;animation-delay:${(-(now + ph)).toFixed(1)}s"><path d="M14 30a10 10 0 0 1-1-19.9 14 14 0 0 1 26.5-3A11.5 11.5 0 0 1 50 30z"/></svg>`).join('');
+  return `<div class="hl-sky k-${k}" aria-hidden="true">${c[0] ? `<i class="hs-sun" style="--so:${c[0]}"></i>` : ''}${cl}${c[2] ? `<i class="hs-rainw${c[2] === 1 ? ' light' : ''}"><i class="hs-rain"></i></i>` : ''}${k === 'storm' ? '<i class="hs-flash"></i>' : ''}</div>`;
+}
+
+/** Tagesaussage: eine Überschrift, der beste Start als antippbare Zeile, darunter höchstens kurze Stichworte. */
+function headlineHtml(h, conf, sky) {
+  const s = h.site ? siteById(h.site) : null, area = s ? S.plan.areas.find(a => a.sites.includes(s.id)) : null;
+  const best = s ? `<button type="button" class="hl-best" data-act="site" data-id="${esc(s.id)}"><span class="mini-pill s-${cls(h.score)}" data-cu="hl">${h.score}</span><span class="hl-bt"><small>${h.score >= 55 ? 'Bester Start' : 'Bester Startplatz, trotzdem zu tief'}</small><b>${esc(s.name)}</b><span>${h.win[0]}–${h.win[1]} Uhr${area && !s.name.startsWith(area.name) ? ' · ' + esc(area.name) : ''}</span></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : '';
+  const notes = s ? (h.notes?.length ? `<ul class="hl-notes">${h.notes.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
+  return `<div class="headline ${h.tone}">${h.site ? hlSkyHtml(sky) : ''}<h2>${esc(h.title)}</h2>${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>`;
 }
 
 /** Kompakte Zeile pro Gebiet: Name, bester Start mit Fenster, Score; aufklappbar für alle Startplätze. */
@@ -493,7 +517,7 @@ function renderDecide() {
   el.innerHTML = `
     ${watchLineHtml()}
     ${surveyCard()}
-    <div class="headline ${h.tone}"><h2>${esc(h.title)}</h2><p>${esc(h.text)}</p>${confHtml(p.days[S.day]?.conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>
+    ${headlineHtml(h, p.days[S.day]?.conf, p.days[S.day]?.sky)}
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
@@ -721,12 +745,12 @@ function renderLage() {
     <div class="sec-row lage-film"><span class="fine">Sonne, Wolken, Wind und Thermik im Gelände, Stunde für Stunde.</span><button type="button" class="btn sec brief-btn" data-act="region3d">${PLAY_SVG} Tagesfilm in 3D</button></div>
     ${table(short)}
     ${quiet.length ? `<p class="fine lage-quiet">Unauffällig: ${esc(quiet.join(', '))}.</p>` : ''}
-    <details class="pro-more" data-k="lageOpen" ${store.get('lageOpen') ? 'open' : ''}><summary>Für Profis: alle Werte Stunde für Stunde</summary>
-    ${table(rows)}
+    <div class="folds lage-folds">
+    ${fold('lagepro', 'Für Profis', 'alle Werte Stunde für Stunde', `    ${table(rows)}
     <div class="legend"><span><i style="background:var(--wait)"></i>Vorsicht</span><span><i style="background:var(--no)"></i>K.-o. (Kaltfront, Gewitter, Föhn; starke Bise an Lee-Hängen)</span><span>Höhenwind färbt nur leicht: er verschlechtert, verbietet aber nichts.</span></div>
-    <p class="fine" style="margin:4px 0 0">Föhndruck = Luftdruck Lugano minus Zürich (Prognose): ab +4 hPa Föhn möglich, ab +8 hPa Föhn. Bisedruck = Zürich minus Genf: ab +2 hPa Bise, ab +4 hPa starke Bise.</p>
-    </details>
-    ${whyAll.length ? `<div class="panel" style="margin-top:12px"><h3>Warum die Frontwarnung?</h3><ul class="why">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p></div>` : ''}
+    <p class="fine" style="margin:4px 0 0">Föhndruck = Luftdruck Lugano minus Zürich (Prognose): ab +4 hPa Föhn möglich, ab +8 hPa Föhn. Bisedruck = Zürich minus Genf: ab +2 hPa Bise, ab +4 hPa starke Bise.</p>`, { open: !!store.get('lageOpen') })}
+    ${whyAll.length ? fold('lagefront', 'Warum die Frontwarnung?', `${whyAll.length} ${whyAll.length === 1 ? 'Signal' : 'Signale'} aus Druck, Wind, Temperatur, Schauer`, `<ul class="why-list">${whyAll.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="fine" style="margin:0">Eine Warnung braucht mindestens zwei Signale (Druck, Windsprung, Temperatursturz, Schauer).</p>`) : ''}
+    </div>
     ${isToday() && nowS ? `<div class="panel" style="margin-top:12px"><h3>Jetzt gemessen</h3><div class="kv">
       <div><b>${nowS.foehnScore}</b><span>Föhn-Signal${nowS.foehn !== 'ok' ? ' (' + LVL_TXT[nowS.foehn] + ')' : ''}</span></div>
       <div><b>${nowS.bise}</b><span>Bise im Vorland</span></div>
@@ -1124,7 +1148,8 @@ function renderBook() {
   const shown = LB.year === 'all' ? d.flights : d.flights.filter(f => f.date.startsWith(LB.year));
   const gearById = Object.fromEntries(d.gear.map(g => [g.id, g]));
   let lastMonth = '';
-  const rows = shown.map(f => {
+  const LB_FIRST = 8, cut = !LB.all && shown.length > LB_FIRST + 2;      // ruhig: zuerst die letzten Flüge, der Rest auf einen Tipp
+  const rows = (cut ? shown.slice(0, LB_FIRST) : shown).map(f => {
     const m = f.date.slice(0, 7), head = m !== lastMonth ? `<div class="lb-month">${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}</div>` : '';
     lastMonth = m;
     const route = [f.siteName || 'Start ?', f.landingName].filter(Boolean).join(' → ');
@@ -1158,6 +1183,7 @@ function renderBook() {
       </div>
       ${years.length > 1 ? `<div class="seg" role="group" aria-label="Jahr">${['all', ...years].map(y => `<button type="button" data-act="lbyear" data-v="${y}" aria-pressed="${LB.year === y}">${y === 'all' ? 'Alle' : y}</button>`).join('')}</div>` : ''}
       <div class="lb-list">${rows || `<p class="fine" style="margin:8px 0 0">${d.settings.flightsBefore ? `Noch keine Flüge einzeln erfasst. Deine ${d.settings.flightsBefore} Flüge von vorher zählen im Total. Neue Flüge mit «+ Flug» oder «IGC laden».` : 'Noch keine Flüge. Tippe auf «+ Flug» oder lade IGC-Dateien.'}</p>`}</div>
+      ${cut ? `<button type="button" class="btn sec lb-more" data-act="lball">Alle ${shown.length} Flüge zeigen</button>` : ''}
       ${st.longest?.durMin ? `<p class="fine">Längster Flug: ${L.fmtDur(st.longest.durMin)} h am ${ddmm(st.longest.date)}${st.longest.date.slice(0, 4)} (${esc(st.longest.siteName || '–')})${st.farthest ? ` · weitester: ${st.farthest.km} km` : ''}</p>` : ''}
     </div>
     ${lbStatsHtml(d.flights)}
@@ -1168,26 +1194,26 @@ function renderBook() {
         return `<button type="button" class="lb-card ${g.retired ? 'off' : s.level}" data-act="lbgear" data-id="${esc(g.id)}"><span class="lb-type">${L.GEAR_TYPES[g.type]}${def ? ' · Standard' : ''}${g.retired ? ' · ausgemustert' : ''}</span><b>${esc(L.gearName(g))}</b>${g.cert ? `<small>${esc(g.cert)}</small>` : ''}<small>${g.type === 'reserve' ? '' : `${s.hours} h · ${s.flights} Flüge`}</small>${s.items.map(x => `<small class="lb-${x.level}">${esc(x.text)}</small>`).join('')}</button>`;
       }).join('')}</div>` : '<p class="fine" style="margin:0">Erfasse Schirm, Gurtzeug und Retter. AFC zählt dann die Stunden und erinnert an Schirm-Check und Retter-Packen.</p>'}
     </div>
-    <div class="panel"><h3>Flüge vor dem Flugbuch</h3>
+    <div class="panel panel-folds"><div class="folds">
+      ${fold('lbbefore', 'Flüge vor dem Flugbuch', d.settings.flightsBefore || d.settings.hoursBefore ? `${d.settings.flightsBefore || 0} Flüge, ${d.settings.hoursBefore || 0} Stunden eingetragen` : 'noch nichts eingetragen', `
       <p class="fine" style="margin:0 0 8px">Damit Total und Pilotenprofil stimmen: was du vorher geflogen bist.</p>
       <form id="lbSettings" class="pilot-form">
         <label class="fld"><span>Flüge</span><input type="number" inputmode="numeric" min="0" name="flightsBefore" value="${d.settings.flightsBefore || ''}"></label>
         <label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" value="${d.settings.hoursBefore || ''}"></label>
         <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="submit">Speichern</button></div>
       </form>
-      <p class="fine">Das Flugbuch liegt auf deinem Mac und füllt dein Pilotenprofil automatisch.</p>
-    </div>
-    <div class="panel">
-      <div class="lb-head"><h3>Sichern und exportieren</h3><button class="btn sec" type="button" data-act="lbbackup">Jetzt sichern</button></div>
+      <p class="fine">Das Flugbuch liegt auf deinem Mac und füllt dein Pilotenprofil automatisch.</p>`)}
+      ${fold('lbsave', 'Sichern und exportieren', d.backup?.cloudError ? 'Kopie in iCloud hat nicht geklappt' : d.backup?.at ? `letzte Sicherung ${dayKey(d.backup.at) === todayKey() ? 'heute' : 'am ' + ddmm(dayKey(d.backup.at))} ${timeOf(d.backup.at)} Uhr` : 'Tabelle, PDF, Sicherungsdatei', `
       ${lbBackupHtml(d.backup)}
       <div class="btn-row lb-exp">
+        <button class="btn" type="button" data-act="lbbackup">Jetzt sichern</button>
         <button class="btn sec" type="button" data-act="lbcsv">Tabelle (Excel)</button>
         <button class="btn sec" type="button" data-act="lbprint">Drucken / PDF</button>
         <button class="btn sec" type="button" data-act="lbjson">Sicherungsdatei</button>
         <label class="btn sec lb-file">Sicherung laden<input type="file" id="lbRestore" accept=".json,application/json"></label>
       </div>
-      <p class="fine">«Drucken / PDF» nimmt die Flüge der gewählten Jahres-Ansicht; im Druckfenster «Als PDF sichern» wählen. «Sicherung laden» ergänzt und aktualisiert Flüge, löscht aber nichts.</p>
-    </div>`;
+      <p class="fine">«Drucken / PDF» nimmt die Flüge der gewählten Jahres-Ansicht; im Druckfenster «Als PDF sichern» wählen. «Sicherung laden» ergänzt und aktualisiert Flüge, löscht aber nichts.</p>`, { lvl: d.backup?.cloudError ? 'warn' : '' })}
+    </div></div>`;
 }
 
 /* ---- Flugbuch-Statistik: Flugstunden je Monat, Flugarten, meine Plätze */
@@ -1597,7 +1623,7 @@ function flightCheck(log) {
 /* ---------------------------------------------------------------- Dialoge */
 function dlg(id, html) {
   const d = $(id);
-  if (d._closing) { clearTimeout(d._closing); d._closing = 0; d.classList.remove('closing'); }   // wird gleich wieder gebraucht: Schliessen abbrechen
+  if (d._closing) { clearTimeout(d._closing); d._closing = 0; d.classList.remove('closing'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } }   // wird gleich wieder gebraucht: Schliessen abbrechen
   d.innerHTML = html;
   // Auf dem Handy: «Schliessen» unten in Daumenreichweite (oben rechts ist mit einer Hand schwer erreichbar)
   if (id === '#siteDlg') d.querySelector('.dlg-in')?.insertAdjacentHTML('beforeend', '<div class="dlg-foot"><button class="btn sec" type="button" data-act="closesite">Schliessen</button></div>');
@@ -1608,8 +1634,11 @@ function dlg(id, html) {
 function closeDlg(d) {
   if (!d?.open || d._closing) return;
   if (noMotion()) { d.close(); return; }
+  const back = d.id === 'siteDlg' ? flowBack(d) : 0;
+  if (!back) d.classList.remove('flow');
+  flowEnd();
   d.classList.add('closing');
-  d._closing = setTimeout(() => { d._closing = 0; d.classList.remove('closing'); if (d.open) d.close(); }, 170);
+  d._closing = setTimeout(() => { d._closing = 0; if (d.open) d.close(); d.classList.remove('closing', 'flow'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } }, back || 170);
 }
 const isOpen = d => !!d?.open && !d._closing;
 function ask({ title, text, ok = 'OK', danger = false, cancel = 'Abbrechen' }) {
@@ -1644,7 +1673,7 @@ const INTRO_ART = {
 };
 const INTRO = [
   ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.', 'score'],
-  ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.', 'why'],
+  ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Fahr mit dem Finger über die Stundenleiste, dann folgen Ring, Wind und Gründe sofort. Seitlich wischen wechselt den Tag, ganz oben herunterziehen holt die neuste Prognose.', 'why'],
   ['Die Karte lebt', 'Auf der Karte lässt der Play-Knopf den ganzen Tag ablaufen: Sonne und Schatten wandern, die Thermik baut auf, der Wind fliesst dem Gelände entlang. Tippe irgendwo hin, dann erklärt AFC, warum es dort steigt oder nicht. «3D» zeigt denselben Tag als Überflug mit Wolken und Nebelmeer, mit «Route» planst du eine Strecke von A nach B.', 'film'],
   ['Startplatz und Flug in 3D', 'Bei jedem Startplatz zeigt «In 3D ansehen» den Berg mit Kabeln, Lee, Wind und der Landevolte. Im Flugbuch fliegst du einen Flug mit IGC-Datei nochmals ab und siehst, wo die Prognose gestimmt hat. Mit «+ Flug» fliegen weitere eigene Flüge oder die IGC-Dateien deiner Kollegen gleichzeitig mit.', 'd3'],
   ['Briefing in 15 Sekunden', 'Merke dir deine Startplätze mit dem Stern. «Briefing» zeigt für jeden einen kurzen Film mit Score, bestem Fenster und den wichtigsten Gründen. Du kannst ihn als Video sichern oder in der Gruppe teilen. Im Flugbuch macht «Rückblick» aus deinem Flugjahr einen Film, und «Vergleichen» lässt zwei Startplätze Stunde für Stunde gegeneinander laufen.', 'brief'],
@@ -1677,12 +1706,203 @@ function toast(msg) {
   clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; try { if (t.matches(':popover-open')) t.hidePopover(); } catch { /* ohne Popover */ } }, Math.max(3200, msg.length * 70));
 }
 
+/* ---- Gesten (nur mit dem Finger): seitlich wischen wechselt den Tag, ein Fenster lässt sich nach unten wegziehen,
+   ganz oben herunterziehen aktualisiert die Prognose (der Windsack füllt sich Ring um Ring). Alle Knöpfe bleiben gleichwertig. */
+function goDay(i) {
+  const was = S.day, prev = numSnap($('#v-' + S.tab));
+  S.day = i; S.dayPicked = true; render();
+  if (S.day !== was) lively(Math.sign(S.day - was), prev);
+  // der gewählte Tag bleibt in der Tagesleiste sichtbar (nach Wischen kann er sonst ausserhalb liegen)
+  const bar = $('#daybar'), c = bar?.querySelector('[aria-pressed="true"]');
+  if (c && bar.scrollWidth > bar.clientWidth + 4) { const br = bar.getBoundingClientRect(), cr = c.getBoundingClientRect(); if (cr.left < br.left || cr.right > br.right) bar.scrollTo({ left: bar.scrollLeft + cr.left - br.left - (bar.clientWidth - cr.width) / 2, behavior: noMotion() ? 'auto' : 'smooth' }); }
+}
+
+/* ---- Stunden zum Durchfahren: Finger (oder Maus) über die Stundenleiste ziehen, Ring, Windsack und Werte folgen sofort */
+const SCRUB = { on: false, id: null, x: 0, moved: false };
+function scrubHour(x) {
+  let best = null, bd = Infinity;
+  for (const c of $$('#siteDlg .ribbon.big .rc[class*=" s-"]')) { const r = c.getBoundingClientRect(), d = Math.abs(x - (r.left + r.width / 2)); if (d < bd) { bd = d; best = c; } }
+  return best ? Number(best.dataset.h) : null;
+}
+function scrubEnd(e) {
+  if (!SCRUB.on || (e && e.pointerId !== SCRUB.id)) return;
+  SCRUB.on = false;
+  if (SCRUB.moved) $('#siteDlg').classList.remove('scrubbing');
+}
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest?.('#siteDlg .ribbon.big') || (e.pointerType === 'mouse' && e.button !== 0) || !S.detailData) return;
+  SCRUB.on = true; SCRUB.id = e.pointerId; SCRUB.x = e.clientX; SCRUB.moved = false;
+});
+document.addEventListener('pointermove', e => {
+  if (!SCRUB.on || e.pointerId !== SCRUB.id) return;
+  if (e.pointerType === 'mouse' && !(e.buttons & 1)) { scrubEnd(e); return; }
+  if (!SCRUB.moved) { if (Math.abs(e.clientX - SCRUB.x) < 6) return; SCRUB.moved = true; $('#siteDlg').classList.add('scrubbing'); }
+  const h = scrubHour(e.clientX);
+  if (h != null && h !== S.hour && isOpen($('#siteDlg')) && $('#siteDlg .ribbon.big')) { S.hour = h; renderSite(); try { navigator.vibrate?.(4); } catch { /* ohne Vibration */ } }
+});
+document.addEventListener('pointerup', scrubEnd);
+document.addEventListener('pointercancel', scrubEnd);
+const GS = { on: false, x: 0, y: 0, t: 0, mode: null, can: null, dlg: null, view: null, dx: 0, dy: 0, sock: -1, busy: false };
+const GS_NO = 'input, textarea, select, canvas, [type="range"], .hours-tbl, .wk-wrap, .leaflet-container, .ribbon.big, .daybar, .duel, [data-noswipe]';
+const PULL_MAX = 96, PULL_GO = 64;
+function pullShow(px, load = false) {
+  const el = $('#pull');
+  if (!el) return;
+  const k = Math.min(1, px / PULL_GO), sp = load ? 30 : Math.round(k * 27 / 5.5) * 5.5;
+  const key = sp + (load ? 100 : k >= 1 ? 50 : 0);
+  if (key !== GS.sock || el.hidden) { GS.sock = key; el.innerHTML = sockHtml(sp, load ? 46 : sp) + `<span>${load ? 'Prognose wird geholt …' : k >= 1 ? 'Loslassen zum Aktualisieren' : 'Zum Aktualisieren ziehen'}</span>`; }
+  if (el.hidden) el.style.top = Math.round(($('.top')?.getBoundingClientRect().bottom ?? 66) - 46) + 'px';
+  el.hidden = false;
+  el.classList.toggle('load', load);
+  el.style.transform = `translate(-50%, ${Math.round(px)}px)`;
+  el.style.opacity = String(Math.min(1, px / 28));
+}
+function pullHide() {
+  const el = $('#pull');
+  if (!el || el.hidden) return;
+  el.classList.add('out');
+  el.style.transform = 'translate(-50%, 0px)'; el.style.opacity = '0';
+  setTimeout(() => { el.hidden = true; el.classList.remove('out', 'load'); GS.sock = -1; }, 300);
+}
+function gsReset() {
+  if (GS.mode === 'day' && GS.view) { GS.view.style.transition = 'transform var(--t2) var(--ease)'; GS.view.style.transform = ''; const v = GS.view; setTimeout(() => { v.style.transition = ''; }, 300); }
+  if (GS.mode === 'sheet' && GS.dlg && !GS.dlg._closing) { const d = GS.dlg; d.style.transition = 'transform var(--t2) var(--ease)'; d.style.transform = ''; d.classList.remove('dragging'); setTimeout(() => { if (!d._closing) d.style.transition = ''; }, 300); }
+  if (GS.mode === 'pull' && !GS.busy) pullHide();
+  GS.on = false; GS.mode = null;
+}
+/** Fenster ist weit genug gezogen: nach unten hinaus und schliessen. */
+function dragClose(d) {
+  if (d._closing) return;
+  flowEnd();
+  d.style.transition = 'transform .24s cubic-bezier(.4,0,.9,.6)';
+  d.style.transform = 'translateY(105%)';
+  d._closing = setTimeout(() => { d._closing = 0; if (d.open) d.close(); d.style.transition = d.style.transform = ''; d.classList.remove('dragging', 'flow'); }, 240);
+}
+document.addEventListener('touchstart', e => {
+  GS.on = false; GS.mode = null;
+  if (e.touches.length !== 1 || e.target.closest?.(GS_NO)) return;
+  const t = e.touches[0], d = e.target.closest('dialog');
+  GS.can = null;
+  if (d) {
+    // Fenster wegziehen: nur Startplatz- und Hinweisfenster auf dem Handy, und nur wenn der Inhalt ganz oben steht
+    const sc = d.querySelector('.dlg-in');
+    if ((d.id === 'siteDlg' || d.id === 'msgDlg') && isOpen(d) && innerWidth <= 640 && !d.querySelector('form') && (sc?.scrollTop ?? 0) <= 0) { GS.can = 'sheet'; GS.dlg = d; }
+  } else if (!document.querySelector('dialog[open]') && e.target.closest('main') && S.tab !== 'map') GS.can = 'page';
+  if (!GS.can) return;
+  GS.on = true; GS.x = t.clientX; GS.y = t.clientY; GS.t = performance.now(); GS.dx = GS.dy = 0;
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!GS.on) return;
+  if (e.touches.length !== 1) { gsReset(); return; }
+  const t = e.touches[0], dx = GS.dx = t.clientX - GS.x, dy = GS.dy = t.clientY - GS.y;
+  if (!GS.mode) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    if (GS.can === 'sheet') GS.mode = dy > 0 && dy > Math.abs(dx) * 1.4 ? 'sheet' : 'none';
+    else if (Math.abs(dx) > Math.abs(dy) * 1.7 && S.plan && !$('#daybar').hidden) { GS.mode = 'day'; GS.view = $('#v-' + S.tab); }
+    else if (dy > 0 && dy > Math.abs(dx) * 1.4 && window.scrollY <= 0 && S.plan && !GS.busy) GS.mode = 'pull';
+    else GS.mode = 'none';
+    if (GS.mode === 'sheet') GS.dlg.classList.add('dragging');
+  }
+  if (GS.mode === 'none') { GS.on = false; return; }
+  if (noMotion()) return;
+  if (GS.mode === 'sheet') { GS.dlg.style.transition = 'none'; GS.dlg.style.transform = `translateY(${Math.max(0, dy - 10)}px)`; }
+  else if (GS.mode === 'day') { const end = (dx < 0 && S.day >= S.plan.dates.length - 1) || (dx > 0 && S.day <= 0); GS.view.style.transition = 'none'; GS.view.style.transform = `translateX(${Math.max(-12, Math.min(12, dx * (end ? .06 : .16)))}px)`; }
+  else if (GS.mode === 'pull') pullShow(Math.min(PULL_MAX, Math.max(0, dy - 10) * .55));
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (!GS.on || !GS.mode || GS.mode === 'none') { GS.on = false; return; }
+  const { mode, dx, dy } = GS, fast = (performance.now() - GS.t) < 320;
+  if (mode === 'sheet' && (dy > 130 || (fast && dy > 60))) { const d = GS.dlg; GS.on = false; GS.mode = null; if (noMotion()) { d.classList.remove('dragging'); d.close(); } else dragClose(d); return; }
+  if (mode === 'pull' && Math.max(0, dy - 10) * .55 >= PULL_GO) {
+    GS.on = false; GS.mode = null; GS.busy = true;
+    pullShow(PULL_GO - 8, true);
+    const t0 = Date.now();
+    Promise.resolve(loadPlan(true)).catch(() => {}).then(() => new Promise(r => setTimeout(r, Math.max(0, 700 - (Date.now() - t0))))).then(() => { GS.busy = false; pullHide(); });
+    return;
+  }
+  gsReset();
+  if (mode === 'day' && Math.abs(dx) > 56) { const i = S.day + (dx < 0 ? 1 : -1); if (i >= 0 && i < S.plan.dates.length) goDay(i); }
+}, { passive: true });
+document.addEventListener('touchcancel', () => { if (GS.on) gsReset(); }, { passive: true });
+
+/* ---- Fliessende Übergänge: das Fenster wächst aus der angetippten Zeile auf, ihre Score-Zahl fliegt in den Ring.
+   Zurück geht es denselben Weg. Ohne angetippte Zeile (oder mit «Bewegung reduzieren») bleibt es beim schlichten Einblenden. */
+const FLOW = { el: null, at: 0, key: null, src: null, ghost: null, base: null, font: 20, score: null, back: null };
+const FLOW_EASE = 'cubic-bezier(.2,.7,.2,1)';
+document.addEventListener('click', e => { FLOW.el = e.target.closest?.('.srow, .hl-best, .leaflet-marker-icon, [data-act]') || null; FLOW.at = performance.now(); }, true);
+const flowInset = (r, dr) => `inset(${[r.top - dr.top, dr.right - r.right, dr.bottom - r.bottom, r.left - dr.left].map(v => Math.max(0, Math.round(v)) + 'px').join(' ')} round 14px)`;
+function flowEnd() {
+  const L = $('#flowLayer');
+  FLOW.ghost = null;
+  if (!L) return;
+  L.replaceChildren();
+  try { if (L.matches(':popover-open')) L.hidePopover(); } catch { /* ohne Popover */ }
+}
+/** Vor dem Öffnen: Gibt es eine angetippte Zeile, aus der das Fenster wachsen kann? */
+function flowStart(id) {
+  flowEnd();
+  const d = $('#siteDlg');
+  FLOW.src = null; FLOW.key = id;
+  if (noMotion() || isOpen(d) || typeof d.animate !== 'function' || !FLOW.el?.isConnected || performance.now() - FLOW.at > 600) return null;
+  const box = FLOW.el.closest('.srow') || FLOW.el, r = box.getBoundingClientRect();
+  if (r.width < 8 || r.height < 8 || r.bottom < 0 || r.top > innerHeight) return null;
+  FLOW.src = box;
+  const pill = box.querySelector('.mini-pill'), n = pill ? Number(pill.textContent) : NaN;
+  d.classList.add('flow');
+  return { r, pill: pill && Number.isFinite(n) ? { r: pill.getBoundingClientRect(), n, cls: pill.className, font: parseFloat(getComputedStyle(pill).fontSize) || 20 } : null };
+}
+function flowGrow(d, f) {
+  const dr = d.getBoundingClientRect();
+  d.animate([{ clipPath: flowInset(f.r, dr), opacity: .55 }, { opacity: 1, offset: .4 }, { clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }], { duration: 500, easing: FLOW_EASE });
+  const L = $('#flowLayer'), to = d.querySelector('.skel-c')?.getBoundingClientRect();
+  if (!f.pill || !to || !L || typeof L.showPopover !== 'function') return;
+  const g = document.createElement('div');
+  g.className = 'flow-ghost ' + f.pill.cls;
+  g.textContent = f.pill.n;
+  g.style.cssText = `left:${f.pill.r.left}px;top:${f.pill.r.top}px;width:${f.pill.r.width}px;height:${f.pill.r.height}px`;
+  L.replaceChildren(g);
+  try { L.showPopover(); } catch { L.replaceChildren(); return; }
+  FLOW.ghost = g; FLOW.base = f.pill.r; FLOW.font = f.pill.font; FLOW.score = f.pill.n;
+  flowFly(g, to, 500);
+}
+/** Die fliegende Zahl von dort, wo sie gerade ist, weich zum Ziel schicken (auch wenn das Ziel sich inzwischen verschoben hat). */
+function flowFly(g, to, ms) {
+  const b = FLOW.base, cur = g.getBoundingClientRect(), cs = getComputedStyle(g), mid = r => [r.left + r.width / 2, r.top + r.height / 2];
+  const [bx, by] = mid(b), [cx, cy] = mid(cur), [tx, ty] = mid(to);
+  const from = { transform: `translate(${cx - bx}px, ${cy - by}px) scale(${cur.width / b.width || 1})`, backgroundColor: cs.backgroundColor, color: cs.color };
+  for (const a of g.getAnimations()) a.cancel();
+  return g.animate([from, { transform: `translate(${tx - bx}px, ${ty - by}px) scale(${32 / FLOW.font})`, backgroundColor: 'rgba(0,0,0,0)', color: getComputedStyle(document.documentElement).getPropertyValue('--ink').trim() || '#101c15' }], { duration: ms, easing: FLOW_EASE, fill: 'forwards' });
+}
+/** Die Zahl landet im Ring: erst dann erscheint die echte Zahl und zählt auf den Wert der Stunde. */
+function flowLand(b, score) {
+  const g = FLOW.ghost;
+  if (!g?.isConnected || !b) { flowEnd(); return false; }
+  b.style.visibility = 'hidden';
+  const a = flowFly(g, b.getBoundingClientRect(), 320), from = FLOW.score;
+  const done = () => { b.style.visibility = ''; if (FLOW.ghost === g) flowEnd(); countUp(b, from, score, 450); };
+  a.onfinish = done; a.oncancel = done;
+  return true;
+}
+/** Beim Schliessen zurück in die Zeile, wenn sie noch zu sehen ist. Gibt die Dauer zurück, sonst 0. */
+function flowBack(d) {
+  if (!d.classList.contains('flow') || typeof d.animate !== 'function') return 0;
+  const el = FLOW.src?.isConnected ? FLOW.src : FLOW.key ? $(`main > .view:not([hidden]) .srow-main[data-id="${CSS.escape(FLOW.key)}"]`)?.closest('.srow') || $(`main > .view:not([hidden]) [data-act="site"][data-id="${CSS.escape(FLOW.key)}"]`) : null;
+  const r = el?.getBoundingClientRect();
+  if (!r || r.width < 8 || r.bottom < 70 || r.top > innerHeight - 70) return 0;
+  const dr = d.getBoundingClientRect(), small = flowInset(r, dr);
+  FLOW.back = d.animate([{ clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }, { clipPath: small, opacity: .9, offset: .75 }, { clipPath: small, opacity: 0 }], { duration: 360, easing: FLOW_EASE, fill: 'forwards' });
+  return 350;
+}
+
 /* ---- Startplatz-Ansicht */
 async function openSite(id) {
   if (!S.plan || !siteById(id)) return;
   const base = siteById(id);
   S.site = id; S.hour = null; S.panel = null;
-  dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
+  for (const k of [...FOLD.keys()]) if (!/^(lb|lage)/.test(k)) FOLD.delete(k);   // jedes Öffnen beginnt ruhig: nur das Wichtige ist aufgeklappt
+  const flow = flowStart(id);
+  const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
+  if (flow) flowGrow(dl, flow);
   try {
     const d = await loadDetail(id);
     if (S.site !== id) return;
@@ -1691,6 +1911,7 @@ async function openSite(id) {
     S.hour = best?.peak ?? d.days[S.day]?.hours.find(h => num(h.score))?.h ?? null;
     renderSite(true);
   } catch (e) {
+    flowEnd();
     dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="empty">Details konnten nicht geladen werden: ${esc(e.message)}</div></div>`);
   }
 }
@@ -1732,14 +1953,16 @@ function landingHtml(s, hr) {
   const fl = fv == null ? 'none' : fv >= bad ? 'bad' : fv >= warn ? 'warn' : 'ok';
   const st = landStation(l);
   const sx = st?.x, sv = sx ? Math.max(sx.wind, 0.75 * (sx.gust ?? 0)) : null, sl = sv == null ? 'none' : sv >= bad ? 'bad' : sv >= warn ? 'warn' : 'ok';
-  return `<div class="panel land" style="margin:0"><h3>Landeplatz</h3>
+  const worst = [fl, sl].includes('bad') ? 'danger' : [fl, sl].includes('warn') ? 'warn' : '';
+  const sum = `${l ? esc(l.name) : 'Wind im Tal'}${fc ? ` · Wind ${fc[0]} / ${fc[1] ?? '–'} km/h` : ''}${worst ? (worst === 'danger' ? ' · stark' : ' · anspruchsvoll') : ''}`;
+  return fold('land', 'Landeplatz', sum, `<div class="land">
     ${l ? `<p style="margin:0 0 8px"><b>${esc(l.name)}</b> <span class="fine">${l.alt ?? '–'} m · ${L.d.toFixed(1)} km vom Start · ${num(l.alt) ? (s.alt - l.alt) + ' m tiefer' : ''}</span></p>` : ''}
     <div class="land-g">
       <div class="land-c stc-${fl}"><small>Prognose ${hr ? hr.h + '–' + (hr.h + 1) + ' Uhr' : ''}</small><b>${fc ? fc[0] + ' / ' + (fc[1] ?? '–') : '–'}</b><small>Wind / Böen km/h</small></div>
       ${S.day === 0 ? `<div class="land-c stc-${sl}"><small>Gemessen jetzt</small><b>${sx ? Math.round(sx.wind) + ' / ' + (num(sx.gust) ? Math.round(sx.gust) : '–') : '–'}</b><small>${sx ? `${esc(sx.name)}, ${st.d.toFixed(0)} km · ${ageTxt(ageMin(sx.time, sx.age))}${num(sx.dir) ? ' · aus ' + dirLabel(sx.dir) : ''}` : 'keine Station in der Nähe'}</small></div>` : ''}
     </div>
     <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p>
-    ${l ? volteHtml(l, landWind(l, hr)) : ''}</div>`;
+    ${l ? volteHtml(l, landWind(l, hr)) : ''}</div>`, { lvl: worst, open: !!worst });
 }
 
 /* ---- Landevolte: eigene Angabe je Landeplatz (Endanflug und Seite), sonst Vorschlag gegen den Wind */
@@ -1798,6 +2021,17 @@ function profileHtml(prof) {
   const max = Math.max(40, ...prof.map(p => p[1]));
   return `<div class="profile" role="table" aria-label="Windprofil">${[...prof].reverse().map(p => `<div class="pr" role="row"><span>+${p[0]} m</span><span class="bar"><i class="${p[1] >= 40 ? 'hi' : ''}" style="width:${Math.round(p[1] / max * 100)}%"></i></span><b>${p[1]} ${arrow(p[2])} ${dirLabel(p[2])}</b></div>`).join('')}</div>`;
 }
+/* ---- Aufklappbare Bereiche: Titel und eine Zeile mit dem Wichtigsten, der Rest erst auf Wunsch.
+   Was der Pilot auf- oder zugeklappt hat, bleibt beim Neuzeichnen (Stundenwechsel) und für den nächsten Startplatz so. */
+const FOLD = new Map();
+function fold(key, title, sum, body, o = {}) {
+  const k = key + (o.lvl ? ':' + o.lvl : ''), open = FOLD.has(k) ? FOLD.get(k) : !!o.open;
+  return `<details class="fold${o.lvl ? ' fold-' + o.lvl : ''}" data-fold="${k}" ${open ? 'open' : ''}><summary><span class="fold-t">${title}</span><span class="fold-s"${o.sumId ? ` id="${o.sumId}"` : ''}>${sum}</span></summary><div class="fold-b">${body}</div></details>`;
+}
+document.addEventListener('toggle', e => { const d = e.target; if (d.dataset?.fold) FOLD.set(d.dataset.fold, d.open); }, true);
+// weiches Aufklappen nur nach einem Tipp, nicht bei jedem Neuzeichnen
+document.addEventListener('click', e => { const d = e.target.closest?.('details.fold > summary')?.parentElement; if (d) d.classList.toggle('fold-anim', !d.open); });
+
 /* ---- Flugtag-Wächter: «Heute fliege ich hier» (lib/watch.js) */
 const WT = { list: [], devices: 0, to: 20 };
 async function loadWatch() {
@@ -1885,10 +2119,16 @@ function renderSite(fresh = false) {
   const ringFrom = fresh ? 0 : S.ringPrev ?? 0;
   const kvPrev = fresh ? null : numSnap($('#siteDlg'));
   S.ringPrev = num(hr?.score) ? hr.score : 0;
+  const tile = (act, label, icon, title) => `<button class="act-tile" type="button" data-act="${act}" data-id="${esc(s.id)}"${title ? ` title="${title}"` : ''}><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">${icon}</svg><span>${label}</span></button>`;
   const actionsHtml = `<div class="site-acts">
+      <div class="act-tiles">
+        ${tile('site3d', '3D', '<path d="M2 19l6.5-11 4 6.5 2.5-3.5L22 19z" fill="currentColor"/>', 'Startplatz in 3D ansehen')}
+        ${tile('brief', 'Briefing', '<path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z" fill="currentColor"/>', 'Briefing als kurzer Film')}
+        ${tile('showmap', 'Karte', '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/>', 'Auf der Karte zeigen')}
+        ${tile('report', 'Flug melden', '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>', 'Flug an diesem Startplatz melden')}
+        <span class="act-tile act-fav">${starBtn(s.id)}<span aria-hidden="true">${fav ? 'Gemerkt' : 'Merken'}</span></span>
+      </div>
       ${S.day === 0 ? watchBtnHtml(s.id) : ''}
-      <div class="act-row">${starBtn(s.id).replace('class="star"', 'class="star act-star"')}<button class="btn sec" type="button" data-act="showmap" data-id="${esc(s.id)}">Auf Karte</button><button class="btn sec" type="button" data-act="report" data-id="${esc(s.id)}">Flug melden</button></div>
-      <div class="act-row act-row2"><button class="btn sec" type="button" data-act="site3d" data-id="${esc(s.id)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M2 19l6.5-11 4 6.5 2.5-3.5L22 19z" fill="currentColor"/></svg> In 3D ansehen</button><button class="btn sec" type="button" data-act="brief" data-id="${esc(s.id)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z" fill="currentColor"/></svg> Briefing</button></div>
       ${(siteById(s.id)?.notes || []).length ? `<ul class="site-notes">${siteById(s.id).notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       ${groupLineFor(s.id)}
       ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
@@ -1897,12 +2137,7 @@ function renderSite(fresh = false) {
   const detailHtml = hr ? `
     <div class="hr-detail">
       <div class="hr-head">${ringHtml(hr.score, ringFrom)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
-      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
-      ${actionsHtml}
-      <details class="why-more"><summary>Alle Gründe für den Score</summary>
-      ${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-      ${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine">Keine Auffälligkeiten.</p>'}
-      </details>
+      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map((f, i) => [f, i]).sort((a, b) => (WHY_ORDER[a[0].lvl] ?? 3) - (WHY_ORDER[b[0].lvl] ?? 3) || a[1] - b[1]).map(([f]) => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
       <div class="kv">
         <div class="kv-wind"><b><span data-cu="k:speed">${hr.speed ?? '–'}</span> ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span>${sockHtml(hr.speed, hr.gust)}</div>
         <div><b data-cu="k:gust">${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
@@ -1910,7 +2145,11 @@ function renderSite(fresh = false) {
         <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
         ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30, true)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
       </div>
-      <details class="pro-more" ${store.get('proOpen') ? 'open' : ''}><summary>Für Profis: Windprofil, Thermik, Scherung, Modelle</summary>
+      ${actionsHtml}
+    </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
+  const reasonsFold = hr ? fold('reasons', 'Alle Gründe für den Score', hr.hard.length ? `${hr.hard.length} K.-o.-${hr.hard.length === 1 ? 'Kriterium' : 'Kriterien'}${hr.reasons.length ? ', ' + hr.reasons.length + ' weitere Punkte' : ''}` : hr.reasons.length ? `${hr.reasons.length} ${hr.reasons.length === 1 ? 'Punkt' : 'Punkte'}` : 'keine Auffälligkeiten',
+    `${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:0">Keine Auffälligkeiten.</p>'}`) : '';
+  const proFold = hr ? fold('pro', 'Für Profis', 'Windprofil, Thermik, Scherung, Modelle', `
       <div class="kv">
         <div><b>${hr.head ?? '–'} / ${hr.tail ?? '–'}</b><span>Gegenwind / Rückenwind${hr.wd != null ? ', ' + hr.wd + '° neben dem Hang' : ''}</span></div>
         <div><b>${hr.cape ?? '–'}</b><span>CAPE J/kg (Gewitterenergie)</span></div>
@@ -1920,10 +2159,8 @@ function renderSite(fresh = false) {
         <div><b>${hr.shear ?? '–'}</b><span>Scherung 500 m über Start km/h</span></div>
         ${hr.spread != null ? `<div><b>${hr.spread}</b><span>Modell-Unterschied km/h (ICON gegen ECMWF${hr.spread >= 10 ? ', unsicher' : ''})</span></div>` : ''}
       </div>
-      <h3 style="font:700 18px var(--f-num)">Wind über dem Startplatz</h3>
-      ${profileHtml(hr.prof)}
-      </details>
-    </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
+      <h3 style="font:700 18px var(--f-num);margin:10px 0 4px">Wind über dem Startplatz</h3>
+      ${profileHtml(hr.prof)}`, { open: !!store.get('proOpen') }) : '';
   const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th><span class="sr">Wetter</span></th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td>${skyIcon(h.sky ? { k: h.sky, cloud: h.cloud } : null, 22)}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
@@ -1931,15 +2168,19 @@ function renderSite(fresh = false) {
     <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20, true)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
-    ${S.day === 0 && !d._savedAt ? `<div class="panel" style="margin:0"><h3>Regen jetzt</h3><div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div></div>` : ''}
+    <div class="folds">
     ${landingHtml(s, hr)}
-    <div class="panel" style="margin:0"><h3>Kabel und Hindernisse</h3><div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div></div>
-    ${table}
-    <div class="panel" style="margin:0"><h3>Messung gegen Prognose</h3>${nc ? `<p>${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>'}</div>
+    ${fold('obst', 'Kabel und Hindernisse', 'wird geprüft …', '<div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div>', { sumId: 'obstSum' })}
+    ${S.day === 0 && !d._savedAt ? fold('radar', 'Regen jetzt', 'wird geprüft …', '<div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div>', { sumId: 'radarSum' }) : ''}
+    ${table ? fold('hours', 'Alle Stunden', `${hrs[0].h} bis ${hrs.at(-1).h + 1} Uhr: Score, Wind, Böen, Basis, Regen`, table) : ''}
+    ${reasonsFold}
+    ${fold('nowcast', 'Messung gegen Prognose', nc ? `${esc(nc.name)}: ${nc.obs} km/h gemessen, ${nc.fc} vorhergesagt` : 'keine passende Station in der Nähe', nc ? `<p style="margin:0">${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>')}
+    ${proFold}
+    </div>
   </div>`);
   $('#siteDlg .dlg-in')?.classList.toggle('fresh', fresh);
-  countUp($('#siteDlg .ring b'), ringFrom, hr?.score);
-  if (kvPrev) morphNums($('#siteDlg'), kvPrev, 380);
+  if (!(fresh && flowLand($('#siteDlg .ring b'), hr?.score))) countUp($('#siteDlg .ring b'), ringFrom, hr?.score, SCRUB.on && SCRUB.moved ? 160 : 600);
+  if (kvPrev) morphNums($('#siteDlg'), kvPrev, SCRUB.moved && SCRUB.on ? 140 : 380);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
   fillCam(s);
@@ -2062,11 +2303,24 @@ function radarNearHtml(v) {
   const lvl = d <= 10 || (b !== null && b - d >= 3 && d <= 20) || newRain ? 'warn' : 'ok';
   return `<div class="rad-near ${lvl}"><b>Regen ${d <= 2 ? 'hier' : d + ' km ' + DIR8_ADJ[Math.round(v.now.deg / 45) % 8]}</b>${trend}${newRain} <span class="fine">(Radar ${when} Uhr)</span></div>`;
 }
+const NEAR = { radar: null, obst: null };                 // zuletzt gezeigter Stand je Startplatz: { id, html, sum, lvl, at }
+function nearShow(kind, st) {
+  const el = $(kind === 'radar' ? '#radarNear' : '#obstNear'), sm = $(kind === 'radar' ? '#radarSum' : '#obstSum');
+  if (el) el.innerHTML = st.html;
+  if (sm) { sm.textContent = st.sum; sm.closest('details')?.classList.toggle('fold-warn', st.lvl === 'warn'); }
+}
 async function fillRadarNear(s) {
   const el = $('#radarNear');
   if (!el) return;
-  try { const v = await radarNear(s.lat, s.lon); if ($('#radarNear') === el) el.innerHTML = radarNearHtml(v); }
-  catch (e) { if ($('#radarNear') === el) el.innerHTML = `<p class="fine" style="margin:0">Regenradar nicht verfügbar (${esc(e.message)}).</p>`; }
+  const old = NEAR.radar?.id === s.id ? NEAR.radar : null;
+  if (old) { nearShow('radar', old); if (Date.now() - old.at < 120000) return; }
+  let st;
+  try {
+    const v = await radarNear(s.lat, s.lon), d = v.now ? Math.max(1, Math.round(v.now.d)) : null, html = radarNearHtml(v);
+    st = { id: s.id, at: Date.now(), html, lvl: /rad-near warn/.test(html) ? 'warn' : '', sum: d == null ? `kein Regen im Umkreis von ${v.radiusKm} km` : d <= 2 ? 'Regen hier' : `Regen ${d} km ${DIR8_ADJ[Math.round(v.now.deg / 45) % 8]}` };
+  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Regenradar nicht verfügbar', html: `<p class="fine" style="margin:0">Regenradar nicht verfügbar (${esc(e.message)}).</p>` }; }
+  NEAR.radar = st;
+  if ($('#radarNear') === el) nearShow('radar', st);
 }
 function mapMsg(t) { const m = $('#mapMsg'); m.hidden = !t; m.textContent = t || ''; }
 function setBase(key) {
@@ -2220,16 +2474,21 @@ async function fillObstNear(s) {
   const el = $('#obstNear');
   if (!el) return;
   const l = nearestLanding(s)?.l;
+  if (NEAR.obst?.id === s.id) { nearShow('obst', NEAR.obst); if (NEAR.obst.at) return; }
+  let st;
   try {
     const get = async (lat, lon, r) => { const x = await fetch(`/api/obstacles?near=${lat.toFixed(5)},${lon.toFixed(5)}&r=${r}`); const j = await x.json().catch(() => ({})); if (x.status === 202) throw new Error('Daten werden noch geladen'); if (!x.ok) throw new Error(j.error || 'HTTP ' + x.status); return j; };
     const a = await get(s.lat, s.lon, 1500), b = l ? await get(l.lat, l.lon, 1000) : null;
-    if ($('#obstNear') !== el) return;
     const ka = a.items.filter(x => x.k !== 'pt').length + (b ? b.items.filter(x => x.k !== 'pt').length : 0);
-    el.innerHTML = `${obstNearList(a.items.slice(0, 5), 'Um den Start (1,5 km)')}${b ? obstNearList(b.items.slice(0, 5), 'Um den Landeplatz ' + l.name + ' (1 km)') : ''}
+    const near = [...a.items, ...(b ? b.items : [])].filter(x => x.k !== 'pt').reduce((m, x) => Math.min(m, x.d), Infinity);
+    st = { id: s.id, at: Date.now(), lvl: ka ? 'warn' : '', sum: ka ? `${ka === 1 ? 'ein Kabel' : ka + ' Kabel oder Seilbahnen'} in der Nähe, das nächste ${near < 30 ? 'direkt hier' : fmtM(near)}` : 'keine erfassten Kabel in der Nähe',
+      html: `${obstNearList(a.items.slice(0, 5), 'Um den Start (1,5 km)')}${b ? obstNearList(b.items.slice(0, 5), 'Um den Landeplatz ' + l.name + ' (1 km)') : ''}
       ${ka ? `<p class="volte-warn" style="margin:6px 0">${ka === 1 ? 'Ein Kabel' : ka + ' Kabel oder Seilbahnen'} in der Nähe: Lage vor dem Start auf der Karte anschauen.</p>` : ''}
       <p class="fine" style="margin:4px 0">${OB_NOTE}</p>
-      <button class="btn sec" type="button" data-act="obstmap" data-id="${esc(s.id)}">Kabel auf der Karte zeigen</button>`;
-  } catch (e) { if ($('#obstNear') === el) el.innerHTML = `<p class="fine" style="margin:0">Hindernisdaten nicht verfügbar (${esc(e.message)}).</p>`; }
+      <button class="btn sec" type="button" data-act="obstmap" data-id="${esc(s.id)}">Kabel auf der Karte zeigen</button>` };
+  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Hindernisdaten nicht verfügbar', html: `<p class="fine" style="margin:0">Hindernisdaten nicht verfügbar (${esc(e.message)}).</p>` }; }
+  NEAR.obst = st;
+  if ($('#obstNear') === el) nearShow('obst', st);
 }
 
 function initMap() {
@@ -3170,7 +3429,7 @@ function setTab(t) {
   window.scrollTo({ top: 0 });
 }
 // «Für Profis» merkt sich, ob es offen war
-document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set(e.target.dataset.k || 'proOpen', e.target.open); }, true);
+document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set(e.target.dataset.k || 'proOpen', e.target.open); else if (e.target.dataset?.fold === 'pro') store.set('proOpen', e.target.open); else if (e.target.dataset?.fold === 'lagepro') store.set('lageOpen', e.target.open); }, true);
 document.addEventListener('click', async e => {
   const dlgEl = e.target.closest('dialog');
   if (e.target.tagName === 'DIALOG') { closeDlg(e.target); return; }
@@ -3209,7 +3468,7 @@ document.addEventListener('click', async e => {
     case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
     case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
     case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast('Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
-    case 'day': { const was = S.day, prev = numSnap($('#v-' + S.tab)); S.day = Number(b.dataset.i); S.dayPicked = true; render(); if (S.day !== was) lively(Math.sign(S.day - was), prev); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break; }
+    case 'day': goDay(Number(b.dataset.i)); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break;
     case 'reload': loadPlan(true); break;
     case 'sources': setTab('profile'); setTimeout(() => $$('#v-profile .panel h3').find(h => h.textContent === 'Datenquellen')?.scrollIntoView({ behavior: 'smooth' }), 80); break;
     case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); S.justOpen = S.open.has(id) ? id : null; renderDecide(); S.justOpen = null; break;
@@ -3301,7 +3560,8 @@ document.addEventListener('click', async e => {
     case 'intro': showIntro(); break;
     case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(err.message)); break;
     case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(err.message)); break;
-    case 'lbyear': LB.year = b.dataset.v; renderBook(); break;
+    case 'lbyear': LB.year = b.dataset.v; LB.all = false; renderBook(); break;
+    case 'lball': LB.all = true; renderBook(); break;
     case 'fb': {
       const f = LB.data?.flights.find(x => x.id === id);
       if (!f) break;
@@ -3448,6 +3708,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
 $('#v3dDlg')?.addEventListener('close', v3dEnd);
+$('#siteDlg')?.addEventListener('close', () => { flowEnd(); $('#siteDlg').classList.remove('flow'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } });
 window.addEventListener('resize', tabMark);
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
@@ -4383,7 +4644,7 @@ function v3dFlightPose(ts = performance.now()) {
 const BR = { ids: [], k: 0, t: 0, last: 0, raf: 0, scene: null, data: null, playing: false, rec: null, file: null, tok: 0, len: 15 };
 const BR_LEN = 15, BR_W = 720, BR_H = 1280;
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const WHY_ORDER = { bad: 0, warn: 1, ok: 2 };
+const WHY_ORDER = { danger: 0, bad: 0, warn: 1, ok: 2 };
 
 function briefShell(recap = null) {
   return `<div class="v3d brief">

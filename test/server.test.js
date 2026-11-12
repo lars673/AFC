@@ -38,6 +38,7 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     assert.ok(p.areas.length >= 8);
     assert.ok(p.dates.length >= 4);
     assert.ok(p.headline.text.length > 10);
+    if (p.headline.site) { assert.equal(p.headline.win.length, 2); assert.ok(Array.isArray(p.headline.why)); assert.equal(typeof p.headline.over, 'boolean'); }
     assert.ok(["gut", "mittel", "unsicher"].includes(p.days[0].conf?.level), JSON.stringify(p.days[0].conf));
     const best = p.days[0].top || p.days[1].top;
     assert.ok(best.best.score >= 55, 'bester Score ' + best.best.score);
