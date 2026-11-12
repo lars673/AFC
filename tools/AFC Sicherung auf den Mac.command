@@ -5,15 +5,32 @@
 echo "AFC-Sicherung auf den Mac einrichten"
 echo
 echo "In AFC: Profil › Testphase › Übersicht öffnen › Sicherung › «Mac jede Nacht sichern lassen»."
-echo "Dort «Kopieren» drücken und hier einfügen."
+echo "Dort «Kopieren» drücken."
 echo
-read -r -p "1. Adresse von AFC (z. B. https://afc-xyz.up.railway.app): " URL
-URL="${URL#Adresse: }"; URL="$(echo "$URL" | tr -d '[:space:]')"; URL="${URL%/}"
-read -r -p "2. Schlüssel: " KEY
-KEY="${KEY#Schlüssel: }"; KEY="$(echo "$KEY" | tr -d '[:space:]')"
-# Wer beide Zeilen auf einmal eingefügt hat
-case "$URL" in *Schlüssel:*) KEY="${URL#*Schlüssel:}"; URL="${URL%%Schlüssel:*}";; esac
-if [ -z "$URL" ] || [ ${#KEY} -lt 20 ]; then echo "Adresse oder Schlüssel fehlt."; read -r -p "Enter zum Schliessen"; exit 1; fi
+# Adresse und Schlüssel aus einem Text holen, egal wie er eingefügt wurde (eine oder zwei Zeilen, mit oder ohne Beschriftung)
+grab() {
+  local t="$1"
+  [ -z "$URL" ] && URL="$(printf '%s' "$t" | grep -oE 'https?://[A-Za-z0-9.:/_-]+' | head -n 1)"
+  [ -z "$KEY" ] && KEY="$(printf '%s' "$t" | sed -E 's#https?://[A-Za-z0-9.:/_-]+##g' | grep -oE '[A-Za-z0-9_-]{30,}' | head -n 1)"
+}
+URL=""; KEY=""
+# Zuerst die Zwischenablage: wer in AFC «Kopieren» gedrückt hat, muss nichts einfügen
+grab "$(pbpaste 2>/dev/null)"
+if [ -n "$URL" ] && [ -n "$KEY" ]; then
+  echo "Adresse und Schlüssel aus der Zwischenablage übernommen: $URL"
+else
+  URL=""; KEY=""
+  echo "Bitte den kopierten Text hier einfügen (Cmd+V) und Enter drücken:"
+  for i in 1 2 3; do
+    read -r LINE
+    grab "$LINE"
+    [ -n "$URL" ] && [ -n "$KEY" ] && break
+    if [ -z "$URL" ]; then echo "Jetzt noch die Adresse (beginnt mit https://):"; else echo "Jetzt noch den Schlüssel (die lange Zeichenfolge):"; fi
+  done
+fi
+URL="${URL%/}"
+if [ -z "$URL" ]; then echo "Die Adresse fehlt. Bitte in AFC nochmals «Kopieren» drücken und neu starten."; read -r -p "Enter zum Schliessen"; exit 1; fi
+if [ -z "$KEY" ]; then echo "Der Schlüssel fehlt. Bitte in AFC «Neuer Schlüssel für den Mac» tippen, «Kopieren» drücken und neu starten."; read -r -p "Enter zum Schliessen"; exit 1; fi
 
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 if [ -d "$ICLOUD" ]; then DEST="$ICLOUD/AFC-Sicherung/Server"; else DEST="$HOME/AFC-Sicherung/Server"; fi
