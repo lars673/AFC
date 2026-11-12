@@ -842,6 +842,7 @@ async function accountRoute(req, res, p, u) {
   }
   if (p === '/api/auth/setup' && req.method === 'POST') {
     if (authOn()) return sendJson(req, res, 409, { error: 'Es gibt schon ein Admin-Konto. Bitte anmelden.' });
+    if (HOSTED && process.env.AFC_UMZUG_CODE) return sendJson(req, res, 403, { error: 'Auf diesem Server wartet der Umzug vom Mac. Erst danach (oder ohne Variable AFC_UMZUG_CODE) lässt sich ein Konto einrichten.' });
     if (req.headers['tailscale-funnel-request']) return sendJson(req, res, 403, { error: 'Das erste Konto lässt sich nur auf dem eigenen Mac oder Handy einrichten, nicht über den öffentlichen Zugang.' });
     const b = await body();
     const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);

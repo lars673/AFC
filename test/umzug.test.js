@@ -51,6 +51,8 @@ test('Umzug: Mac-Daten (Konto, Flugbuch, Push-Schlüssel) kommen auf den Server,
 
     // 2. frischer «Server» mit Umzugs-Code
     let s = run(pB, srv, mock, { AFC_HOSTED: '1', AFC_UMZUG_CODE: CODE }); await up(B);
+    // solange der Umzug wartet, kann niemand das erste Konto anlegen
+    assert.equal((await fetch(B + '/api/auth/setup', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Fremd', email: 'f@test.ch', password: 'Niesen-Soaring' }) })).status, 403);
     assert.equal((await fetch(B + '/api/umzug', { method: 'PUT', headers: { 'X-AFC-Umzug': 'falsch-falsch-falsch' }, body })).status, 403);
     assert.equal((await fetch(B + '/api/umzug', { method: 'PUT', headers: { 'X-AFC-Umzug': CODE }, body: Buffer.from('kein archiv') })).status, 400);
     const r = await fetch(B + '/api/umzug', { method: 'PUT', headers: { 'X-AFC-Umzug': CODE }, body });
