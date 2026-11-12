@@ -345,7 +345,7 @@ function myafcUsage() {
   let u = {};
   try { u = JSON.parse(kvGet('myafc-usage') || '{}'); } catch {}
   const day = zurichDay(), d = u.day === day ? u : { q: 0, in: 0, out: 0 };
-  const [pi, po] = MYAFC_PRICE[MYAFC_MODEL()] || MYAFC_PRICE['claude-opus-5-5'];
+  const [pi, po] = MYAFC_PRICE[MYAFC_MODEL()] || MYAFC_PRICE['claude-haiku-5-5'];
   return { on: !!MYAFC_KEY(), model: MYAFC_MODEL(), daily: MYAFC_DAILY(), q: d.q, chf: Math.round((d.in * pi + d.out * po) / 1e6 * 0.9 * 100) / 100 };
 }
 async function myafcRoute(req, res) {
