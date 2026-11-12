@@ -31,6 +31,7 @@ import { cleanPost, siteDay, POST_KINDS } from './lib/community.js';
 import { parseOpenAir, clipToBox, bboxOf } from './lib/airspace.js';
 import { zipHas, parseObstacleKmz, indexObstacles, obstaclesInBox, obstaclesNear } from './lib/obstacles.js';
 import { httpGet } from './lib/http.js';
+import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +71,10 @@ catch (e) {
   Object.assign(storageProblem, { degraded: true, reason: String(e.code || e.message), actual: fallback });
 }
 const backupsDir = path.join(dataDir, 'backups');
+// Im Internet gehostet (Railway o. ä., AFC_HOSTED=1): Updates kommen per GitHub von selbst, nicht über den Knopf.
+const HOSTED = process.env.AFC_HOSTED === '1';
+// Wartet ein Umzug vom Mac? Dann vor dem Öffnen der Datenbank auspacken.
+const umzug = applyPendingImport(dataDir);
 // Open-Meteo-Verbrauch über einen Neustart hinweg mitzählen
 const usageFile = path.join(dataDir, 'openmeteo-usage.json');
 let usageSaveT = null;
@@ -100,6 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_obs_code_time ON observations(code,time);
 CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(time);
 CREATE INDEX IF NOT EXISTS idx_flight_client ON flight_reports(client_hash,reported_at);
 CREATE INDEX IF NOT EXISTS idx_pred_target ON fc_pred(target);`);
+// Nach dem Umzug gehören die alten Push-Abos zur alten Adresse (Antippen öffnete den Mac): neu einschalten lassen.
+if (umzug?.ok) { db.exec('DELETE FROM push_subs; DELETE FROM push_sent;'); console.log('Umzug: Push-Abos zurückgesetzt, bitte in der App neu einschalten'); }
 const dbAll = (sql, p = []) => db.prepare(sql).all(...p);
 const dbGet = (sql, p = []) => db.prepare(sql).get(...p);
 const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
@@ -1103,6 +1110,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(204, { ...corsHeaders(req), 'Access-Control-Allow-Headers': 'content-type,x-afc-client', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Max-Age': '86400' });
       return res.end();
     }
+    if (p === '/api/umzug' && req.method === 'PUT') return umzugRoute(req, res);
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
 
     // Öffentlicher Zugang (Tailscale Funnel) ohne Konten wäre ein offenes Flugbuch für alle: dann gesperrt.
@@ -1201,8 +1209,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/status') {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
-        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList() });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1756,6 +1764,33 @@ function feedbackSummary() {
 function backtestStatus() {
   const h = backtestHistory();
   return { auto: BACKTEST_AUTO, running: backtestJob.running, error: backtestJob.error, last: h.at(-1) || null, prev: h.at(-2) || null };
+}
+
+/** Umzug vom Mac: nur mit dem Umzugs-Code aus den Server-Einstellungen (AFC_UMZUG_CODE), sonst nie. */
+async function umzugRoute(req, res) {
+  if (limited(req, 'umzug', 5)) return sendJson(req, res, 429, { error: 'zu viele Versuche, bitte eine Minute warten' });
+  if (!umzugCodeOk(process.env.AFC_UMZUG_CODE, req.headers['x-afc-umzug'])) return sendJson(req, res, 403, { error: 'Umzugs-Code falsch oder auf dem Server nicht gesetzt (Variable AFC_UMZUG_CODE)' });
+  if (authOn() && req.headers['x-afc-umzug-ersetzen'] !== 'ja') return sendJson(req, res, 409, { error: 'Auf dem Server gibt es schon Konten. Nochmals mit «ersetzen» schicken, um alles durch den Stand vom Mac zu ersetzen.', exists: true });
+  const file = path.join(dataDir, UMZUG_FILE), part = file + '.teil';
+  let size = 0;
+  try {
+    const out = fsc.createWriteStream(part);
+    for await (const c of req) {
+      size += c.length;
+      if (size > UMZUG_MAX) { out.destroy(); throw Object.assign(new Error('Archiv zu gross'), { code: 413 }); }
+      if (!out.write(c)) await new Promise(r => out.once('drain', r));
+    }
+    await new Promise((r, j) => out.end(e => (e ? j(e) : r())));
+    const head = Buffer.alloc(2); const fd = fsc.openSync(part, 'r'); fsc.readSync(fd, head, 0, 2, 0); fsc.closeSync(fd);
+    if (head[0] !== 0x1f || head[1] !== 0x8b) throw Object.assign(new Error('kein tar.gz'), { code: 400 });
+    fsc.renameSync(part, file);
+  } catch (e) {
+    fsc.rmSync(part, { force: true });
+    return sendJson(req, res, e.code === 413 ? 413 : 400, { error: e.message });
+  }
+  console.log(`Umzug: ${(size / 1048576).toFixed(1)} MB empfangen, starte neu`);
+  sendJson(req, res, 200, { ok: true, mb: Math.round(size / 104857.6) / 10 });
+  setTimeout(() => shutdown('Umzug'), 500);
 }
 
 function shutdown(sig) {

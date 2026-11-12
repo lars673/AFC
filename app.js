@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.5';
+const APP_VER = '12.5.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -932,9 +932,10 @@ function backtestHtml(b) {
 function statusHtml() {
   const d = ST.data;
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
-  if (d.admin === false) return `<div><b>AFC ${esc(d.version)}</b> <span class="fine">App ${APP_VER}. Updates spielt Lars auf seinem Mac ein, die App lädt sie danach von selbst.</span></div>`;
+  if (d.admin === false) return `<div><b>AFC ${esc(d.version)}</b> <span class="fine">App ${APP_VER}. ${d.hosted ? 'Neue Versionen kommen automatisch, die App lädt sie von selbst.' : 'Updates spielt Lars auf seinem Mac ein, die App lädt sie danach von selbst.'}</span></div>`;
   const u = d.update;
-  const upd = !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
+  const upd = u?.hosted ? 'Läuft im Internet: Jede neue Version auf GitHub wird nach bestandenen Tests automatisch eingespielt.'
+    : !u?.enabled ? 'Keine Git-Kopie: Update-Prüfung aus.'
     : u.error ? `Letzte Prüfung fehlgeschlagen (${esc(u.error)}).`
     : u.available ? `Neue Version verfügbar, automatische Tests bestanden. ${esc(updText(u))}`
     : u.waiting ? `${esc(updText(u))}. ${esc(u.waiting)}`

@@ -8,3 +8,7 @@ data
 *.sqlite-wal
 *.sqlite-shm
 test
+deploy
+tools/*.command
+tmp-*
+screenshots

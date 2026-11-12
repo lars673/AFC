@@ -135,9 +135,9 @@ Automatisch: Mit Autostart rechnet der Server jede Woche nachts (2–5 Uhr) die 
 Ruhige Abgleiter: Ohne Thermik, aber mit ruhiger Luft (Böen bis 15, Wind bis 12 km/h) wertet AFC den Tag als schönen Abgleiter, höchstens «Prüfen» (76).
 ## Deployment
 
+* **Railway (empfohlen, so läuft AFC im Internet)**: Neues Projekt › «Deploy from GitHub repo» › `lars673/AFC`, Branch `feature/autostart-terrain-score`. `railway.json` und das `Dockerfile` regeln den Rest (Healthcheck, Neustart immer, Zeitzone Zürich, `AFC_HOSTED=1`, `AFC_SERVER=1`, Rückblick-Test automatisch, keine Git-Update-Prüfung). Von Hand: Volume auf `/app/data`, Public Domain, unter Settings «Wait for CI» einschalten (dann kommt jede Version erst nach bestandenen GitHub-Tests online). Jeder Push auf den Branch wird so automatisch eingespielt.
+* **Umzug vom Mac**: In Railway die Variable `AFC_UMZUG_CODE` (mindestens 12 Zeichen) setzen, auf dem Mac `tools/AFC Umzug ins Internet.command` doppelklicken. Es schickt eine saubere Kopie der Datenbank (`sqlite3 .backup`), `vapid.json` und das Gelernte als tar.gz an `PUT /api/umzug` (Kopfzeile `X-AFC-Umzug`). Der Server legt es als `umzug.tgz` ab, startet neu und packt es vor dem Öffnen der Datenbank aus (`lib/umzug.js`, alte Datenbank und Archiv landen in `backups/`). Gibt es schon Konten, braucht es `X-AFC-Umzug-Ersetzen: ja`. Push-Abos werden dabei gelöscht, weil sie zur alten Adresse gehören. Ohne gesetzten Code ist der Umzug aus; danach die Variable wieder löschen.
 * **Render**: `render.yaml` (Disk auf `/app/data`).
-* **Railway**: Volume auf `/app/data` mounten, Public Domain erzeugen, `railway.json` ist vorbereitet.
-* Die Icons `icon-192.png` und `icon-512.png` müssen im Projektstamm liegen (Dockerfile kopiert sie).
 
 Healthcheck: `/healthz` (ohne DB-Zugriff). Vollstatus mit Quellenzustand: `/api/health`.
 
@@ -154,6 +154,8 @@ Healthcheck: `/healthz` (ohne DB-Zugriff). Vollstatus mit Quellenzustand: `/api/
 | `PUBLIC_APP_URL` | – | nur informativ (`/api/meta`) |
 | `AFC_UPDATE_CHECK` | `1` | `0` schaltet die Update-Prüfung aus |
 | `AFC_AUTOSTART` | – | `1` erlaubt das Update aus der App (setzt das Autostart-Skript) |
+| `AFC_HOSTED` | – | `1` = läuft im Internet (setzt das Dockerfile): die App sagt, dass Updates automatisch kommen |
+| `AFC_UMZUG_CODE` | – | Erlaubt einmalig den Umzug vom Mac (`PUT /api/umzug`), mindestens 12 Zeichen |
 
 Für Tests überschreibbar: `AFC_AIRSPACE_URL`, `AFC_OPENMETEO_URL`, `AFC_SMN_URL`, `AFC_STATION_META_URL`.
 

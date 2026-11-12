@@ -1,15 +1,22 @@
+# AFC im Internet (Railway, Render o. ä.). Auf dem Mac wird dieses Dockerfile nicht gebraucht.
 FROM node:22-bookworm-slim
 
+# Das Image bringt tzdata (Zeitzone Zürich) und tar (Umzug vom Mac, lib/umzug.js) schon mit.
 WORKDIR /app
-ENV NODE_ENV=production
-ENV AFC_DATA_DIR=/app/data
-# Fallback-Port. Railway/Render überschreiben PORT zur Laufzeit; der Server übernimmt die Variable.
-ENV PORT=8787
+ENV NODE_ENV=production \
+    TZ=Europe/Zurich \
+    AFC_DATA_DIR=/app/data \
+    AFC_HOSTED=1 \
+    AFC_SERVER=1 \
+    AFC_UPDATE_CHECK=0 \
+    AFC_BACKTEST_AUTO=1 \
+    AFC_BACKUP_DIR= \
+    AFC_TRUSTED_PROXY_HOPS=1 \
+    PORT=8787
+# PORT ist nur ein Rückfall: Railway/Render setzen ihn zur Laufzeit, der Server übernimmt die Variable.
 
-COPY package.json server.js index.html app.js view3d.js app.css manifest.json sw.js privacy.html README.md ./
-COPY lib ./lib
-COPY icon-192.png icon-512.png ./
-
+# Alles ausser dem, was in .dockerignore steht (Daten, Tests, Mac-Werkzeuge)
+COPY . .
 RUN mkdir -p /app/data/backups
 
 # BEWUSST KEIN "USER node":
@@ -18,5 +25,4 @@ RUN mkdir -p /app/data/backups
 # je ein Port offen war. Wer non-root will, muss das Volume vorher per Init-Container/Entrypoint chownen.
 
 EXPOSE 8787
-
 CMD ["node", "server.js"]
