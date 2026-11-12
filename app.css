@@ -1225,3 +1225,8 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .mini3d-open { position: absolute; z-index: 3; right: 8px; bottom: 6px; min-height: 36px; padding: 0 12px 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--ink); font: 600 13.5px/1 var(--f-body); transition: transform var(--t1) var(--ease), background var(--t1) var(--ease); }
 .mini3d-open:active { transform: scale(.96); background: var(--panel2); }
 @media (min-width: 700px) { .mini3d { height: 196px; } }
+/* Landeplatz wählen, Kabel in der Volten-Skizze */
+.land-pick { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 10px; }
+.lp { min-height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--panel); color: var(--ink); font: 600 14px/1 var(--f-body); transition: background var(--t1) var(--ease), color var(--t1) var(--ease); }
+.lp[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg, #fff); }
+.volte .vc { stroke: #e0453c; stroke-width: 2.5; fill: none; stroke-dasharray: 5 3; stroke-linecap: round; }

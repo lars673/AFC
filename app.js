@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.6';
+const APP_VER = '12.6.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1921,9 +1921,14 @@ async function openSite(id) {
 }
 /** Landeplatz: nächster offizieller Landeplatz im Gebiet, Prognose zur gewählten Stunde und Messung in der Nähe. */
 /** Landeplatz zum Startplatz: Landeplätze des Gebiets, sonst der nächste im Umkreis von 5 km (z.B. Lehn für Amisbühl). */
-function nearestLanding(s) {
+function landingsFor(s) {
   const cand = (S.plan?.landings || []).filter(l => num(l.lat)).map(l => ({ l, d: haversineKm(s.lat, s.lon, l.lat, l.lon) }));
-  return (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => a.d - b.d)[0];
+  // Hauptlandeplatz des Gebiets zuerst (z.B. Grund für First), dann nach Entfernung
+  return (cand.some(x => x.l.area === s.area) ? cand.filter(x => x.l.area === s.area) : cand.filter(x => x.d <= 5)).sort((a, b) => (b.l.main ? 1 : 0) - (a.l.main ? 1 : 0) || a.d - b.d);
+}
+function nearestLanding(s) {
+  const all = landingsFor(s), pick = store.get('landPick', {})[s.id];
+  return all.find(x => x.l.id === pick) || all[0];
 }
 /** Nächste Messstation zum Landeplatz (nur heute): höchstens 12 km und 400 m Höhenunterschied. */
 function landStation(l) {
@@ -1942,12 +1947,83 @@ function landWind(l, hr) {
   const sx = landStation(l)?.x;
   return sx && num(sx.dir) && sx.wind >= 4 ? { dir: sx.dir, src: 'gemessen' } : hr?.valleyDir != null ? { dir: hr.valleyDir, src: 'Prognose' } : num(hr?.dir) ? { dir: hr.dir, src: 'Prognose am Start' } : null;
 }
-/** Volte für einen Landeplatz: eigene Angabe, sonst Vorschlag gegen den Wind; Seite nach Platzregel. */
+/* ---- Kabel um den Landeplatz (BAZL): die vorgeschlagene Volte soll nie über ein Kabel führen */
+const LAND_OB = new Map();                                 // Landeplatz-ID -> { lines: [[[x, y] m Ost/Nord vom Landepunkt]], items } oder Promise
+function landObst(l) {
+  if (!l) return null;
+  const c = LAND_OB.get(l.id);
+  if (c && !(c instanceof Promise)) return c;
+  if (!c) {
+    const dLa = 900 / 111320, dLo = 900 / (111320 * Math.cos(l.lat * D2R));
+    const job = fetch('/api/obstacles?b=' + [l.lat - dLa, l.lon - dLo, l.lat + dLa, l.lon + dLo].map(v => v.toFixed(3)).join(','))
+      .then(async r => { if (r.status === 202 || !r.ok) throw new Error('noch nicht da'); return r.json(); })
+      .then(j => {
+        const mLo = 111320 * Math.cos(l.lat * D2R), m = p => [(p[1] - l.lon) * mLo, (p[0] - l.lat) * 111320];
+        const items = (j.items || []).filter(x => x.k !== 'pt').map(x => ({ t: x.t, k: x.k, lines: (x.g || []).map(ln => ln.map(m)) }));
+        const v = { items }; LAND_OB.set(l.id, v); return v;
+      })
+      .catch(() => { LAND_OB.delete(l.id); return null; });
+    LAND_OB.set(l.id, job);
+    return null;
+  }
+  return null;
+}
+/** Volte in Metern vom Landepunkt (x Ost, y Nord): Beginn Gegenanflug, Queranflug, Endanflug, Landepunkt. Wie in 3D. */
+function volteGeo(h, side) {
+  const v = (d, L) => [Math.sin(d * D2R) * L, Math.cos(d * D2R) * L], T = [0, 0];
+  const f = v(h, 200), P2 = [T[0] - f[0], T[1] - f[1]], b = v(side === 'R' ? h + 90 : h - 90, 160), P1 = [P2[0] + b[0], P2[1] + b[1]], g = v(h, 280), P0 = [P1[0] + g[0], P1[1] + g[1]];
+  return [P0, P1, P2, T];
+}
+function segDist(a, b, c, d) {
+  const cr = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  if (Math.sign(cr(a, b, c)) !== Math.sign(cr(a, b, d)) && Math.sign(cr(c, d, a)) !== Math.sign(cr(c, d, b))) return 0;
+  const pd = (p, q, r) => { const dx = r[0] - q[0], dy = r[1] - q[1], L = dx * dx + dy * dy, t = L ? Math.max(0, Math.min(1, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / L)) : 0; return Math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy); };
+  return Math.min(pd(a, c, d), pd(b, c, d), pd(c, a, b), pd(d, a, b));
+}
+/** Kleinster Abstand der Volte zu einem Kabel in Metern (Infinity ohne Kabel). Der letzte Meter vor dem Aufsetzen zählt nicht. */
+function volteClear(pts, ob) {
+  let best = Infinity;
+  for (const it of ob?.items || []) for (const ln of it.lines) for (let i = 1; i < ln.length; i++) for (let j = 1; j < pts.length; j++) {
+    const b = j === pts.length - 1 ? [pts[j - 1][0] + (pts[j][0] - pts[j - 1][0]) * 0.9, pts[j - 1][1] + (pts[j][1] - pts[j - 1][1]) * 0.9] : pts[j];
+    best = Math.min(best, segDist(pts[j - 1], b, ln[i - 1], ln[i]));
+  }
+  return best;
+}
+const VOLTE_CLEAR = 40;                                    // so viel Abstand (m) soll die Volte von einem Kabel halten
+const SIDE4 = ['Nordseite', 'Ostseite', 'Südseite', 'Westseite'], LIE8 = ['nördlich', 'nordöstlich', 'östlich', 'südöstlich', 'südlich', 'südwestlich', 'westlich', 'nordwestlich'];
+/** Volte für einen Landeplatz: eigene Angabe, sonst Vorschlag gegen den Wind; Seite nach Platzregel, sonst die Seite ohne Kabel. */
 function volteFor(l, wind) {
-  const mine = LB.data?.settings?.lands?.[l.id];
-  const h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
+  const mine = LB.data?.settings?.lands?.[l.id], ob = landObst(l);
+  let h = mine ? mine.dir : wind ? Math.round(wind.dir / 45) * 45 % 360 : null;
   const R = l.volte, tal = R && wind ? wind.dir >= R.talFrom[0] && wind.dir < R.talFrom[1] : null;
-  return { mine, h, R, tal, side: mine?.side || (R && tal != null ? (tal ? R.tal : R.berg) : 'L') };
+  let side = mine?.side || (R && tal != null ? (tal ? R.tal : R.berg) : 'L'), turn = 0, moved = false;
+  if (h != null && ob?.items.length && !mine) {
+    // ohne Platzregel: zuerst die andere Seite, dann den Endanflug um 45° drehen, damit die Volte frei von Kabeln bleibt
+    // gedreht wird höchstens so weit, dass der Endanflug nicht mehr als 50° neben dem Wind liegt
+    const off = x => Math.abs((((h + x) - wind.dir) % 360 + 540) % 360 - 180);
+    const sides = R ? [side] : [side, side === 'L' ? 'R' : 'L'], heads = [0, -45, 45].filter(x => !x || (wind && off(x) <= 50));
+    let best = null;
+    for (const dh of heads) for (const sd of sides) {
+      const c = volteClear(volteGeo((h + dh + 360) % 360, sd), ob);
+      const k = { dh, sd, c, ok: c >= VOLTE_CLEAR };
+      if (!best || (k.ok && !best.ok) || (k.ok === best.ok && (k.ok ? Math.abs(k.dh) < Math.abs(best.dh) || (Math.abs(k.dh) === Math.abs(best.dh) && k.c > best.c + 30) : k.c > best.c))) best = k;
+      if (best.ok && dh === 0 && sd === side) break;
+    }
+    if (best.ok || best.c > volteClear(volteGeo(h, side), ob)) { moved = best.sd !== side; turn = best.dh; side = best.sd; h = (h + best.dh + 360) % 360; }
+  }
+  // nächstes Kabel vom Landepunkt aus, für den Hinweis
+  let cab = null;
+  for (const it of ob?.items || []) for (const ln of it.lines) for (const p of ln) { const d = Math.hypot(p[0], p[1]); if (!cab || d < cab.d) cab = { d, t: it.t, deg: (Math.atan2(p[0], p[1]) / D2R + 360) % 360 }; }
+  const clear = h != null && ob ? volteClear(volteGeo(h, side), ob) : Infinity;
+  return { mine, h, R, tal, side, ob, cab: cab && cab.d < 700 ? cab : null, clear, moved, turn };
+}
+/** Satz zum Kabel am Landeplatz und zur Einteilung der Volte. */
+function volteCabText(v) {
+  if (!v.cab) return '';
+  const where = `${esc(v.cab.t || 'Kabel')} ${v.cab.d < 40 ? 'direkt beim Landepunkt' : `${fmtM(v.cab.d)} ${LIE8[Math.round(v.cab.deg / 45) % 8]} vom Landepunkt`} (BAZL)`;
+  const sideDeg = (v.h + (v.side === 'R' ? 90 : -90) + 360) % 360, sd = SIDE4[Math.round(sideDeg / 90) % 4];
+  if (v.clear < VOLTE_CLEAR) return `<p class="volte-warn">${where}. ${v.mine ? 'Deine Volte' : 'Die Volte'} führt ${v.clear < 15 ? 'über das Kabel' : `nur ${fmtM(v.clear)} daran vorbei`}: Einteilung vor Ort klären.</p>`;
+  return `<p class="fine" style="margin:4px 0 0">${where}. ${v.mine ? 'Deine Volte bleibt davon weg.' : `Volte auf der ${sd}, weg vom Kabel${v.turn ? ', Endanflug darum etwas schräg zum Wind' : ''}.`}</p>`;
 }
 function landingHtml(s, hr) {
   const L = nearestLanding(s);
@@ -1960,18 +2036,25 @@ function landingHtml(s, hr) {
   const worst = [fl, sl].includes('bad') ? 'danger' : [fl, sl].includes('warn') ? 'warn' : '';
   const sum = `${l ? esc(l.name) : 'Wind im Tal'}${fc ? ` · Wind ${fc[0]} / ${fc[1] ?? '–'} km/h` : ''}${worst ? (worst === 'danger' ? ' · stark' : ' · anspruchsvoll') : ''}`;
   return fold('land', 'Landeplatz', sum, `<div class="land">
-    ${l ? `<p style="margin:0 0 8px"><b>${esc(l.name)}</b> <span class="fine">${l.alt ?? '–'} m · ${L.d.toFixed(1)} km vom Start · ${num(l.alt) ? (s.alt - l.alt) + ' m tiefer' : ''}</span></p>` : ''}
+    ${l ? `<p style="margin:0 0 8px"><b>${esc(l.name)}</b> <span class="fine">${l.alt ?? '–'} m · ${L.d.toFixed(1)} km vom Start · ${num(l.alt) ? (s.alt - l.alt) + ' m tiefer' : ''}${l.main ? ' · Hauptlandeplatz' : ''}</span></p>` : ''}
+    ${(() => { const all = landingsFor(s); return all.length > 1 ? `<div class="land-pick" role="group" aria-label="Landeplatz wählen">${all.map(x => `<button type="button" class="lp" data-act="landpick" data-id="${esc(s.id)}" data-v="${esc(x.l.id)}" aria-pressed="${x.l.id === l?.id}">${esc(x.l.name.replace(/^.*?Landeplatz\s+/, '').replace(/\s*\(.*\)$/, ''))}</button>`).join('')}</div>` : ''; })()}
     <div class="land-g">
       <div class="land-c stc-${fl}"><small>Prognose ${hr ? hr.h + '–' + (hr.h + 1) + ' Uhr' : ''}</small><b>${fc ? fc[0] + ' / ' + (fc[1] ?? '–') : '–'}</b><small>Wind / Böen km/h</small></div>
       ${S.day === 0 ? `<div class="land-c stc-${sl}"><small>Gemessen jetzt</small><b>${sx ? Math.round(sx.wind) + ' / ' + (num(sx.gust) ? Math.round(sx.gust) : '–') : '–'}</b><small>${sx ? `${esc(sx.name)}, ${st.d.toFixed(0)} km · ${ageTxt(ageMin(sx.time, sx.age))}${num(sx.dir) ? ' · aus ' + dirLabel(sx.dir) : ''}` : 'keine Station in der Nähe'}</small></div>` : ''}
     </div>
     <p class="fine" style="margin:8px 0 0">Ab etwa ${warn} km/h (Böen zu drei Vierteln gezählt) wird die Landung anspruchsvoll, ab ${bad} km/h stark. Windsack am Landeplatz vor dem Start ansehen, wenn möglich.</p>
-    ${l ? volteHtml(l, landWind(l, hr)) : ''}</div>`, { lvl: worst, open: !!worst });
+    ${l ? volteHtml(l, landWind(l, hr)) : ''}</div>`, { lvl: worst, open: !!worst }) + (l ? volteLater(l, hr) : '');
+}
+/** Kabeldaten kommen kurz nach dem Öffnen: dann die Volte im offenen Fenster neu zeichnen. */
+function volteLater(l, hr) {
+  const c = LAND_OB.get(l.id);
+  if (c instanceof Promise) c.then(v => { const box = $(`#siteDlg .volte-box[data-land="${l.id}"]`); if (v && box && !box.querySelector('.volte-ed[open]')) box.outerHTML = volteHtml(l, landWind(l, hr)); });
+  return '';
 }
 
 /* ---- Landevolte: eigene Angabe je Landeplatz (Endanflug und Seite), sonst Vorschlag gegen den Wind */
 const VOLTE_DIRS = [['N', 0], ['NO', 45], ['O', 90], ['SO', 135], ['S', 180], ['SW', 225], ['W', 270], ['NW', 315]];
-function volteSvg(h, side, wind) {
+function volteSvg(h, side, wind, ob = null) {
   const rad = d => d * Math.PI / 180, v = (d, L) => [Math.sin(rad(d)) * L, -Math.cos(rad(d)) * L];
   // rückwärts vom Aufsetzpunkt: Endanflug, Queranflug, Gegenanflug (Linksvolte = Linkskurven)
   const T = [0, 0], f = v(h, 46), P2 = [T[0] - f[0], T[1] - f[1]];
@@ -1981,28 +2064,32 @@ function volteSvg(h, side, wind) {
   const ox = 70 - (Math.min(...xs) + Math.max(...xs)) / 2, oy = 66 - (Math.min(...ys) + Math.max(...ys)) / 2;
   const q = p => `${(p[0] + ox).toFixed(1)},${(p[1] + oy).toFixed(1)}`;
   const seg = (a, c, cl) => `<line x1="${q(a).split(',')[0]}" y1="${q(a).split(',')[1]}" x2="${q(c).split(',')[0]}" y2="${q(c).split(',')[1]}" class="${cl}" marker-end="url(#va)"/>`;
+  // Kabel in der Skizze: gleicher Massstab wie die Volte (Endanflug 200 m = 46 Einheiten)
+  const k = 46 / 200, cab = (ob?.items || []).flatMap(it => it.lines.map(ln => `<polyline points="${ln.map(p => `${(p[0] * k + ox).toFixed(1)},${(-p[1] * k + oy).toFixed(1)}`).join(' ')}" class="vc"/>`)).join('');
   const w = wind ? `<g transform="translate(128 14) rotate(${Math.round(wind.dir)})"><line x1="0" y1="-9" x2="0" y2="8" class="vw"/><path d="M-4 3 L0 9 L4 3" class="vw"/></g><text x="128" y="34" class="vt" text-anchor="middle">Wind</text>` : '';
   return `<svg class="volte" viewBox="0 0 140 132" role="img" aria-label="Volte: Gegenanflug, Queranflug, Endanflug Richtung ${dirLabel(h)}">
     <defs><marker id="va" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="vm"/></marker></defs>
+    <clipPath id="vclip"><rect x="0" y="0" width="140" height="132" rx="10"/></clipPath><g clip-path="url(#vclip)">${cab}</g>
     <text x="10" y="14" class="vt">N ↑</text>${w}
     ${seg(P0, P1, 'vl')}${seg(P1, P2, 'vl')}${seg(P2, T, 'vf')}
     <circle cx="${q(T).split(',')[0]}" cy="${q(T).split(',')[1]}" r="5" class="vp"/></svg>`;
 }
 function volteHtml(l, wind) {
   // Regel des Landeplatzes (z.B. Lehn: Rechtsvolte bei Talwind, Linksvolte bei Bergwind)
-  const { mine, h, R, tal, side } = volteFor(l, wind);
+  const vf = volteFor(l, wind), { mine, h, R, tal, side } = vf;
   // Rückenwind auf dem eigenen Endanflug? (Wind kommt von hinten, wenn er mehr als 100° neben der Anflugrichtung liegt)
   const off = mine && wind ? Math.abs(((wind.dir - mine.dir) % 360 + 540) % 360 - 180) : null;
   const tail = off != null && off > 100;
   const opt = (sel) => VOLTE_DIRS.map(([n, d]) => `<option value="${d}" ${sel === d ? 'selected' : ''}>nach ${n}</option>`).join('');
-  return `<div class="volte-box">
-    ${h != null ? volteSvg(h, side, wind) : ''}
+  return `<div class="volte-box" data-land="${esc(l.id)}">
+    ${h != null ? volteSvg(h, side, wind, vf.ob) : ''}
     <div class="volte-t">
       <p style="margin:0"><b>Volte</b> ${h != null ? `${side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(h)}` : ''}
-      <span class="fine">${mine ? '(deine Angabe)' : h != null ? `(Vorschlag gegen den Wind, ${esc(wind.src)}${R ? `; Seite nach Platzregel bei ${tal ? 'Talwind' : 'Bergwind'}` : '; Seite und Hindernisse vor Ort klären'})` : 'Keine Windangabe für einen Vorschlag.'}</span></p>
+      <span class="fine">${mine ? '(deine Angabe)' : h != null ? `(Vorschlag gegen den Wind, ${esc(wind.src)}${R ? `; Seite nach Platzregel bei ${tal ? 'Talwind' : 'Bergwind'}` : vf.ob ? '; Seite nach den Kabeln, Platzregeln vor Ort prüfen' : '; Seite und Hindernisse vor Ort klären'})` : 'Keine Windangabe für einen Vorschlag.'}</span></p>
+      ${h != null ? volteCabText(vf) : ''}
       ${R ? `<p class="fine" style="margin:4px 0 0">Platzregel: ${R.tal === 'R' ? 'Rechtsvolte' : 'Linksvolte'} bei Talwind, ${R.berg === 'R' ? 'Rechtsvolte' : 'Linksvolte'} bei Bergwind${R.src ? ' (' + esc(R.src) + ')' : ''}. Vor Ort an der Tafel prüfen.</p>` : ''}
       ${(l.notes || []).map((n, i) => i ? `<p class="fine" style="margin:4px 0 0">${esc(n)}</p>` : `<p class="volte-warn">${esc(n)}</p>`).join('')}
-      ${h != null ? '<p class="fine" style="margin:4px 0 0">Gestrichelt: Gegenanflug und Queranflug, grün: Endanflug zum Landepunkt. Der blaue Pfeil zeigt, wohin der Wind weht.</p>' : ''}
+      ${h != null ? `<p class="fine" style="margin:4px 0 0">Gestrichelt: Gegenanflug und Queranflug, grün: Endanflug zum Landepunkt. Der blaue Pfeil zeigt, wohin der Wind weht.${vf.ob?.items.length ? ' Rot: Kabel und Seilbahnen.' : ''}</p>` : ''}
       ${tail ? `<p class="volte-warn" role="alert">Wind heute aus ${dirLabel(wind.dir)} (${esc(wind.src)}): Rückenwind auf deinem Endanflug. Anders einteilen.</p>` : ''}
       <details class="volte-ed"><summary>${mine ? 'Volte ändern' : 'Volte für diesen Landeplatz eintragen'}</summary>
         <div class="volte-f"><label>Endanflug <select data-volte="dir">${opt(mine?.dir ?? h)}</select></label>
@@ -3549,7 +3636,7 @@ document.addEventListener('click', async e => {
     case 'v3dlayer': V3.layer = V3.layer === b.dataset.v ? null : b.dataset.v; $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer))); v3dApply(); break;
     case 'region3d': if (S.tab === 'map' && M.map) open3dMap(); else open3dRegion(); break;
     case 'v3dtour': V3.tour = !V3.tour; b.setAttribute('aria-pressed', String(V3.tour)); if (V3.tour && !V3.playing) v3dPlay(true); break;
-    case 'v3dvolte': v3dVolte(!V3.volte); b.setAttribute('aria-pressed', String(!!V3.volte)); break;
+    case 'v3dvolte': v3dVolte(!V3.volte).then(() => b.setAttribute('aria-pressed', String(!!V3.volte))); break;
     case 'v3dplay': if (!b.classList.contains('busy')) v3dPlay(!V3.playing); break;
     case 'v3dfplay': v3dFlightPlay(!V3.fl?.playing); break;
     case 'v3dspeed': if (V3.fl) { V3.fl.speed = Number(b.dataset.v) || 60; $$('#v3dBar [data-act="v3dspeed"]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); } break;
@@ -3586,6 +3673,7 @@ document.addEventListener('click', async e => {
     }
     case 'camset': camSet(id); break;
     case 'volteset': volteSet(id, b); break;
+    case 'landpick': { const m = { ...store.get('landPick', {}) }; m[id] = b.dataset.v; store.set('landPick', m); FOLD.set('land', true); if (S.detailData?.site) renderSite(); break; }
     case 'sort': if (b.dataset.v === 'near') { if (S.pos) { S.sort = 'near'; store.set('sort', 'near'); renderDecide(); } else locateNear(); } else { S.sort = 'best'; store.set('sort', 'best'); renderDecide(); } break;
     case 'watch': toggleWatch(id); break;
     case 'pushon': pushEnable(); break;
@@ -4422,9 +4510,10 @@ async function v3dCables() {
   if (V3.mode === 'site') v3dSiteHud();
 }
 /** Landevolte am Landeplatz im Gelände: Gegenanflug, Queranflug, Endanflug, mit Wind und einem Schirm, der sie abfliegt. */
-function v3dVolte(on) {
-  const sc = V3.scene, l = V3.land;
+async function v3dVolte(on) {
+  const sc = V3.scene, l = V3.land, tok = V3.tok;
   if (!sc || !l) return;
+  if (on && !landObst(l) && LAND_OB.get(l.id) instanceof Promise) { await LAND_OB.get(l.id); if (tok !== V3.tok || V3.scene !== sc) return; }
   const card = $('#v3dCard');
   if (!on) {
     V3.volte = null; sc.setPov(null); sc.canvas.classList.remove('cut'); $('#v3dStage')?.classList.remove('pov');
@@ -4451,8 +4540,9 @@ function v3dVolte(on) {
   V3.volte = { pts, len, t0: performance.now(), pov: !!V3.volte?.pov, yaw: null };
   const off = v.mine && wind ? Math.abs(((wind.dir - v.mine.dir) % 360 + 540) % 360 - 180) : null;
   card.innerHTML = `<b>Volte ${v.side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(v.h)}</b>
-    <p class="fine">${v.mine ? 'Deine Angabe.' : `Vorschlag gegen den Wind${v.R ? `, Seite nach Platzregel bei ${v.tal ? 'Talwind' : 'Bergwind'}` : ', Seite und Hindernisse vor Ort klären'}.`}${wind ? ` Blau: Wind aus ${dirLabel(wind.dir)} (${esc(wind.src)}).` : ''} Grün ist der Endanflug.</p>
+    <p class="fine">${v.mine ? 'Deine Angabe.' : `Vorschlag gegen den Wind${v.R ? `, Seite nach Platzregel bei ${v.tal ? 'Talwind' : 'Bergwind'}` : v.ob ? ', Seite nach den Kabeln, Platzregeln vor Ort prüfen' : ', Seite und Hindernisse vor Ort klären'}.`}${wind ? ` Blau: Wind aus ${dirLabel(wind.dir)} (${esc(wind.src)}).` : ''} Grün ist der Endanflug.</p>
     ${noMotion() ? '' : `<button type="button" class="v3d-chip v3d-vpov" data-act="v3dvpov" aria-pressed="${!!V3.volte.pov}">Aus Pilotensicht anfliegen</button>`}
+    ${volteCabText(v)}
     ${off != null && off > 100 ? '<p class="volte-warn" role="alert">Rückenwind auf deinem Endanflug. Anders einteilen.</p>' : ''}${(l.notes || []).slice(0, 1).map(n => `<p class="volte-warn">${esc(n)}</p>`).join('')}`;
   card.hidden = false;
   v3dSiteMarkers();

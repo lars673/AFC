@@ -712,6 +712,7 @@
    "id": "first-grund",
    "name": "First Landeplatz Grund",
    "type": "landing",
+   "main": true,
    "area": "grindelwald-first",
    "group": "Grindelwald First",
    "lat": 46.6202917,
