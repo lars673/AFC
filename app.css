@@ -625,7 +625,7 @@ dialog.dlg.closing::backdrop { animation: fade-out var(--t1) ease-in forwards; }
 .arow-rows { grid-column: 1 / -1; }
 /* Startplatz-Ansicht: Aktionen nach «Kurz erklärt», auf dem Handy bildschirmfüllend */
 .site-acts { display: grid; gap: 10px; }
-.act-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.act-tiles { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
 .act-tile { position: relative; display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 60px; padding: 8px 2px 7px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--accent); font: 600 12.5px/1.15 var(--f-body); text-align: center; cursor: pointer; transition: transform var(--t1) var(--ease), background-color var(--t1) var(--ease); }
 .act-tile > span { color: var(--ink); }
 .act-tile:active { transform: scale(.96); background: var(--panel2); }
@@ -1202,3 +1202,26 @@ dialog.dlg.dragging::backdrop { opacity: .4; transition: opacity var(--t2) var(-
 :root[data-theme="dark"] .hl-sky { --co: .22; --ro: .6; } :root[data-theme="dark"] .hs-sun { filter: saturate(.8) brightness(.82); }
 @media (prefers-color-scheme: dark) { :root[data-theme="auto"] .hl-sky { --co: .22; --ro: .6; } :root[data-theme="auto"] .hs-sun { filter: saturate(.8) brightness(.82); } }
 :root[data-theme="sun"] .hl-sky { display: none; }
+/* Karte kippt in 3D */
+.mapbox { background: linear-gradient(#5c8fcc, #cce0f0 62%); }   /* Himmel hinter der geneigten Karte; sonst deckt die Karte ihn ganz zu */
+#map { transform-origin: 50% 58%; transition: transform .65s var(--ease); }
+#map.tilted { transform: perspective(1000px) rotateX(46deg) scale(1.18); }
+dialog.dlg.tilt-in[open] { animation: none; opacity: 0; transition: opacity .45s var(--ease); }
+dialog.dlg.tilt-in.tilt-show[open] { opacity: 1; }
+dialog.dlg.tilt-in[open]::backdrop { animation: none; opacity: 0; transition: opacity .45s var(--ease); }
+dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
+/* Pilotensicht */
+.v3d-c { transition: opacity .22s var(--ease); }
+.v3d-c.cut { opacity: .04; }
+.v3d-stage.pov [data-act="v3dzoom"] { display: none; }
+.v3d-vpov { margin-top: 8px; justify-self: start; }
+/* in der Pilotensicht gehört der Platz dem Bild: Erklärtexte treten zurück */
+.v3d-stage.pov ~ .v3d-card > .fine, .v3d-stage.pov ~ .v3d-bar > .v3d-note { display: none; }
+/* Startplatz als kleines 3D-Modell */
+.mini3d { position: relative; height: 156px; margin: -6px -8px -4px; border-radius: 14px; overflow: hidden; }
+.mini3d.off { display: none; }
+.mini3d-stage { position: absolute; inset: 0; opacity: 0; transition: opacity var(--t3) var(--ease); }
+.mini3d-stage.on { opacity: 1; }
+.mini3d-open { position: absolute; z-index: 3; right: 8px; bottom: 6px; min-height: 36px; padding: 0 12px 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--ink); font: 600 13.5px/1 var(--f-body); transition: transform var(--t1) var(--ease), background var(--t1) var(--ease); }
+.mini3d-open:active { transform: scale(.96); background: var(--panel2); }
+@media (min-width: 700px) { .mini3d { height: 196px; } }

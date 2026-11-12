@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.4';
+const APP_VER = '12.5';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1780,7 +1780,7 @@ function dragClose(d) {
 }
 document.addEventListener('touchstart', e => {
   GS.on = false; GS.mode = null;
-  if (e.touches.length !== 1 || e.target.closest?.(GS_NO)) return;
+  if (e.touches.length !== 1 || (e.target.closest?.(GS_NO) && !e.target.closest('.mini3d'))) return;   // das kleine 3D-Modell dreht nur seitlich: nach unten ziehen schliesst auch dort
   const t = e.touches[0], d = e.target.closest('dialog');
   GS.can = null;
   if (d) {
@@ -1901,8 +1901,9 @@ async function openSite(id) {
   S.site = id; S.hour = null; S.panel = null;
   for (const k of [...FOLD.keys()]) if (!/^(lb|lage)/.test(k)) FOLD.delete(k);   // jedes Öffnen beginnt ruhig: nur das Wichtige ist aufgeklappt
   const flow = flowStart(id);
-  const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
+  const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${miniHtml(base)}<div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
   if (flow) flowGrow(dl, flow);
+  miniMount();
   try {
     const d = await loadDetail(id);
     if (S.site !== id) return;
@@ -1911,7 +1912,7 @@ async function openSite(id) {
     S.hour = best?.peak ?? d.days[S.day]?.hours.find(h => num(h.score))?.h ?? null;
     renderSite(true);
   } catch (e) {
-    flowEnd();
+    flowEnd(); miniEnd();
     dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="empty">Details konnten nicht geladen werden: ${esc(e.message)}</div></div>`);
   }
 }
@@ -2122,7 +2123,7 @@ function renderSite(fresh = false) {
   const tile = (act, label, icon, title) => `<button class="act-tile" type="button" data-act="${act}" data-id="${esc(s.id)}"${title ? ` title="${title}"` : ''}><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">${icon}</svg><span>${label}</span></button>`;
   const actionsHtml = `<div class="site-acts">
       <div class="act-tiles">
-        ${tile('site3d', '3D', '<path d="M2 19l6.5-11 4 6.5 2.5-3.5L22 19z" fill="currentColor"/>', 'Startplatz in 3D ansehen')}
+        ${miniOk() ? '' : tile('site3d', '3D', '<path d="M2 19l6.5-11 4 6.5 2.5-3.5L22 19z" fill="currentColor"/>', 'Startplatz in 3D ansehen')}
         ${tile('brief', 'Briefing', '<path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z" fill="currentColor"/>', 'Briefing als kurzer Film')}
         ${tile('showmap', 'Karte', '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/>', 'Auf der Karte zeigen')}
         ${tile('report', 'Flug melden', '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>', 'Flug an diesem Startplatz melden')}
@@ -2165,6 +2166,7 @@ function renderSite(fresh = false) {
   dlg('#siteDlg', `<div class="dlg-in">
     <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     ${d._savedAt ? `<div class="saved-note" role="status"><b>Kein Empfang: gespeicherter Stand von ${esc(whenTxt(d._savedAt))}.</b> Nicht für den Startentscheid verwenden, Wind vor Ort prüfen.</div>` : ''}
+    ${miniHtml(s)}
     <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20, true)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
@@ -2179,6 +2181,7 @@ function renderSite(fresh = false) {
     </div>
   </div>`);
   $('#siteDlg .dlg-in')?.classList.toggle('fresh', fresh);
+  miniMount(hr);
   if (!(fresh && flowLand($('#siteDlg .ring b'), hr?.score))) countUp($('#siteDlg .ring b'), ringFrom, hr?.score, SCRUB.on && SCRUB.moved ? 160 : 600);
   if (kvPrev) morphNums($('#siteDlg'), kvPrev, SCRUB.moved && SCRUB.on ? 140 : 380);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
@@ -3527,9 +3530,9 @@ document.addEventListener('click', async e => {
     case 'recapyear': if (!BR.rec && BR.data?.recap && b.dataset.v !== BR.data.st.year) recapLoad(b.dataset.v); break;
     case 'site3d': open3dSite(id); break;
     case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(err.message)); break;
-    case 'v3dclose': closeDlg($('#v3dDlg')); break;
+    case 'v3dclose': tiltClose(); break;
     case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
-    case 'v3dnorth': v3dCam({ az: 0 }, 600); break;
+    case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
     case 'v3dtog': {
       const k = ['wind', 'clouds'].includes(b.dataset.v) ? b.dataset.v : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k]));
@@ -3538,13 +3541,15 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'v3dlayer': V3.layer = V3.layer === b.dataset.v ? null : b.dataset.v; $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer))); v3dApply(); break;
-    case 'region3d': open3dRegion(); break;
+    case 'region3d': if (S.tab === 'map' && M.map) open3dMap(); else open3dRegion(); break;
     case 'v3dtour': V3.tour = !V3.tour; b.setAttribute('aria-pressed', String(V3.tour)); if (V3.tour && !V3.playing) v3dPlay(true); break;
     case 'v3dvolte': v3dVolte(!V3.volte); b.setAttribute('aria-pressed', String(!!V3.volte)); break;
     case 'v3dplay': if (!b.classList.contains('busy')) v3dPlay(!V3.playing); break;
     case 'v3dfplay': v3dFlightPlay(!V3.fl?.playing); break;
     case 'v3dspeed': if (V3.fl) { V3.fl.speed = Number(b.dataset.v) || 60; $$('#v3dBar [data-act="v3dspeed"]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); } break;
-    case 'v3dfollow': if (V3.fl) { V3.fl.follow = !V3.fl.follow; b.setAttribute('aria-pressed', String(V3.fl.follow)); V3.scene?.invalidate(); } break;
+    case 'v3dfollow': if (V3.fl) { V3.fl.follow = !V3.fl.follow; b.setAttribute('aria-pressed', String(V3.fl.follow)); if (V3.fl.pov && !V3.fl.follow) v3dPov(false); V3.scene?.invalidate(); } break;
+    case 'v3dpov': v3dPov(!V3.fl?.pov); break;
+    case 'v3dvpov': v3dVoltePov(!V3.volte?.pov); break;
     case 'v3dcmp': if (V3.fl) v3dFlightCard(V3.fl.card === 'cmp' ? null : 'cmp'); break;
     case 'v3dfadd': if (V3.fl) v3dFlightCard(V3.fl.card === 'add' ? null : 'add'); break;
     case 'v3dfown': { const F = V3.fl, x = F && LB.data?.flights.find(q => q.id === id); if (x) v3dFlightSet([...(FLX.get(F.f.id) || []), { key: 'own' + x.id, own: x.id }]); break; }
@@ -3707,8 +3712,9 @@ document.addEventListener('input', e => {
   if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
-$('#v3dDlg')?.addEventListener('close', v3dEnd);
-$('#siteDlg')?.addEventListener('close', () => { flowEnd(); $('#siteDlg').classList.remove('flow'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } });
+$('#v3dDlg')?.addEventListener('close', () => { v3dEnd(); mapTilt(false); miniWake(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) miniWake(); });
+$('#siteDlg')?.addEventListener('close', () => { miniEnd(); flowEnd(); $('#siteDlg').classList.remove('flow'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } });
 window.addEventListener('resize', tabMark);
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-act="hour"]')) { e.preventDefault(); e.target.click(); }
@@ -4085,7 +4091,7 @@ function noflyForm(siteId) {
 const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, clouds: store.get('v3dClouds', true), tour: true, reg: null, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const V3_LAYERS = {
-  thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform.'],
+  thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Schläuche: die stärksten Stellen, vom Wind geneigt, bis zur Obergrenze oder (weisser Ring) zur Wolkenbasis.'],
   soar: ['Soaring', 'Soaring: wo der Wind frontal auf einen steilen Hang trifft.'],
   lee: ['Lee', 'Lee: absinkende Luft und Rotoren hinter höheren Kreten, gegen den Wind gesehen.']
 };
@@ -4116,7 +4122,7 @@ function v3dEnd() {
   V3.tok++;
   if (typeof briefStop === 'function') briefStop();
   V3.scene?.destroy();
-  Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null, reg: null });
+  Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null, reg: null, tilt: false, flat: null });
 }
 function v3dFail(msg) { const el = $('#v3dLoad'); if (el) { el.hidden = false; el.innerHTML = `<span>${esc(msg)}</span>`; } }
 /** Offene Höhenkacheln (Terrain Tiles, Mapzen/AWS Open Data): rund 30 m Auflösung statt 250 m. */
@@ -4138,7 +4144,7 @@ function v3dScene(g, area) {
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
   sc.setArea(area);
   sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen dreht, zwei Finger zoomen und verschieben. Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
-  sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.cam.az).toFixed(1)}deg)`; };
+  sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.heading).toFixed(1)}deg)`; };
   // Luftbild von swisstopo über das Relief; ohne Netz bleibt das gezeichnete Relief stehen
   sc.drapeOn = !!V3.base;
   sc.setDrape(BASES.photo.url).then(ok => { if (V3.scene !== sc || !ok) return; $('#v3dBaseBtn').hidden = false; $('#v3dAttr').hidden = !V3.base; });
@@ -4146,6 +4152,70 @@ function v3dScene(g, area) {
   return sc;
 }
 function v3dCam(to, ms) { V3.scene?.flyTo(to, noMotion() ? 0 : ms); }
+
+/* ---- Jeder Startplatz als kleines 3D-Modell: oben im Startplatz-Fenster dreht sich der Berg langsam, das Licht folgt der gewählten Stunde.
+   Der Dialog wird bei jedem Stundenwechsel neu aufgebaut; die Zeichenfläche bleibt darum hier erhalten und wird nur wieder eingehängt. */
+const MINI = { ok: null, id: null, host: null, sc: null, tok: 0, t: 0, io: null, sleep: false, seen: true };
+const MINI_SPIN = 5.5;                                     // Grad je Sekunde
+const miniOk = () => (MINI.ok ??= !!window.AFC3D?.supported());
+function miniHtml(s) {
+  return miniOk() && num(s?.lat) ? `<div class="mini3d" id="siteMini"><button type="button" class="mini3d-open" data-act="site3d" data-id="${esc(s.id)}" title="Startplatz gross in 3D ansehen"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Gross in 3D</button></div>` : '';
+}
+function miniEnd() {
+  MINI.tok++; clearTimeout(MINI.t); MINI.io?.disconnect();
+  MINI.sc?.destroy(); MINI.host?.remove();
+  Object.assign(MINI, { id: null, host: null, sc: null, io: null, sleep: false, seen: true });
+}
+/** Drehen anhalten, solange niemand hinschaut (anderes Fenster darüber, weggescrollt, App im Hintergrund). */
+function miniWake() {
+  const sc = MINI.sc;
+  if (!sc) return;
+  const quiet = !MINI.seen || document.hidden || $('#v3dDlg')?.open || noMotion();
+  if (quiet) { if (sc.orbit) { sc.orbit = 0; MINI.sleep = true; } return; }
+  if (MINI.sleep) { MINI.sleep = false; sc.orbit = MINI_SPIN; sc.invalidate(); }
+}
+/** Licht der gewählten Stunde und Farbe des Punkts nachführen. */
+function miniLight(hr) {
+  const sc = MINI.sc, s = siteById(MINI.id);
+  if (!sc || !s) return;
+  const sun = AFC3D.sunAt(Date.parse(filmIso(S.plan.dates[S.day], hr?.h ?? S.hour ?? 12)), s.lat, s.lon);
+  sc.setSun({ az: sun.az, elev: Math.max(15, sun.elev) });     // ein Modell zum Anschauen: nie ganz im Dunkeln
+  if (hr) sc.moveMarker('s', s.lat, s.lon, sc.ground(s.lat, s.lon), `<span class="v3d-dot s-${cls(hr.score)}"></span>`);
+  sc.invalidate();
+}
+async function miniMount(hr = null) {
+  const slot = $('#siteMini'), s = siteById(S.site);
+  if (!slot || !s) { if (!slot) miniEnd(); return; }
+  if (MINI.id === s.id && MINI.host) { slot.prepend(MINI.host); miniLight(hr); return; }
+  miniEnd();
+  const tok = MINI.tok;
+  MINI.id = s.id;
+  const host = MINI.host = document.createElement('div');
+  host.className = 'mini3d-stage'; slot.prepend(host);
+  try {
+    const g = await thermalGrid();
+    if (tok !== MINI.tok) return;
+    const R = 2400, area = { lat: s.lat, lon: s.lon, radius: R };
+    const dem = await AFC3D.loadDem(DEM_URL, area, { grid: g, timeout: 3500 }).catch(() => null);
+    if (tok !== MINI.tok) return;
+    const bg = (getComputedStyle($('#siteDlg')).backgroundColor.match(/[\d.]+/g) || [255, 255, 255]).slice(0, 3).map(v => v / 255);
+    const sc = MINI.sc = new AFC3D.Scene(host, g, { spin: true, bg });
+    sc.still = noMotion(); sc.cloudsOn = false;
+    sc.setArea({ ...area, dem, n: 121 });
+    sc.canvas.setAttribute('aria-label', `Gelände um ${s.name} als kleines 3D-Modell. Seitlich ziehen dreht es, antippen öffnet die grosse 3D-Ansicht.`);
+    // das ganze Modell soll ins Bild: Blick auf die mittlere Höhe, Abstand nach Breite und Höhe des Ausschnitts
+    const face = num(s.aspects?.[0]) ? s.aspects[0] : 180, az = (face + 150) % 360, alt = (sc.hMin + sc.hMax) / 2, el = 27 * D2R;
+    const fit = Math.min(3.3, Math.max(1.7, (R * Math.sin(el) + (sc.hMax - sc.hMin) * sc.ex / 2 * Math.cos(el)) / (Math.tan(19 * D2R) * 0.78) / R));
+    sc.setMarkers([{ id: 's', lat: s.lat, lon: s.lon, cls: 'top', html: '<span class="v3d-dot"></span>' }]);
+    sc.flyTo({ lat: s.lat, lon: s.lon, alt, az, el: 27, dist: R * fit * (noMotion() ? 1 : 1.03) }, 0);
+    if (!noMotion()) { sc.flyTo({ dist: R * fit }, 1300); sc.orbit = MINI_SPIN; }
+    sc.onUser = () => { clearTimeout(MINI.t); MINI.t = setTimeout(() => { if (MINI.sc === sc) { MINI.sleep = true; miniWake(); } }, 2600); };
+    sc.onTap = () => open3dSite(s.id);
+    if (typeof IntersectionObserver !== 'undefined') { MINI.io = new IntersectionObserver(es => { MINI.seen = es[es.length - 1].isIntersecting; if (MINI.seen) MINI.sleep = MINI.sleep || !sc.orbit; miniWake(); }); MINI.io.observe(host); }
+    miniLight(hr || S.detailData?.days?.[S.day]?.hours?.find(h => h.h === S.hour) || null);
+    requestAnimationFrame(() => host.classList.add('on'));
+  } catch { if (tok === MINI.tok) { miniEnd(); $('#siteMini')?.classList.add('off'); } }
+}
 
 /* ---- Startplatz in 3D */
 function v3dSiteBar() {
@@ -4157,7 +4227,7 @@ async function open3dSite(id) {
   const s = siteById(id);
   if (!s || !S.plan) return;
   if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann die 3D-Ansicht nicht darstellen.'); return; }
-  v3dEnd();
+  v3dEnd(); setTimeout(miniWake, 0);
   const tok = V3.tok, l = nearestLanding(s)?.l || null;
   const hour = Math.min(20, Math.max(6, S.site === id && num(S.hour) ? S.hour : W.hour));
   Object.assign(V3, { mode: 'site', site: s, land: l, hour, t: hour, layer: null });
@@ -4222,7 +4292,65 @@ async function v3dApply() {
   if (!reg) v3dHourData();
   sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
   v3dWind(d);
+  v3dThermals(d);
   if (reg) { v3dRegionMarkers(); v3dRegionHud(err); } else v3dSiteHud(err);
+}
+/* ---- Thermik zum Sehen: über den stärksten Stellen steigt ein Schlauch auf, vom Wind geneigt, bis zur Thermikobergrenze
+   oder zur Wolkenbasis. Mit der Stunde wachsen und schrumpfen die Schläuche. Alles Schätzung, wie die Thermik-Ebene. */
+function thermalSpots(sc, d) {
+  const g = T.grid, R = sc.R, c = sc.c, dLa = R / 111320, dLo = R / sc.mLon;
+  const x0 = Math.max(1, Math.floor((c.lon - dLo - g.lo0) / g.dlo)), x1 = Math.min(g.nx - 2, Math.ceil((c.lon + dLo - g.lo0) / g.dlo));
+  const y0 = Math.max(1, Math.floor((c.lat - dLa - g.la0) / g.dla)), y1 = Math.min(g.ny - 2, Math.ceil((c.lat + dLa - g.la0) / g.dla));
+  const st = Math.max(1, Math.ceil(Math.max(x1 - x0, y1 - y0) / 64)), cand = [];
+  for (let y = y0; y <= y1; y += st) for (let x = x0; x <= x1; x += st) {
+    const lat = g.la0 + y * g.dla, lon = g.lo0 + x * g.dlo;
+    if (haversineKm(c.lat, c.lon, lat, lon) * 1000 > R * 0.86) continue;
+    const t = thermalCell(d, g, y * g.nx + x, lat, lon);
+    if (t.v >= 0.1 && num(t.top) && t.reach > 250) cand.push({ lat, lon, v: t.v, top: t.top, wstar: t.wstar });
+  }
+  cand.sort((a, b) => b.v - a.v);
+  // nur was neben der besten Stelle besteht: an schwachen Tagen wenige, an starken viele Schläuche
+  const out = [], sep = Math.max(650, R * 0.13), max = R > 12000 ? 14 : 10, vMin = (cand[0]?.v || 0) * 0.45;
+  for (const p of cand) { if (out.length >= max || p.v < vMin) break; if (out.every(q => haversineKm(p.lat, p.lon, q.lat, q.lon) * 1000 > sep)) out.push(p); }
+  return out;
+}
+function v3dThermals(d) {
+  const sc = V3.scene;
+  if (!sc) return;
+  if (!d || V3.layer !== 'thermal') { sc.setTris('therm', null); sc.setLines('thermL', null); sc.setLines('thermC', null); V3.thN = null; return; }
+  const spots = thermalSpots(sc, d), base = sc.clouds?.deck ? sc.clouds.base : null;
+  const tris = [], lines = [], caps = [], col = [1, 0.66, 0.2];
+  for (const [i, p] of spots.entries()) {
+    const g0 = sc.ground(p.lat, p.lon), capped = num(base) && base < p.top, top = Math.max(g0 + 200, capped ? base : p.top), H = top - g0;
+    const lv = windLevels(d, p.lat, p.lon), w = lv[1] || lv[0] || [0, 0], kmh = Math.hypot(w[0], w[1]);
+    // der Wind neigt den Schlauch: je schwächer das Steigen, desto flacher
+    const lean = Math.min(H * 0.7, kmh / 3.6 / Math.max(1.2, p.wstar || 1.5) * H * 0.55), lx = kmh > 0.5 ? w[0] / kmh * lean : 0, lz = kmh > 0.5 ? -w[1] / kmh * lean : 0;
+    const r0 = Math.max(40, Math.min(300, sc.R * 0.011)) * (0.7 + 0.6 * p.v), r1 = r0 * 1.9;
+    const A = sc.toLocal(p.lat, p.lon, g0), B = [A[0] + lx, top * sc.ex, A[2] + lz], a = 0.14 + 0.22 * p.v, n = 16;
+    const ring = (C, r, k) => [C[0] + Math.cos(k / n * 2 * Math.PI) * r, C[1], C[2] + Math.sin(k / n * 2 * Math.PI) * r];
+    for (let k = 0; k < n; k++) {
+      const a0 = ring(A, r0, k), a1 = ring(A, r0, k + 1), b0 = ring(B, r1, k), b1 = ring(B, r1, k + 1);
+      tris.push(...b0, ...col, a, ...a0, ...col, a * 0.2, ...b1, ...col, a, ...b1, ...col, a, ...a0, ...col, a * 0.2, ...a1, ...col, a * 0.2);
+    }
+    // aufsteigende Fäden: zwei Wendeln im Schlauch, die nach oben fliessen
+    const geo = (x, z) => sc.toGeo(x, z), turns = Math.max(1.2, H / 520), N = Math.round(18 * turns);
+    for (let h = 0; h < 2; h++) {
+      const pts = [], cols = [];
+      for (let k = 0; k <= N; k++) {
+        const t = k / N, ang = t * turns * 2 * Math.PI + h * Math.PI + i, r = (r0 + (r1 - r0) * t) * 0.72;
+        const [la, lo] = geo(A[0] + lx * t + Math.cos(ang) * r, A[2] + lz * t + Math.sin(ang) * r);
+        pts.push([la, lo, g0 + H * t]); cols.push([1, 0.82 - 0.1 * t, 0.42, (0.35 + 0.5 * p.v) * Math.min(1, t * 5) * Math.min(1, (1 - t) * 4 + 0.25)]);
+      }
+      lines.push({ pts, colors: cols, width: 2.6, speed: 0.3 + 0.16 * (p.wstar || 1.5), phase: i * 311 + h * 170 });
+    }
+    // Deckel: wo der Schlauch endet (weiss an der Wolkenbasis, sonst in der Farbe des Schlauchs)
+    const cp = []; for (let k = 0; k <= 20; k++) { const [la, lo] = geo(B[0] + Math.cos(k / 20 * 2 * Math.PI) * r1, B[2] + Math.sin(k / 20 * 2 * Math.PI) * r1); cp.push([la, lo, top]); }
+    caps.push({ pts: cp, color: capped ? [1, 1, 1, 0.9] : [1, 0.74, 0.3, 0.75], width: 2.2 });
+  }
+  V3.thN = spots.length;
+  sc.setTris('therm', tris);
+  sc.setLines('thermL', lines, { flow: 520, alpha: 1, bias: 0.001 });
+  sc.setLines('thermC', caps, { bias: 0.001 });
 }
 /** Windfäden: Stromlinien des Bodenwinds, dem Gelände entlang, als fliessende Linien 45 m über Grund. */
 function windLines3d(sc, d) {
@@ -4293,7 +4421,7 @@ function v3dVolte(on) {
   if (!sc || !l) return;
   const card = $('#v3dCard');
   if (!on) {
-    V3.volte = null;
+    V3.volte = null; sc.setPov(null); sc.canvas.classList.remove('cut'); $('#v3dStage')?.classList.remove('pov');
     for (const k of ['volte', 'volteF', 'volteW']) sc.setLines(k, null);
     sc.setTris('volteC', null); card.hidden = true;
     v3dSiteMarkers(); v3dCam(V3.home, 1500);
@@ -4307,17 +4435,18 @@ function v3dVolte(on) {
   const pts = [at(P0, 170), at(P1, 105), at(P2, 55), at(T0, 3)];
   sc.setLines('volte', [{ pts: pts.slice(0, 3), color: '#ffffff', width: 5 }], { dash: 34, xray: true });
   sc.setLines('volteF', [{ pts: pts.slice(2), color: '#35d07f', width: 6 }], { xray: true });
-  sc.setTris('volteC', sc.curtain(pts, '#ffffff', 0.2, 0.02));
+  sc.setTris('volteC', V3.volte?.pov ? null : sc.curtain(pts, '#ffffff', 0.2, 0.02));
   if (wind) {
     // drei Windfäden über dem Platz: zeigen, wohin der Wind weht
     const side = d => go(T0, wind.dir + 90, d);
     sc.setLines('volteW', [-130, 0, 130].map((d, i) => ({ pts: [go(side(d), wind.dir, 330), side(d), go(side(d), wind.dir + 180, 330)].map(p => at(p, 30)), color: '#4aa8ff', width: 3, speed: 0.55, phase: i * 220 })), { flow: 660, xray: true });
   } else sc.setLines('volteW', null);
   const len = [0]; for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + haversineKm(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) * 1000);
-  V3.volte = { pts, len, t0: performance.now() };
+  V3.volte = { pts, len, t0: performance.now(), pov: !!V3.volte?.pov, yaw: null };
   const off = v.mine && wind ? Math.abs(((wind.dir - v.mine.dir) % 360 + 540) % 360 - 180) : null;
   card.innerHTML = `<b>Volte ${v.side === 'R' ? 'rechts' : 'links'}, Endanflug nach ${dirLabel(v.h)}</b>
     <p class="fine">${v.mine ? 'Deine Angabe.' : `Vorschlag gegen den Wind${v.R ? `, Seite nach Platzregel bei ${v.tal ? 'Talwind' : 'Bergwind'}` : ', Seite und Hindernisse vor Ort klären'}.`}${wind ? ` Blau: Wind aus ${dirLabel(wind.dir)} (${esc(wind.src)}).` : ''} Grün ist der Endanflug.</p>
+    ${noMotion() ? '' : `<button type="button" class="v3d-chip v3d-vpov" data-act="v3dvpov" aria-pressed="${!!V3.volte.pov}">Aus Pilotensicht anfliegen</button>`}
     ${off != null && off > 100 ? '<p class="volte-warn" role="alert">Rückenwind auf deinem Endanflug. Anders einteilen.</p>' : ''}${(l.notes || []).slice(0, 1).map(n => `<p class="volte-warn">${esc(n)}</p>`).join('')}`;
   card.hidden = false;
   v3dSiteMarkers();
@@ -4344,10 +4473,19 @@ function v3dSiteFrame(ts, dt) {
   const vo = V3.volte;
   if (vo && !noMotion()) {
     // Schirm fliegt die Volte in 9 s ab, hält kurz am Boden und beginnt neu
-    const u = Math.min(1, ((performance.now() - vo.t0) % 10500) / 9000) * vo.len[3];
+    const T = vo.pov ? 16000 : 9000, ph = (performance.now() - vo.t0) % (T + 1500), u = Math.min(1, ph / T) * vo.len[3];
     let i = 1; while (i < 3 && vo.len[i] < u) i++;
     const k = (u - vo.len[i - 1]) / Math.max(1, vo.len[i] - vo.len[i - 1]), a = vo.pts[i - 1], b = vo.pts[i];
-    sc.moveMarker('gl', a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k);
+    const p = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k + (vo.pov ? 2 : 0)];
+    if (vo.pov) {
+      // Blick entlang des Schenkels, in den Kurven weich mitgedreht; vor dem Neubeginn kurz abblenden
+      const brg = (Math.atan2((b[1] - a[1]) * sc.mLon, (b[0] - a[0]) * 111320) / D2R + 360) % 360;
+      vo.yaw = vo.yaw == null || ph < (vo.ph ?? 0) ? brg : lerpDeg(vo.yaw, brg, 1 - Math.exp(-dt / 420));
+      sc.setPov({ lat: p[0], lon: p[1], alt: p[2], yaw: vo.yaw, pitch: -4 - 8 * Math.min(1, (p[2] - vo.pts[3][2]) / 60) });   // kurz vor dem Boden hebt sich der Blick
+      sc.canvas.classList.toggle('cut', ph > T + 1180);
+    }
+    vo.ph = ph;
+    sc.moveMarker('gl', p[0], p[1], p[2]);
     busy = true;
   }
   return busy;
@@ -4416,6 +4554,70 @@ async function open3dRegion() {
     if (tok === V3.tok && !noMotion()) v3dPlay(true);
   } catch (e) { if (tok === V3.tok) v3dFail('Der Tagesfilm konnte nicht aufgebaut werden: ' + e.message); }
 }
+/* ---- Karte kippt in 3D: derselbe Ort, derselbe Ausschnitt. Die Karte neigt sich, das Gelände übernimmt aus demselben
+   Blickwinkel und dreht dann weich in die Schrägsicht; beim Schliessen geht es denselben Weg zurück. */
+function mapTilt(on) {
+  const el = M.map?.getContainer();
+  if (el) el.classList.toggle('tilted', !!on && !noMotion());
+  if (!on) { mapMsg(''); $('#v3dDlg')?.classList.remove('tilt-in', 'tilt-show'); }
+}
+async function open3dMap() {
+  if (!S.plan || !M.map) return open3dRegion();
+  if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann die 3D-Ansicht nicht darstellen.'); return; }
+  if (FILM.playing || FILM.busy) filmStop();
+  v3dEnd();
+  const tok = V3.tok, dl = $('#v3dDlg'), still = noMotion(), t0 = performance.now();
+  const c = M.map.getCenter(), b = M.map.getBounds(), kLo = 111320 * Math.cos(c.lat * D2R);
+  const Wm = Math.abs(b.getEast() - b.getWest()) * kLo, Hm = Math.abs(b.getNorth() - b.getSouth()) * 111320;
+  const hour = Math.min(20, Math.max(6, Math.round(W.hour))), layer = ['thermal', 'soar', 'lee'].find(k => T.modes.has(k)) || null;
+  Object.assign(V3, { mode: 'region', site: null, land: null, hour, t: hour, layer, tour: false, tilt: true, flat: null });
+  dl.classList.remove('tilt-show');
+  dl.classList.toggle('tilt-in', !still);
+  if (!still) { mapTilt(true); mapMsg('3D-Gelände wird aufgebaut …'); }
+  dlg('#v3dDlg', v3dShell('Karte in 3D', `${dayName(S.day)} ${dayDate(S.day)} · derselbe Ausschnitt wie auf der Karte`, v3dRegionBar()));
+  const show = () => { mapMsg(''); dl.classList.add('tilt-show'); };
+  try {
+    const g = await thermalGrid();
+    if (tok !== V3.tok) return;
+    const n0 = g.la0 + 0.03, n1 = g.la0 + (g.ny - 1) * g.dla - 0.03, e0 = g.lo0 + 0.04, e1 = g.lo0 + (g.nx - 1) * g.dlo - 0.04, m = 5000;
+    const lat = Math.min(n1 - m / 111320, Math.max(n0 + m / 111320, c.lat)), lon = Math.min(e1 - m / kLo, Math.max(e0 + m / kLo, c.lng));
+    if (haversineKm(lat, lon, c.lat, c.lng) > 12) { show(); v3dFail('Für diese Gegend hat AFC kein Geländemodell. Schiebe die Karte ins Berner Oberland und tippe nochmals auf 3D.'); return; }
+    const room = Math.min((lat - n0) * 111320, (n1 - lat) * 111320, (lon - e0) * kLo, (e1 - lon) * kLo);
+    const R = Math.round(Math.min(38000, room, Math.max(4500, Math.max(Wm, Hm) / 2 * 1.05)));
+    const all = S.plan.sites.filter(x => !x.blocked && num(x.lat) && num(x.lon));
+    V3.reg = { lat, lon, sites: all.filter(x => haversineKm(lat, lon, x.lat, x.lon) * 1000 < R * 0.9) };
+    const dem = await v3dDem(g, { lat, lon, radius: R });
+    if (tok !== V3.tok) return;
+    const sc = v3dScene(g, { lat, lon, radius: R, dem, n: dem ? undefined : 281 });
+    // Kamera so, dass sie zuerst etwa dasselbe zeigt wie die geneigte Karte: Norden oben, gleiche Breite
+    const st = $('#v3dStage'), asp = st.clientWidth / Math.max(1, st.clientHeight);
+    const dist = Math.min(R * 3.3, Math.max(R * 0.6, Math.min(Wm, 2 * R) / (0.6886 * asp)));
+    V3.flat = { lat, lon, alt: sc.ground(lat, lon), az: 0, el: 46, dist };
+    V3.home = { ...V3.flat, az: -24, el: 31, dist: dist * 0.86 };
+    sc.flyTo(V3.flat, 0);
+    sc.onFrame = v3dSiteFrame;
+    sc.onUser = () => { if (!V3.tour) return; V3.tour = false; $('#v3dBar [data-act="v3dtour"]')?.setAttribute('aria-pressed', 'false'); };
+    await v3dApply();
+    // ist alles schon geladen, soll die Karte trotzdem erst sichtbar kippen, bevor das Gelände übernimmt
+    if (!still) await new Promise(r => setTimeout(r, Math.max(0, 560 - (performance.now() - t0))));
+    if (tok !== V3.tok) return;
+    show();
+    v3dCam(V3.home, 1900);
+  } catch (e) { if (tok === V3.tok) { show(); v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + e.message); } }
+}
+/** Zurück zur Karte: Kamera dreht in den Blick der geneigten Karte, 3D blendet aus, die Karte richtet sich auf. */
+function tiltClose() {
+  const dl = $('#v3dDlg'), sc = V3.scene;
+  if (!V3.tilt || noMotion() || !sc || !V3.flat || !dl.classList.contains('tilt-show')) { closeDlg(dl); return; }
+  if (dl._closing) return;
+  if (V3.playing) v3dPlay(false);
+  sc.flyTo(V3.flat, 650);
+  dl._closing = setTimeout(() => {
+    dl.classList.remove('tilt-show');
+    M.map?.getContainer().classList.remove('tilted');
+    dl._closing = setTimeout(() => { dl._closing = 0; if (dl.open) dl.close(); }, 440);
+  }, 640);
+}
 /** Bewertung der Startplätze zur Stunde: Favoriten gross mit Zahl, die übrigen als Punkt. */
 function v3dRegionMarkers() {
   const sc = V3.scene, reg = V3.reg;
@@ -4454,8 +4656,8 @@ function varioCol(v) {
 function v3dFlightBar() {
   const F = V3.fl;
   return `<div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dfplay" aria-pressed="false" aria-label="Flug abspielen" title="Flug abspielen">${PLAY_SVG}</button><b id="v3dHourT">${esc(F.f.start || '')}</b><input id="v3dScrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Zeitpunkt im Flug"></div>
-    <div class="v3d-chips" role="group" aria-label="Wiedergabe">${[30, 60, 150].map(v => v3dChip('v3dspeed', v, v + '×', F.speed === v)).join('')}${v3dChip('v3dfollow', '', 'Schirm folgen', F.follow)}${v3dChip('v3dcmp', '', 'Prognose', F.card === 'cmp')}${v3dChip('v3dfadd', '', F.others.length ? `Flüge (${F.others.length + 1})` : '+ Flug', F.card === 'add')}</div>
-    <p class="fine v3d-note">Spur: rot steigt, blau sinkt. Orange Säulen sind deine Thermiken${num(F.f.afcFc?.top) ? ', der blaue Ring zeigt, bis wohin AFC die Thermik vorhergesagt hat' : ''}. ${F.others.length ? `Die anderen Flüge haben je eine Farbe und laufen nach der Uhrzeit mit${F.others.some(o => o.date !== F.f.date) ? ', Flüge von anderen Tagen zur selben Tageszeit' : ''}. ` : ''}<span id="v3dRelief"></span></p>`;
+    <div class="v3d-chips" role="group" aria-label="Wiedergabe">${[30, 60, 150].map(v => v3dChip('v3dspeed', v, v + '×', F.speed === v)).join('')}${v3dChip('v3dfollow', '', 'Schirm folgen', F.follow)}${v3dChip('v3dpov', '', 'Pilotensicht', F.pov)}${v3dChip('v3dcmp', '', 'Prognose', F.card === 'cmp')}${v3dChip('v3dfadd', '', F.others.length ? `Flüge (${F.others.length + 1})` : '+ Flug', F.card === 'add')}</div>
+    <p class="fine v3d-note">Spur: rot steigt, blau sinkt. <span id="v3dPovNote"></span>Orange Säulen sind deine Thermiken${num(F.f.afcFc?.top) ? ', der blaue Ring zeigt, bis wohin AFC die Thermik vorhergesagt hat' : ''}. ${F.others.length ? `Die anderen Flüge haben je eine Farbe und laufen nach der Uhrzeit mit${F.others.some(o => o.date !== F.f.date) ? ', Flüge von anderen Tagen zur selben Tageszeit' : ''}. ` : ''}<span id="v3dRelief"></span></p>`;
 }
 /* ---- Mehrere Flüge gleichzeitig: eigene Flüge und IGC-Dateien von Kollegen laufen nach der Uhrzeit mit */
 const FLX = new Map();                                     // Flug-ID -> weitere Flüge dieser Ansicht (nur im Speicher, nichts wird gespeichert)
@@ -4553,7 +4755,8 @@ async function open3dFlight(id, keep = null) {
     sc.setLines('othH', others.map(o => ({ pts: o.pts, color: [0, 0, 0, 0.4], width: 5.5 })), { xray: false });
     sc.setLines('oth', others.map(o => ({ pts: o.pts, color: o.col, width: 3.1 })), { xray: true });
     const th = (f.track.thermals || []).filter(x => num(x.lat) && num(x.alt) && num(x.base));
-    sc.setTris('therm', th.flatMap(x => sc.column(x.lat, x.lon, x.base, x.alt, Math.max(55, R * 0.012), [1, 0.55, 0.12])));
+    F.thTris = th.flatMap(x => sc.column(x.lat, x.lon, x.base, x.alt, Math.max(55, R * 0.012), [1, 0.55, 0.12]));
+    sc.setTris('therm', F.thTris);
     const ms = [
       { id: 'st', lat: pts[0][0], lon: pts[0][1], cls: 'top', html: `<span class="v3d-pin st">S</span><span class="v3d-name">${esc(f.siteName || 'Start')}</span>` },
       { id: 'ld', lat: pts[n - 1][0], lon: pts[n - 1][1], cls: 'top', yield: true, html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(f.landingName || 'Landung')}</span>` },
@@ -4584,12 +4787,52 @@ async function open3dFlight(id, keep = null) {
     if (!noMotion() && !keep) setTimeout(() => { if (tok === V3.tok && V3.fl === F && !F.playing && F.now === F.tA) v3dFlightPlay(true); }, 1400);
   } catch (e) { if (tok === V3.tok) v3dFail('Der Flug konnte nicht in 3D gezeigt werden: ' + e.message); }
 }
+/* ---- Pilotensicht: die Kamera sitzt im Gurtzeug. Ort und Blickrichtung sind geglättet, damit beim Kreisen nichts schwindlig macht. */
+/** Weicher Schnitt statt eines Sprungs: Bild kurz abblenden, umstellen, aufblenden. */
+function povCut(fn) {
+  const cv = V3.scene?.canvas, tok = V3.tok;
+  if (!cv || noMotion()) { fn(); return; }
+  cv.classList.add('cut');
+  setTimeout(() => { if (tok !== V3.tok) return; fn(); requestAnimationFrame(() => cv.classList.remove('cut')); }, 240);
+}
+function v3dPov(on) {
+  const F = V3.fl, sc = V3.scene;
+  if (!F || !sc || !F.pts || !!F.pov === on) return;
+  povCut(() => {
+    F.pov = on; F.yaw = null; F.roll = 0; F.povT = null; F.shown = -1;
+    if (on) { F.follow = true; F.spd0 = F.speed; F.speed = Math.min(F.speed, 30); sc.setTris('curt', null); sc.setTris('therm', null); }      // Vorhang und Säulen würden von innen nur die Sicht färben
+    else {
+      F.speed = F.spd0 || F.speed; sc.setPov(null);
+      sc.setTris('curt', sc.curtain(F.pts, '#ffffff', 0.2, 0.02)); sc.setTris('therm', F.thTris);
+      v3dCam({ dist: Math.max(2600, sc.R * 0.45), el: 30 }, 1100);
+    }
+    $('#v3dStage')?.classList.toggle('pov', on);
+    $$('#v3dBar [data-act="v3dpov"]').forEach(x => x.setAttribute('aria-pressed', String(on)));
+    $$('#v3dBar [data-act="v3dfollow"]').forEach(x => x.setAttribute('aria-pressed', String(F.follow)));
+    $$('#v3dBar [data-act="v3dspeed"]').forEach(x => x.setAttribute('aria-pressed', String(Number(x.dataset.v) === F.speed)));
+    const nt = $('#v3dPovNote'); if (nt) nt.textContent = on ? 'Pilotensicht: Ziehen schaut dich um, der Blick kehrt von selbst nach vorn zurück. Die Säulen sind hier ausgeblendet. ' : '';
+    v3dFlightPose(); sc.invalidate();
+  });
+}
+function v3dVoltePov(on) {
+  const vo = V3.volte, sc = V3.scene;
+  if (!vo || !sc || !!vo.pov === on) return;
+  povCut(() => {
+    if (V3.volte !== vo) return;
+    vo.pov = on; vo.yaw = null; vo.t0 = performance.now();
+    if (!on) sc.setPov(null);
+    sc.setTris('volteC', on ? null : sc.curtain(vo.pts, '#ffffff', 0.2, 0.02));     // der Vorhang stünde von innen nur im Weg
+    $('#v3dStage')?.classList.toggle('pov', on);
+    $$('#v3dCard [data-act="v3dvpov"]').forEach(x => x.setAttribute('aria-pressed', String(on)));
+    sc.invalidate();
+  });
+}
 function v3dFlightPlay(on) {
   const F = V3.fl, btn = $('#v3dPlay');
   if (!F || !btn) return;
   if (on && F.now >= F.tB) F.now = F.tA;
   F.playing = on; btn.setAttribute('aria-pressed', String(on));
-  if (on && F.follow) v3dCam({ dist: Math.min(V3.scene.cam.dist, Math.max(2600, V3.scene.R * 0.45)), el: 30 }, 1600);
+  if (on && F.follow && !F.pov) v3dCam({ dist: Math.min(V3.scene.cam.dist, Math.max(2600, V3.scene.R * 0.45)), el: 30 }, 1600);
   V3.scene?.invalidate();
 }
 function v3dFlightFrame(ts, dt) {
@@ -4603,20 +4846,34 @@ function v3dFlightFrame(ts, dt) {
     if (F.now >= F.tB) v3dFlightPlay(false);
   }
   if (F.now !== F.shown || F.now !== F.hud || F.follow) v3dFlightPose(ts);
-  return F.playing;
+  return F.playing || !!(F.pov && F.povBusy);
 }
 /** Schirm an die Stelle F.i setzen, Anzeige nachführen, Kamera folgt weich. */
 function v3dFlightPose(ts = performance.now()) {
   const F = V3.fl, sc = V3.scene;
   if (!F || !sc || !F.pts) return;
   // Stelle auf einer Spur zur Zeit F.now: vor dem Start am Startpunkt, nach der Landung am Landepunkt
-  const at = (pts, t0, dtp, n) => { const j = Math.min(n - 1, Math.max(0, (F.now - t0) / (dtp * 1000))), j0 = Math.min(n - 2, Math.floor(j)), q = j - j0, a = pts[j0], b = pts[j0 + 1]; return [a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q, a[2] + (b[2] - a[2]) * q, j]; };
+  const at = (pts, t0, dtp, n, now = F.now) => { const j = Math.min(n - 1, Math.max(0, (now - t0) / (dtp * 1000))), j0 = Math.min(n - 2, Math.floor(j)), q = j - j0, a = pts[j0], b = pts[j0 + 1]; return [a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q, a[2] + (b[2] - a[2]) * q, j]; };
   const state = (t0, t1, alt) => (F.now < t0 ? 'am Start' : F.now >= t1 ? 'gelandet' : Math.round(alt) + ' m');
   const [lat, lon, alt, fi] = at(F.pts, F.t0, F.dtp, F.n), gr = sc.ground(lat, lon);
   F.i = fi;
   const i0 = Math.min(F.n - 2, Math.floor(F.i)), k = F.i - i0;
+  if (F.pov) {
+    // Auge und Blick über ein Zeitfenster gemittelt: ein Kreis in der Thermik wird zu einem ruhigen Steigen, der Blick geht dorthin, wo der Flug hinführt
+    const win = Math.min(90, Math.max(8, F.speed * 0.6)) * 1000;
+    const avg = c => { const o = [0, 0, 0]; for (let j = -3; j <= 3; j++) { const q = at(F.pts, F.t0, F.dtp, F.n, c + j * win / 6); o[0] += q[0] / 7; o[1] += q[1] / 7; o[2] += q[2] / 7; } return o; };
+    const e = avg(F.now), a = avg(F.now + win * 1.2), dx = (a[1] - e[1]) * sc.mLon, dy = (a[0] - e[0]) * 111320;
+    const dts = Math.min(120, Math.max(0, ts - (F.povT ?? ts))); F.povT = ts;
+    const prev = F.yaw, goal = Math.hypot(dx, dy) > 25 || prev == null ? (Math.atan2(dx, dy) / D2R + 360) % 360 : prev;
+    F.yaw = prev == null || noMotion() || F.drag ? goal : lerpDeg(prev, goal, 1 - Math.exp(-dts / 520));
+    const rate = prev == null || !dts ? 0 : (((F.yaw - prev) % 360 + 540) % 360 - 180) / dts * 1000;
+    F.roll += (Math.max(-13, Math.min(13, -rate * 0.22)) - F.roll) * Math.min(1, dts / 320 || 1);
+    sc.setPov({ lat: e[0], lon: e[1], alt: e[2] + 2, yaw: F.yaw, pitch: -9, roll: noMotion() ? 0 : F.roll });
+    F.povBusy = Math.abs(((goal - F.yaw) % 360 + 540) % 360 - 180) > 0.3 || Math.abs(F.roll) > 0.2;
+    if (F.now !== F.shown) sc.moveMarker('gl', e[0], e[1], e[2] + 2);        // der eigene Schirm sitzt in der Kamera und ist darum nicht zu sehen
+  }
   if (F.now !== F.shown) {
-    sc.moveMarker('gl', lat, lon, alt);
+    if (!F.pov) sc.moveMarker('gl', lat, lon, alt);
     F.others.forEach((o, j) => { const q = o.pos = at(o.pts, o.t0, o.dtp, o.n); sc.moveMarker('gl' + j, q[0], q[1], q[2]); });
     sc.setLines('drop', [{ pts: [[lat, lon, alt], [lat, lon, Math.min(alt, gr)]], color: [1, 1, 1, 0.85], width: 1.6 }], { bias: 0.001 });
   }

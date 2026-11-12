@@ -17,11 +17,15 @@
     o[0] = t / asp; o[5] = t; o[10] = (f + n) / (n - f); o[11] = -1; o[14] = 2 * f * n / (n - f);
     return o;
   }
-  function look(e, c) {
+  function look(e, c, roll = 0) {
     let zx = e[0] - c[0], zy = e[1] - c[1], zz = e[2] - c[2], l = Math.hypot(zx, zy, zz) || 1;
     zx /= l; zy /= l; zz /= l;
     let xx = zz, xy = 0, xz = -zx; l = Math.hypot(xx, xz) || 1; xx /= l; xz /= l;      // up = (0,1,0)
-    const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    let yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    if (roll) {                                                                        // Schräglage: um die Blickachse drehen
+      const k = Math.cos(roll), q = Math.sin(roll), ax = xx * k + yx * q, ay = xy * k + yy * q, az = xz * k + yz * q;
+      yx = yx * k - xx * q; yy = yy * k - xy * q; yz = yz * k - xz * q; xx = ax; xy = ay; xz = az;
+    }
     return new Float32Array([xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0, -(xx * e[0] + xy * e[1] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]);
   }
   function mul(a, b) {
@@ -206,6 +210,9 @@
     varying vec4 v_col; varying float v_d, v_s, v_sp;
     void main(){
       vec4 cp = u_mvp*vec4(a_p, 1.), cq = u_mvp*vec4(a_q, 1.);
+      // reicht ein Ende hinter die Kamera, wird der Abschnitt kurz vor ihr gekappt: so bleibt die Breite überall gleich
+      if (cp.w < 2. && cq.w > 2.) cp = mix(cq, cp, (cq.w - 2.)/(cq.w - cp.w));
+      else if (cq.w < 2. && cp.w > 2.) cq = mix(cp, cq, (cp.w - 2.)/(cp.w - cq.w));
       vec2 dir = (cq.xy/max(cq.w, 1e-3) - cp.xy/max(cp.w, 1e-3))*u_vp; float l = length(dir);
       dir = l > 1e-4 ? dir/l : vec2(1., 0.);
       float side = sign(a_m.x), flip = abs(a_m.x) > 1.5 ? -1. : 1.;       // Betrag 2: Ende des Abschnitts, Richtung gespiegelt
@@ -247,6 +254,7 @@
     /**
      * host: Element, in das die Zeichenfläche und die Beschriftungen kommen. grid: Geländeraster der App.
      * o.interactive (Standard true): Bedienung mit Finger und Maus. o.size [b, h]: feste Grösse in Pixeln (für Clips).
+     * o.spin: nur seitlich drehen, die Seite scrollt weiter (kleines Modell). o.bg [r, g, b]: einfarbiger Grund statt Himmel.
      */
     constructor(host, grid, o = {}) {
       this.host = host; this.g = grid; this.o = o;
@@ -257,7 +265,7 @@
       this.sky = o.sky || { top: [0.36, 0.56, 0.80], bot: [0.80, 0.88, 0.94] };
       this.lines = new Map(); this.tris = new Map(); this.markers = [];
       this._ov = { mix: 1, t0: 0, ms: 1, on: false }; this._drape = { a: 0, t0: 0, ok: false };
-      this._vel = [0, 0]; this.orbit = 0; this.time = 0;
+      this._vel = [0, 0]; this.orbit = 0; this.time = 0; this.pov = null;
       const c = this.canvas = document.createElement('canvas');
       c.className = 'v3d-c'; c.setAttribute('role', 'img'); c.tabIndex = o.interactive === false ? -1 : 0;
       if (host) {
@@ -660,6 +668,16 @@
         c.el = Math.min(88, c.el + 4);
       }
     }
+    /** Freie Kamera (Pilotensicht): { lat, lon, alt, yaw, pitch, roll } in Grad, yaw wie ein Kompass. null: zurück zur Sicht von aussen. */
+    setPov(o) {
+      if (!o) { if (this.pov) { this.pov = null; this._mk = null; this.invalidate(); } return; }
+      const p = this.pov || (this.pov = { look: [0, 0], held: 0, rel: 0 }), e = this.toLocal(o.lat, o.lon, o.alt);
+      if (Math.abs(e[0]) < this.R && Math.abs(e[2]) < this.R) e[1] = Math.max(e[1], (this._meshH(e[0], e[2]) + 8) * this.ex);   // nie im Gelände
+      p.eye = e; p.yaw = o.yaw || 0; p.pitch = o.pitch ?? -10; p.roll = o.roll || 0;
+      this.invalidate();
+    }
+    /** Blickrichtung als Kompasskurs. */
+    get heading() { return this.pov ? this.pov.yaw + this.pov.look[0] : this.cam.az; }
     /** Kamera weich an einen Ort fliegen. to: { lat, lon, alt, az, el, dist } (nur Angegebenes ändert sich). */
     flyTo(to, ms = 1200) {
       const c = this.cam, t = to.lat != null ? this.toLocal(to.lat, to.lon, to.alt) : c.t.slice();
@@ -672,13 +690,20 @@
       const c = this.canvas, pts = new Map();
       let last = null, moved = 0;
       const stop = () => { this._fly = null; this.orbit = 0; this.onUser?.(); };
-      c.style.touchAction = 'none';
-      const down = e => { c.setPointerCapture?.(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = null; moved = 0; this._vel = [0, 0]; stop(); };
+      const spin = !!this.o.spin, held = () => { if (this.pov) { this.pov.held = pts.size; this.pov.rel = performance.now(); } };
+      c.style.touchAction = spin ? 'pan-y' : 'none';
+      const down = e => { c.setPointerCapture?.(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = null; moved = 0; this._vel = [0, 0]; stop(); held(); };
       const move = e => {
         if (!pts.has(e.pointerId)) return;
         const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
-        const cam = this.cam;
-        if (pts.size === 1) {
+        const cam = this.cam, pv = this.pov;
+        if (pv) {
+          // Pilotensicht: ziehen heisst umschauen
+          if (pts.size === 1) { const dx = e.clientX - prev[0], dy = e.clientY - prev[1]; moved += Math.abs(dx) + Math.abs(dy); pv.look[0] = clamp(pv.look[0] - dx * 0.25, -160, 160); pv.look[1] = clamp(pv.look[1] + dy * 0.2, -55, 40); }
+        } else if (spin) {
+          const dx = e.clientX - prev[0]; moved += Math.abs(dx) + Math.abs(e.clientY - prev[1]);
+          if (pts.size === 1) { cam.az -= dx * 0.45; this._vel = [-dx * 0.45, 0]; }
+        } else if (pts.size === 1) {
           const dx = e.clientX - prev[0], dy = e.clientY - prev[1]; moved += Math.abs(dx) + Math.abs(dy);
           if (e.shiftKey || e.buttons === 2) this._pan(dx, dy);
           else { cam.az -= dx * 0.35; cam.el += dy * 0.28; this._vel = [-dx * 0.35, dy * 0.28]; }
@@ -689,13 +714,15 @@
         }
         this._clampCam(); this.invalidate();
       };
-      const up = e => { pts.delete(e.pointerId); last = null; if (pts.size === 0 && moved < 6) this.onTap?.(e); this.invalidate(); };
+      const up = e => { const had = pts.delete(e.pointerId); last = null; held(); if (had && e.type === 'pointerup' && pts.size === 0 && moved < 6) this.onTap?.(e); this.invalidate(); };
       c.addEventListener('pointerdown', down); c.addEventListener('pointermove', move); c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
       c.addEventListener('contextmenu', e => e.preventDefault());
-      c.addEventListener('wheel', e => { e.preventDefault(); stop(); this.cam.dist *= Math.exp(clamp(e.deltaY, -120, 120) * 0.0016); this._clampCam(); this.invalidate(); }, { passive: false });
+      if (spin) { c.addEventListener('keydown', e => { const k = { ArrowLeft: 10, ArrowRight: -10 }[e.key]; if (k) { e.preventDefault(); stop(); this.cam.az += k; this.invalidate(); } }); return; }
+      c.addEventListener('wheel', e => { e.preventDefault(); if (this.pov) return; stop(); this.cam.dist *= Math.exp(clamp(e.deltaY, -120, 120) * 0.0016); this._clampCam(); this.invalidate(); }, { passive: false });
       c.addEventListener('keydown', e => {
         const k = { ArrowLeft: [8, 0, 1], ArrowRight: [-8, 0, 1], ArrowUp: [0, 5, 1], ArrowDown: [0, -5, 1], '+': [0, 0, 0.85], '=': [0, 0, 0.85], '-': [0, 0, 1.18] }[e.key];
         if (!k) return;
+        if (this.pov) { e.preventDefault(); const pv = this.pov; pv.look[0] = clamp(pv.look[0] - k[0] * 1.5, -160, 160); pv.look[1] = clamp(pv.look[1] + k[1] * 1.5, -55, 40); pv.rel = performance.now(); return this.invalidate(); }
         e.preventDefault(); stop(); this.cam.az += k[0]; this.cam.el += k[1]; this.cam.dist *= k[2]; this._clampCam(); this.invalidate();
       });
     }
@@ -724,6 +751,11 @@
         c.az += this._vel[0]; c.el += this._vel[1]; this._vel[0] *= 0.92; this._vel[1] *= 0.86; this._clampCam(); busy = true;
       }
       if (this.orbit) { c.az += this.orbit * dt / 1000; busy = true; }
+      const pv = this.pov;
+      if (pv && !pv.held && (pv.look[0] || pv.look[1])) {
+        if (performance.now() - pv.rel > 900) { const k = Math.pow(0.9, dt / 16); pv.look[0] *= k; pv.look[1] *= k; if (Math.abs(pv.look[0]) + Math.abs(pv.look[1]) < 0.15) pv.look = [0, 0]; }
+        busy = true;
+      }
       const o = this._ov;
       if (o.mix < 1) { o.mix = clamp((performance.now() - o.t0) / o.ms, 0, 1); busy = busy || o.mix < 1; }
       const d = this._drape;
@@ -745,14 +777,21 @@
       const gl = this.gl;
       if (!this.V || gl.isContextLost()) return;
       this._size();
-      const cv = this.canvas, c = this.cam, eye = this._eye = this._eyePos();
-      const near = Math.max(20, c.dist * 0.04), far = c.dist + this.R * 5;
-      const mvp = this._mvp = mul(persp((this.o.fov || 38) * D2R, cv.width / cv.height, near, far), look(eye, c.t));
+      const cv = this.canvas, c = this.cam, pv = this.pov;
+      let eye, at = c.t, near, far, fov = this.o.fov || 38, fogA = c.dist * 1.1;
+      if (pv) {
+        const yw = (pv.yaw + pv.look[0]) * D2R, pt = clamp(pv.pitch + pv.look[1], -80, 60) * D2R;
+        eye = pv.eye; at = [eye[0] + Math.sin(yw) * Math.cos(pt), eye[1] + Math.sin(pt), eye[2] - Math.cos(yw) * Math.cos(pt)];
+        near = 6; far = this.R * 6; fov = 62; fogA = this.R * 0.8;
+      } else { eye = this._eyePos(); near = Math.max(20, c.dist * 0.04); far = c.dist + this.R * 5; }
+      this._eye = eye;
+      const mvp = this._mvp = mul(persp(fov * D2R, cv.width / cv.height, near, far), look(eye, at, pv ? pv.roll * D2R : 0));
       gl.viewport(0, 0, cv.width, cv.height);
       gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
       const e = this.sun.elev, day = clamp(e / 12, 0, 1), low = clamp(e / 30, 0, 1);
-      const night = [0.07, 0.10, 0.17], top = this.sky.top.map((v, i) => night[i] + (v - night[i]) * day), bot = this.sky.bot.map((v, i) => night[i] * 1.6 + (v - night[i] * 1.6) * day);
-      if (e > -4 && e < 12) { const w = 1 - Math.abs(e - 3) / 9; bot[0] += 0.22 * Math.max(0, w); bot[1] += 0.06 * Math.max(0, w); }
+      const night = [0.07, 0.10, 0.17], bg = this.o.bg;
+      const top = bg ? bg.slice() : this.sky.top.map((v, i) => night[i] + (v - night[i]) * day), bot = bg ? bg.slice() : this.sky.bot.map((v, i) => night[i] * 1.6 + (v - night[i] * 1.6) * day);
+      if (!bg && e > -4 && e < 12) { const w = 1 - Math.abs(e - 3) / 9; bot[0] += 0.22 * Math.max(0, w); bot[1] += 0.06 * Math.max(0, w); }
       // Himmel
       let P = this.P.sky; gl.useProgram(P.p); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.enableVertexAttribArray(P.a.a_p); gl.vertexAttribPointer(P.a.a_p, 2, gl.FLOAT, false, 0, 0);
@@ -771,7 +810,7 @@
       gl.uniform3f(P.u.u_sunCol, (0.78 + 0.16 * warm) * day, (0.74 - 0.06 * warm) * day, (0.66 - 0.2 * warm) * day);
       gl.uniform3f(P.u.u_amb, 0.24 + 0.30 * day, 0.27 + 0.30 * day, 0.34 + 0.28 * day);
       gl.uniform3fv(P.u.u_eye, eye); gl.uniform3fv(P.u.u_fog, bot); gl.uniform2f(P.u.u_c, 0, 0);
-      gl.uniform3f(P.u.u_f, this.R, c.dist * 1.1, c.dist * 1.1 + this.R * 2.6);
+      gl.uniform3f(P.u.u_f, this.R, fogA, fogA + this.R * 2.6);
       // Wolken: Stand für dieses Bild, Verschiebung mit dem Wind (zur Anschauung beschleunigt)
       const cl = this._cl, cc = cl?.cur && cl.cur.an > 0.004 && this.cloudsOn !== false ? cl.cur : null;
       let flow = false;
