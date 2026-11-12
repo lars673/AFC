@@ -336,6 +336,8 @@ function ensCheck() {
 
 /* ------------------------------------------------------------------ MyAFC */
 const MYAFC_KEY = () => process.env.ANTHROPIC_API_KEY || '';
+// Pausiert bis nach der Testphase (Lars, 12.11.2026): nur mit AFC_MYAFC=1 und Schlüssel eingeschaltet
+const MYAFC_ON = () => process.env.AFC_MYAFC === '1' && !!MYAFC_KEY();
 const myafc = { conv: new Map(), count: new Map() };   // je Pilot: laufendes Gespräch (2 h) und Fragen heute
 const myafcLeft = uid => { const c = myafc.count.get(uid); return Math.max(0, MYAFC_DAILY() - (c?.day === zurichDay() ? c.n : 0)); };
 const myNofly = uid => dbAll("SELECT at, data FROM feedback WHERE kind='nofly' AND uid=? ORDER BY at DESC LIMIT 6", [uid]).map(r => { const d = JSON.parse(r.data); return { date: r.at.slice(0, 10), siteId: d.site, reason: d.reason, afcScore: d.score }; });
@@ -346,7 +348,7 @@ function myafcUsage() {
   try { u = JSON.parse(kvGet('myafc-usage') || '{}'); } catch {}
   const day = zurichDay(), d = u.day === day ? u : { q: 0, in: 0, out: 0 };
   const [pi, po] = MYAFC_PRICE[MYAFC_MODEL()] || MYAFC_PRICE['claude-haiku-5-5'];
-  return { on: !!MYAFC_KEY(), model: MYAFC_MODEL(), daily: MYAFC_DAILY(), q: d.q, chf: Math.round((d.in * pi + d.out * po) / 1e6 * 0.9 * 100) / 100 };
+  return { on: MYAFC_ON(), model: MYAFC_MODEL(), daily: MYAFC_DAILY(), lastErr: myafc.lastErr || null, q: d.q, chf: Math.round((d.in * pi + d.out * po) / 1e6 * 0.9 * 100) / 100 };
 }
 async function myafcRoute(req, res) {
   if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
@@ -354,11 +356,11 @@ async function myafcRoute(req, res) {
   const prefs = me ? cleanUserPrefs(JSON.parse(me.prefs || '{}')) : {}, profile = me ? cleanProfile(JSON.parse(me.profile || '{}')) : {};
   const conv = myafc.conv.get(uid);
   const alive = conv && Date.now() - conv.at < 2 * 3600000;
-  if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, enabled: !!MYAFC_KEY(), left: myafcLeft(uid), daily: MYAFC_DAILY(), admin: isAdmin(req), turns: alive ? conv.turns : [] });
+  if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, enabled: MYAFC_ON(), left: myafcLeft(uid), daily: MYAFC_DAILY(), admin: isAdmin(req), turns: alive ? conv.turns : [] });
   if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
   const b = await readBody(req, 16 * 1024);
   if (b.neu) { myafc.conv.delete(uid); if (!b.text) return sendJson(req, res, 200, { ok: true, left: myafcLeft(uid) }); }
-  if (!MYAFC_KEY()) return sendJson(req, res, 503, { error: 'MyAFC ist noch nicht eingeschaltet.' });
+  if (!MYAFC_ON()) return sendJson(req, res, 503, { error: 'MyAFC ist noch nicht eingeschaltet.' });
   const text = cleanText(b.text, 800);
   if (!text) return sendJson(req, res, 400, { error: 'Leere Frage' });
   if (limited(req, 'myafc', 12)) return sendJson(req, res, 429, { error: 'Bitte etwas langsamer fragen.' });
@@ -396,7 +398,9 @@ async function myafcRoute(req, res) {
     console.warn('MyAFC', e.status || '', errMsg(e));
     const m = myafcError(e);
     if (m.code === 502) myafc.conv.delete(uid);
-    return sendJson(req, res, m.code, { error: m.msg });
+    myafc.lastErr = { at: nowIso(), status: e.status || null, msg: errMsg(e) };
+    // Der Admin sieht den genauen Grund von Claude (nie den Schlüssel), alle anderen nur die einfache Meldung
+    return sendJson(req, res, m.code, { error: m.msg + (isAdmin(req) ? ` (Grund: ${e.status ? 'HTTP ' + e.status + ', ' : ''}${errMsg(e)})` : '') });
   }
 }
 

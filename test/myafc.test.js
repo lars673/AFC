@@ -77,6 +77,7 @@ test('Gespräch: Werkzeug aufrufen, Ergebnis zurückgeben, Antwort lesen; Denkbl
   assert.equal(ref.refused, true);
   assert.equal(myafcError({ status: 401 }).code, 503);
   assert.match(myafcError({ status: 401 }).msg, /Schlüssel/);
+  assert.match(myafcError({ status: 400, message: 'Your credit balance is too low to access the Anthropic API.' }).msg, /Guthaben/);
 });
 
 // Ganzer Weg über den Server, Claude durch einen kleinen Ersatz ersetzt
@@ -119,7 +120,7 @@ async function boot(port, extraEnv) {
 
 test('Server: ohne Schlüssel aus, mit Schlüssel fragt er Claude, gibt echte Startplatzdaten weiter und zählt', async () => {
   const H = { 'Content-Type': 'application/json', 'X-AFC-Client': 'test-client-0001' };
-  const off = await boot(18791, {});
+  const off = await boot(18791, { ANTHROPIC_API_KEY: 'test-key' });   // Schlüssel da, aber pausiert
   try {
     const g = await (await fetch(off.base + '/api/myafc', { headers: H })).json();
     assert.equal(g.enabled, false);
@@ -127,7 +128,7 @@ test('Server: ohne Schlüssel aus, mit Schlüssel fragt er Claude, gibt echte St
     assert.equal((await fetch(off.base + '/api/myafc', { method: 'POST', headers: H, body: JSON.stringify({ text: 'hallo' }) })).status, 503);
   } finally { await off.stop(); }
   const fc = await fakeClaude();
-  const on = await boot(18792, { ANTHROPIC_API_KEY: 'test-key', AFC_ANTHROPIC_URL: fc.url, AFC_MYAFC_DAILY: '2' });
+  const on = await boot(18792, { ANTHROPIC_API_KEY: 'test-key', AFC_MYAFC: '1', AFC_ANTHROPIC_URL: fc.url, AFC_MYAFC_DAILY: '2' });
   try {
     assert.equal((await fetch(on.base + '/api/myafc', { headers: { 'Content-Type': 'application/json' } })).status, 400, 'ohne Client-Kennung');
     const g = await (await fetch(on.base + '/api/myafc', { headers: H })).json();

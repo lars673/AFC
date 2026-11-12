@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.8.1';
+const APP_VER = '12.8.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -846,7 +846,7 @@ async function myLoad() {
 const MY_SPARK = '<svg class="my-spark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.1 6.2 6.4 2.3-6.4 2.3L12 19.5l-2.1-6.2L3.5 11l6.4-2.3z" fill="currentColor"/><path d="M19 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor" opacity=".6"/></svg>';
 const myQ = () => `Soll ich ${dayName(S.day) === 'Heute' ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)} fliegen gehen?`;
 function myAskHtml() {
-  if (!MY.loaded || (!MY.on && !MY.admin)) return '';
+  if (!MY.loaded || !MY.on) return '';   // pausiert bis nach der Testphase: nur sichtbar, wenn der Server es einschaltet
   return `<button type="button" class="my-ask" data-act="myafc" data-q="${esc(myQ())}">${MY_SPARK}<span class="my-ask-t"><b>MyAFC fragen</b><small>«${esc(myQ())}»</small></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
 }
 /** Antwort als ruhiger Text: Absätze, **fett** und Aufzählungen mit «-» */
@@ -1055,8 +1055,9 @@ function techHtml() {
 }
 function myUsageHtml(m) {
   if (!m) return '';
-  if (!m.on) return '<div><b>MyAFC: aus</b><p class="fine" style="margin:4px 0 0">Zum Einschalten bei Railway die Variable ANTHROPIC_API_KEY mit deinem Anthropic-Schlüssel setzen.</p></div>';
-  return `<div><b>MyAFC heute: ${m.q} Fragen, ca. ${m.chf.toFixed(2)} Fr.</b> <span class="fine">(${esc(m.model)}, höchstens ${m.daily} Fragen pro Pilot und Tag)</span></div>`;
+  if (!m.on) return '<div><b>MyAFC: pausiert bis nach der Testphase</b></div>';
+  const err = m.lastErr ? `<p class="fine" style="margin:4px 0 0">Letzter Fehler ${esc(new Date(m.lastErr.at).toLocaleString('de-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}: ${esc((m.lastErr.status ? 'HTTP ' + m.lastErr.status + ', ' : '') + m.lastErr.msg)}</p>` : '';
+  return `<div><b>MyAFC heute: ${m.q} Fragen, ca. ${m.chf.toFixed(2)} Fr.</b> <span class="fine">(${esc(m.model)}, höchstens ${m.daily} Fragen pro Pilot und Tag)</span>${err}</div>`;
 }
 function refreshStatus() {
   const a = $('#statusPanel'), b = $('#techPanel');
