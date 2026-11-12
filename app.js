@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.7';
+const APP_VER = '12.8';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -518,6 +518,7 @@ function renderDecide() {
     ${watchLineHtml()}
     ${surveyCard()}
     ${headlineHtml(h, p.days[S.day]?.conf, p.days[S.day]?.sky)}
+    ${myAskHtml()}
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
@@ -832,6 +833,82 @@ function renderDay() {
     </div>`;
 }
 
+/* ---- MyAFC: die kleine KI in AFC (lib/myafc.js). Fragen wie «Soll ich morgen fliegen?»; sie schaut in Prognose,
+   Lage, Messwerte und dein Flugbuch und antwortet kurz mit Begründung. */
+const MY = { loaded: false, on: false, admin: false, left: null, daily: 40, turns: [], busy: false };
+async function myLoad() {
+  try {
+    const j = await (await fetch('/api/myafc', { headers: { 'X-AFC-Client': clientId } })).json();
+    if (j.ok) Object.assign(MY, { loaded: true, on: j.enabled, admin: j.admin, left: j.left, daily: j.daily, turns: j.turns || [] });
+  } catch { /* offline */ }
+  if (S.tab === 'decide' && S.plan) renderDecide();
+}
+const MY_SPARK = '<svg class="my-spark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.1 6.2 6.4 2.3-6.4 2.3L12 19.5l-2.1-6.2L3.5 11l6.4-2.3z" fill="currentColor"/><path d="M19 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor" opacity=".6"/></svg>';
+const myQ = () => `Soll ich ${dayName(S.day) === 'Heute' ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)} fliegen gehen?`;
+function myAskHtml() {
+  if (!MY.loaded || (!MY.on && !MY.admin)) return '';
+  return `<button type="button" class="my-ask" data-act="myafc" data-q="${esc(myQ())}">${MY_SPARK}<span class="my-ask-t"><b>MyAFC fragen</b><small>«${esc(myQ())}»</small></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
+}
+/** Antwort als ruhiger Text: Absätze, **fett** und Aufzählungen mit «-» */
+function myText(t) {
+  return esc(t).split(/\n{2,}/).map(par => {
+    const lines = par.split('\n');
+    if (lines.every(l => /^\s*[-•]\s/.test(l))) return `<ul>${lines.map(l => `<li>${l.replace(/^\s*[-•]\s/, '')}</li>`).join('')}</ul>`;
+    return `<p>${lines.join('<br>')}</p>`;
+  }).join('').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+}
+function myLogHtml() {
+  const sugg = [myQ(), 'Wo ist es morgen am besten?', 'Passt das zu meinen bisherigen Flügen?', 'Was ist heute unsicher?'];
+  if (!MY.turns.length) return `<div class="my-hello">${MY_SPARK}<p><b>Hoi, ich bin MyAFC.</b> Frag mich, ob sich ein Flug lohnt. Ich schaue in die Prognose, die Lage, die Messwerte und in dein Flugbuch. Je mehr Flüge du einträgst, desto persönlicher wird meine Antwort.</p></div>
+    <div class="my-sugg">${sugg.map(q => `<button type="button" class="my-chip" data-act="myq" data-q="${esc(q)}" ${MY.on ? '' : 'disabled'}>${esc(q)}</button>`).join('')}</div>`;
+  return MY.turns.map((t, i) => `<div class="my-q">${esc(t.q)}</div>${t.a != null ? `<div class="my-a${i === MY.turns.length - 1 && t.fresh ? ' new' : ''}">${myText(t.a)}</div>` : t.err ? `<div class="my-a my-err" role="alert">${esc(t.err)}</div>` : '<div class="my-a my-typing" aria-label="MyAFC schaut nach"><i></i><i></i><i></i><span>schaut in die Daten …</span></div>'}`).join('');
+}
+function myHtml() {
+  const off = !MY.on ? `<p class="my-off">${MY.admin ? 'MyAFC ist noch nicht eingeschaltet. Dafür braucht es einen Schlüssel von Anthropic als Variable <b>ANTHROPIC_API_KEY</b> bei Railway (die Anleitung hast du von Claude). Danach AFC neu starten.' : 'MyAFC ist noch nicht eingeschaltet.'}</p>` : '';
+  return `<div class="dlg-in my-in"><div class="dlg-h"><h2 id="myDlgT">${MY_SPARK} MyAFC</h2><div class="my-h-act">${MY.turns.length ? '<button type="button" class="btn sec btn-sm" data-act="mynew">Neues Gespräch</button>' : ''}<button class="x-btn" type="button" data-act="closemy" aria-label="Schliessen">×</button></div></div>
+    <div class="my-log" id="myLog" aria-live="polite">${myLogHtml()}</div>
+    ${off}
+    <form class="my-form" id="myForm"><input id="myIn" type="text" maxlength="800" autocomplete="off" enterkeyhint="send" placeholder="${MY.on ? 'Frag MyAFC …' : 'Noch nicht eingeschaltet'}" aria-label="Frage an MyAFC" ${MY.on ? '' : 'disabled'}><button class="btn my-send" type="submit" aria-label="Senden" ${MY.on ? '' : 'disabled'}><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="currentColor"/></svg></button></form>
+    <p class="fine my-fine">${MY.left != null && MY.on ? `Noch ${MY.left} von ${MY.daily} Fragen heute. ` : ''}MyAFC ist eine KI und kann sich irren. Entscheide vor Ort.</p></div>`;
+}
+function myRenderLog() {
+  const log = $('#myLog');
+  if (!log) return;
+  log.innerHTML = myLogHtml();
+  log.scrollTo({ top: log.scrollHeight, behavior: noMotion() ? 'auto' : 'smooth' });
+  const f = $('#myDlg .my-fine');
+  if (f && MY.left != null && MY.on) f.firstChild.textContent = `Noch ${MY.left} von ${MY.daily} Fragen heute. `;
+}
+function openMy(q) {
+  const d = dlg('#myDlg', myHtml());
+  $('#myForm').addEventListener('submit', e => { e.preventDefault(); const v = $('#myIn').value.trim(); if (v) { $('#myIn').value = ''; mySend(v); } });
+  const log = $('#myLog'); log.scrollTop = log.scrollHeight;
+  if (q && MY.on && !MY.busy && !MY.turns.length) mySend(q);
+  else if (matchMedia('(hover: hover)').matches) setTimeout(() => $('#myIn')?.focus(), 200);
+  return d;
+}
+async function mySend(q) {
+  if (MY.busy || !MY.on || !q) return;
+  MY.busy = true;
+  const t = { q, a: null };
+  MY.turns.push(t);
+  if (!$('#myDlg').open) openMy(); else { myRenderLog(); $('#myDlg .my-h-act')?.insertAdjacentHTML('afterbegin', $('#myDlg [data-act="mynew"]') ? '' : '<button type="button" class="btn sec btn-sm" data-act="mynew">Neues Gespräch</button>'); }
+  try {
+    const r = await fetch('/api/myafc', { method: 'POST', headers: { 'X-AFC-Client': clientId, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: q }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'MyAFC antwortet gerade nicht.');
+    t.a = j.reply; t.fresh = true; MY.left = j.left;
+  } catch (e) { t.err = navigator.onLine === false ? 'Keine Verbindung. MyAFC braucht Internet.' : e.message; }
+  MY.busy = false;
+  myRenderLog();
+  t.fresh = false;
+}
+async function myNew() {
+  MY.turns = [];
+  try { await fetch('/api/myafc', { method: 'POST', headers: { 'X-AFC-Client': clientId, 'Content-Type': 'application/json' }, body: JSON.stringify({ neu: true }) }); } catch {}
+  if ($('#myDlg').open) { $('#myDlg [data-act="mynew"]')?.remove(); myRenderLog(); }
+}
+
 /* ---- Profil */
 function sourcesHtml() {
   const s = S.plan?.sources;
@@ -969,11 +1046,17 @@ function techHtml() {
   return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
       <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
       <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
+    ${myUsageHtml(d.myafc)}
     ${learnedHtml(d.learned, d.learnGuard)}
     ${pressureHtml(d.pressure, d.models, d.backfill)}
     ${siteFbHtml(d.siteFeedback)}
     ${thermalHtml(d.thermal)}
     ${backtestHtml(d.backtest)}`;
+}
+function myUsageHtml(m) {
+  if (!m) return '';
+  if (!m.on) return '<div><b>MyAFC: aus</b><p class="fine" style="margin:4px 0 0">Zum Einschalten bei Railway die Variable ANTHROPIC_API_KEY mit deinem Anthropic-Schlüssel setzen.</p></div>';
+  return `<div><b>MyAFC heute: ${m.q} Fragen, ca. ${m.chf.toFixed(2)} Fr.</b> <span class="fine">(${esc(m.model)}, höchstens ${m.daily} Fragen pro Pilot und Tag)</span></div>`;
 }
 function refreshStatus() {
   const a = $('#statusPanel'), b = $('#techPanel');
@@ -3592,6 +3675,10 @@ document.addEventListener('click', async e => {
     case 'wksite': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openSite(b.dataset.id); break;
     case 'wkday': S.day = Number(b.dataset.d); S.dayPicked = true; closeDlg($('#siteDlg')); render(); break;
     case 'closemsg': closeDlg($('#msgDlg')); break;
+    case 'myafc': openMy(b.dataset.q); break;
+    case 'myq': mySend(b.dataset.q); break;
+    case 'mynew': myNew(); break;
+    case 'closemy': closeDlg($('#myDlg')); break;
     case 'closesheet': $('#mapSheet').hidden = true; break;
     case 'fav': {
       S.fav.has(id) ? S.fav.delete(id) : S.fav.add(id); store.set('fav', [...S.fav]); pushSync();
@@ -5723,6 +5810,7 @@ async function inviteCreate() {
   loadPlan();
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
+  myLoad();
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);

@@ -33,6 +33,7 @@ import { zipHas, parseObstacleKmz, indexObstacles, obstaclesInBox, obstaclesNear
 import { httpGet } from './lib/http.js';
 import { fetchEnsemble, ensembleCheck, pairDiff, ENS_MIN } from './lib/ensemble.js';
 import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
+import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, toolStations, toolProfile, toolSites, MYAFC_MODEL, MYAFC_DAILY } from './lib/myafc.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -331,6 +332,72 @@ function ensCheck() {
     .map(r => ({ p: r.p, hit: (r.b || 0) >= 40 }));
   state.ensCheck = ensembleCheck(rows); state.ensCheckAt = Date.now();
   return state.ensCheck;
+}
+
+/* ------------------------------------------------------------------ MyAFC */
+const MYAFC_KEY = () => process.env.ANTHROPIC_API_KEY || '';
+const myafc = { conv: new Map(), count: new Map() };   // je Pilot: laufendes Gespräch (2 h) und Fragen heute
+const myafcLeft = uid => { const c = myafc.count.get(uid); return Math.max(0, MYAFC_DAILY() - (c?.day === zurichDay() ? c.n : 0)); };
+const myNofly = uid => dbAll("SELECT at, data FROM feedback WHERE kind='nofly' AND uid=? ORDER BY at DESC LIMIT 6", [uid]).map(r => { const d = JSON.parse(r.data); return { date: r.at.slice(0, 10), siteId: d.site, reason: d.reason, afcScore: d.score }; });
+// Verbrauch heute für den Admin (Profil › Technik): Fragen, Tokens und ungefähre Kosten in Franken (1 USD ≈ 0.9 CHF)
+const MYAFC_PRICE = { 'claude-opus-5-5': [4, 20], 'claude-haiku-5-5': [0.1, 0.5], 'claude-sonnet-5-5': [3, 15] };
+function myafcUsage() {
+  let u = {};
+  try { u = JSON.parse(kvGet('myafc-usage') || '{}'); } catch {}
+  const day = zurichDay(), d = u.day === day ? u : { q: 0, in: 0, out: 0 };
+  const [pi, po] = MYAFC_PRICE[MYAFC_MODEL()] || MYAFC_PRICE['claude-opus-5-5'];
+  return { on: !!MYAFC_KEY(), model: MYAFC_MODEL(), daily: MYAFC_DAILY(), q: d.q, chf: Math.round((d.in * pi + d.out * po) / 1e6 * 0.9 * 100) / 100 };
+}
+async function myafcRoute(req, res) {
+  if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
+  const me = userOf(req), uid = me?.id ?? '';
+  const prefs = me ? cleanUserPrefs(JSON.parse(me.prefs || '{}')) : {}, profile = me ? cleanProfile(JSON.parse(me.profile || '{}')) : {};
+  const conv = myafc.conv.get(uid);
+  const alive = conv && Date.now() - conv.at < 2 * 3600000;
+  if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, enabled: !!MYAFC_KEY(), left: myafcLeft(uid), daily: MYAFC_DAILY(), admin: isAdmin(req), turns: alive ? conv.turns : [] });
+  if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Methode nicht erlaubt' });
+  const b = await readBody(req, 16 * 1024);
+  if (b.neu) { myafc.conv.delete(uid); if (!b.text) return sendJson(req, res, 200, { ok: true, left: myafcLeft(uid) }); }
+  if (!MYAFC_KEY()) return sendJson(req, res, 503, { error: 'MyAFC ist noch nicht eingeschaltet.' });
+  const text = cleanText(b.text, 800);
+  if (!text) return sendJson(req, res, 400, { error: 'Leere Frage' });
+  if (limited(req, 'myafc', 12)) return sendJson(req, res, 429, { error: 'Bitte etwas langsamer fragen.' });
+  if (!myafcLeft(uid)) return sendJson(req, res, 429, { error: `Heute sind alle ${MYAFC_DAILY()} Fragen gebraucht. Morgen geht es weiter.` });
+  const model = currentModel();
+  if (!model?.ok) return sendJson(req, res, 503, { error: 'Die Prognose lädt noch. Gleich nochmals versuchen.' });
+  const lvl = prefs.level || 'normal', plan = model.planPayload(lvl);
+  plan.region = model.regionPayload();
+  const run = (name, input) => {
+    if (name === 'uebersicht') return toolOverview(plan);
+    if (name === 'startplatz') {
+      const d = Math.max(0, Math.min(4, Number(input.tag) || 0)), s = findSite(plan, input.name, d);
+      if (!s) return { fehler: `Kein Startplatz «${input.name}» gefunden. Werkzeug startplaetze zeigt alle.` };
+      const det = model.siteDetail(s.id, lvl);
+      if (det) det.days = det.days.slice(d, d + 1);
+      return toolSite(det, s);
+    }
+    if (name === 'lage') return toolRegion(plan, Math.max(0, Math.min(4, Number(input.tag) || 0)));
+    if (name === 'messwerte') return toolStations(stationsPayload());
+    if (name === 'mein_profil') return toolProfile({ name: me?.name, profile, prefs, logbook: logbookData(uid), nofly: myNofly(uid), plan });
+    if (name === 'startplaetze') return toolSites(plan);
+    throw new Error('unbekanntes Werkzeug');
+  };
+  const stamp = new Date().toLocaleString('de-CH', { timeZone: 'Europe/Zurich', weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ` · Pilot: ${me?.name || 'Admin'} · Stufe ${lvl}`;
+  try {
+    const r = await askMyAfc({ apiKey: MYAFC_KEY(), history: alive ? conv.messages : [], text, stamp, run });
+    // Gespräche bleiben kurz: ab 40 Einträgen beginnt das nächste neu (kein Zusammenfassen nötig)
+    const turns = [...(alive ? conv.turns : []), { q: text, a: r.reply }].slice(-12);
+    if (r.messages.length <= 40) myafc.conv.set(uid, { at: Date.now(), messages: r.messages, turns }); else myafc.conv.delete(uid);
+    const c = myafc.count.get(uid), day = zurichDay();
+    myafc.count.set(uid, { day, n: (c?.day === day ? c.n : 0) + 1 });
+    kvSet('myafc-usage', JSON.stringify((u => { const d = u.day === day ? u : { day, q: 0, in: 0, out: 0 }; return { ...d, q: d.q + 1, in: d.in + r.usage.in, out: d.out + r.usage.out }; })((() => { try { return JSON.parse(kvGet('myafc-usage') || '{}'); } catch { return {}; } })())));
+    return sendJson(req, res, 200, { ok: true, reply: r.reply, tools: [...new Set(r.tools)], left: myafcLeft(uid), fresh: !alive });
+  } catch (e) {
+    console.warn('MyAFC', e.status || '', errMsg(e));
+    const m = myafcError(e);
+    if (m.code === 502) myafc.conv.delete(uid);
+    return sendJson(req, res, m.code, { error: m.msg });
+  }
 }
 
 /* ------------------------------------------------------------------ Windkarte */
@@ -1316,7 +1383,7 @@ const server = http.createServer(async (req, res) => {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
         if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), myafc: myafcUsage(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1362,6 +1429,8 @@ const server = http.createServer(async (req, res) => {
           [h, at, site.id, site.name, site.area, launch, b.launched ? 1 : 0, quality, score >= 0 && score <= 100 ? Math.round(score) : null, cleanText(b.afcDecision, 40), null, null, cleanText(b.note, 280), SITES_FILE.meta?.checked || null]);
         return sendJson(req, res, 200, { ok: true });
       }
+      // MyAFC: Fragen an die KI in AFC (lib/myafc.js). Der Schlüssel liegt nur in der Umgebung (ANTHROPIC_API_KEY).
+      if (p === '/api/myafc') return myafcRoute(req, res);
       // Flugtag-Wächter: «Heute fliege ich hier»
       if (p === '/api/watch') {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
