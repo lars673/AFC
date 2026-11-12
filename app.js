@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.2';
+const APP_VER = '12.3';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -542,11 +542,110 @@ function cmpIds() {
   }
   return ids.slice(0, 3);
 }
+/* Tagesverlauf im Vergleich: die gewählten Plätze nebeneinander, Stunde für Stunde (Ring, Wind, Basis, Thermik und Score-Kurve) */
+const CMP = { j: 0, timer: 0, playing: false, key: '', det: {}, ids: [], hours: [], settle: null };
+const CMP_COL = ['#2f93c9', '#e58a1f', '#9b74e0'];
+const duelX = (i, hours) => 14 + (i - hours[0]) / Math.max(1, hours.at(-1) - hours[0]) * 290, duelY = v => 62 - v / 100 * 56;
+function duelHtml(sites, hours) {
+  if (sites.length < 2 || hours.length < 2) return '';
+  const p = S.plan;
+  const path = x => { let d = '', pen = false; for (let i = hours[0]; i <= hours.at(-1); i++) { const v = x.days[S.day]?.scores?.[i]; if (num(v)) { d += `${pen ? 'L' : 'M'}${duelX(i, hours).toFixed(1)} ${duelY(v).toFixed(1)}`; pen = true; } else pen = false; } return d; };
+  return `<section class="duel" id="duel" aria-label="Tagesverlauf im Vergleich">
+    <div class="duel-ctl"><button type="button" class="film-btn" id="duelPlay" data-act="duelplay" aria-pressed="false" aria-label="Tagesverlauf abspielen oder anhalten" title="Tagesverlauf abspielen oder anhalten">${PLAY_SVG}</button><b id="duelH">–</b><input type="range" id="duelScrub" min="0" max="${hours.length - 1}" step="1" value="0" aria-label="Stunde im Vergleich"></div>
+    <svg class="duel-chart" viewBox="0 0 320 78" aria-hidden="true">
+      ${[55, 70, 85].map(v => `<line class="duel-grid" x1="14" x2="304" y1="${duelY(v)}" y2="${duelY(v)}"/><text class="duel-gl" x="319" y="${duelY(v) + 3.5}" text-anchor="end">${v}</text>`).join('')}
+      ${sites.map((x, k) => `<path class="duel-line" d="${path(x)}" style="stroke:${CMP_COL[k]}" pathLength="1"/>`).join('')}
+      <g class="duel-ph"><line x1="0" x2="0" y1="3" y2="65"/></g>
+      ${sites.map((x, k) => `<circle class="duel-dot" r="4.6" style="fill:${CMP_COL[k]}"/>`).join('')}
+      ${hours.filter(i => (p.h0 + i) % 3 === 0).map(i => `<text class="duel-hl" x="${duelX(i, hours).toFixed(1)}" y="76" text-anchor="middle">${p.h0 + i}</text>`).join('')}
+    </svg>
+    <div class="duel-cols n${sites.length}">${sites.map((x, k) => `<div class="duel-col" data-k="${k}" style="--c:${CMP_COL[k]}">
+      <button type="button" class="duel-name" data-act="site" data-id="${esc(x.id)}">${esc(x.name)}</button>
+      <div class="duel-top"><div class="duel-ring"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="ring-bg" cx="40" cy="40" r="34"/><circle class="duel-fg" cx="40" cy="40" r="34" pathLength="100"/></svg><b>–</b></div><span class="duel-lead" aria-hidden="true">vorne</span></div>
+      <div class="duel-dec">–</div>
+      <div class="duel-f"><small>Wind</small><b><span data-f="speed">–</span><i class="duel-arr" hidden>${arrow(0)}</i><span data-f="dir"></span></b></div>
+      <div class="duel-f"><small>Böen</small><b data-f="gust">–</b></div>
+      <div class="duel-f"><small>Basis</small><b data-f="base">–</b></div>
+      <div class="duel-f"><small>Thermik bis</small><b data-f="top">–</b></div>
+    </div>`).join('')}</div>
+    <p class="duel-say" id="duelSay" aria-live="polite"></p>
+  </section>`;
+}
+/** Stunde j (Position in CMP.hours) zeigen: alles gleitet vom alten zum neuen Wert. */
+function duelShow(j) {
+  const el = $('#duel'), hours = CMP.hours;
+  if (!el || !S.plan || !hours.length) return;
+  CMP.j = j = Math.min(hours.length - 1, Math.max(0, Math.round(j)));
+  const i = hours[j], h = S.plan.h0 + i, sites = CMP.ids.map(siteById);
+  if (sites.some(x => !x)) return;
+  const vals = sites.map(x => x.days[S.day]?.scores?.[i]), have = vals.filter(num), best = have.length ? Math.max(...have) : null;
+  const lead = best != null && vals.filter(v => v === best).length === 1 ? vals.indexOf(best) : -1;
+  el.querySelectorAll('.duel-col').forEach((c, k) => {
+    const v = vals[k], cl = cls(v), hr = CMP.det[sites[k].id]?.days?.[S.day]?.hours?.find(q => q.h === h) || null;
+    const ring = c.querySelector('.duel-ring'), b = ring.querySelector('b'), old = b.textContent === '–' ? null : Number(b.dataset.v);
+    ring.className = 'duel-ring r-' + cl; ring.style.setProperty('--p', num(v) ? Math.min(100, Math.max(0, v)) : 0);
+    b.textContent = num(v) ? v : '–'; b.dataset.v = num(v) ? v : '';
+    if (num(v) && num(old)) countUp(b, old, v, 420);
+    const dec = c.querySelector('.duel-dec'); dec.textContent = cl === 'none' ? 'keine Bewertung' : DECISION[cl]; dec.className = 'duel-dec d-' + cl;
+    c.classList.toggle('lead', k === lead);
+    const set = (f, t) => { const e = c.querySelector(`[data-f="${f}"]`); if (e && e.textContent !== t) e.textContent = t; };
+    set('speed', hr && num(hr.speed) ? hr.speed + ' km/h' : hr ? '–' : '…');
+    set('dir', hr && num(hr.dir) ? dirLabel(hr.dir) : '');
+    const ar = c.querySelector('.duel-arr');
+    ar.hidden = !(hr && num(hr.dir));
+    if (hr && num(hr.dir)) { const to = hr.dir + 180, cur = c._rot ?? to; c._rot = cur + ((to - cur) % 360 + 540) % 360 - 180; ar.firstElementChild.style.transform = `rotate(${Math.round(c._rot)}deg)`; }
+    set('gust', hr && num(hr.gust) ? hr.gust + ' km/h' : hr ? '–' : '…');
+    set('base', hr && num(hr.cloudBase) ? hr.cloudBase + ' m' : hr ? '–' : '…');
+    set('top', hr && num(hr.thermalTop) ? hr.thermalTop + ' m' : hr ? '–' : '…');
+  });
+  const x = duelX(i, hours);
+  el.querySelector('.duel-ph').style.transform = `translateX(${x.toFixed(1)}px)`;
+  el.querySelectorAll('.duel-dot').forEach((d, k) => { d.style.opacity = num(vals[k]) ? 1 : 0; if (num(vals[k])) d.style.transform = `translate(${x.toFixed(1)}px, ${duelY(vals[k]).toFixed(1)}px)`; });
+  $('#duelH').textContent = h + ' Uhr';
+  const sc = $('#duelScrub'); if (Number(sc.value) !== j) sc.value = j;
+  sc.setAttribute('aria-valuetext', h + ' Uhr');
+  $$('#siteDlg table.cmp tbody tr[data-i]').forEach(r => r.classList.toggle('cur', Number(r.dataset.i) === i));
+  const names = sites.map(x => x.name), second = have.slice().sort((a, b) => b - a)[1];
+  $('#duelSay').innerHTML = best == null ? `Um ${h} Uhr gibt es für keinen der Plätze eine Bewertung.`
+    : best < 55 ? `Um ${h} Uhr überzeugt keiner der Plätze: höchstens ${best}.`
+    : lead < 0 ? `Um ${h} Uhr liegen ${vals.map((v, k) => (v === best ? names[k] : null)).filter(Boolean).map(esc).join(' und ')} gleichauf: ${best}.`
+    : `Um ${h} Uhr liegt <b>${esc(names[lead])}</b> vorne: ${best}${num(second) ? ` gegen ${second}` : ''}.`;
+}
+function duelPlay(on, auto = false) {
+  clearInterval(CMP.timer); CMP.timer = 0; CMP.playing = on;
+  if (!auto) CMP.settle = null;
+  $('#duelPlay')?.setAttribute('aria-pressed', String(on));
+  $('#duelSay')?.setAttribute('aria-live', on ? 'off' : 'polite');   // beim Abspielen nicht jede Stunde vorlesen
+  if (!on || !$('#duel')) { CMP.playing = false; return; }
+  if (CMP.j >= CMP.hours.length - 1) duelShow(0);
+  CMP.timer = setInterval(() => {
+    if (!$('#duel') || !isOpen($('#siteDlg'))) return duelPlay(false);
+    if (CMP.j < CMP.hours.length - 1) return duelShow(CMP.j + 1);
+    const back = CMP.settle;
+    duelPlay(false);
+    if (back != null) duelShow(back);            // nach dem ersten Durchlauf zurück zur besten Stunde
+  }, 820);
+}
+/** Nach dem Zeichnen des Vergleichs: Startstunde wählen, Einzelheiten nachladen, beim ersten Mal einmal durch den Tag laufen. */
+function duelInit() {
+  duelPlay(false);
+  if (!$('#duel')) return;
+  const p = S.plan, ids = CMP.ids, sites = ids.map(siteById), hours = CMP.hours, key = ids.join() + '|' + S.day + '|' + p.fetchedAt;
+  const nowI = nowHourToday() != null ? hours.indexOf(nowHourToday() - p.h0) : -1;
+  const win = sites.reduce((w, x) => (x.days[S.day]?.best && (!w || x.days[S.day].best.score > w.days[S.day].best.score) ? x : w), null);
+  const peakI = win ? hours.indexOf(win.days[S.day].best.peak - p.h0) : -1;
+  const start = nowI >= 0 ? nowI : peakI >= 0 ? peakI : 0;
+  duelShow(start);
+  Promise.all(ids.map(id => loadDetail(id, { quiet: true }).then(d => { CMP.det[id] = d; }).catch(() => {}))).then(() => { if ($('#duel') && CMP.key === key) duelShow(CMP.j); });
+  if (key !== CMP.key && !noMotion()) setTimeout(() => { if ($('#duel') && CMP.key === key && !CMP.playing && CMP.j === start) { duelShow(0); duelPlay(true, true); CMP.settle = start; } }, 700);
+  CMP.key = key;
+}
 function compareHtml() {
   const p = S.plan, ids = cmpIds(), sites = ids.map(siteById);
   const opts = sel => p.areas.map(a => `<optgroup label="${esc(a.name)}">${a.sites.map(siteById).filter(x => x && !x.blocked).map(x => `<option value="${esc(x.id)}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</optgroup>`).join('');
   const hours = [];
   for (let i = 0; i < 16; i++) if (sites.some(x => num(x.days[S.day]?.scores?.[i]))) hours.push(i);
+  CMP.ids = ids; CMP.hours = hours;
   const nowH = nowHourToday();
   const bestOf = x => x.days[S.day]?.best;
   const winner = sites.reduce((w, x) => (bestOf(x) && (!w || bestOf(x).score > bestOf(w).score) ? x : w), null);
@@ -554,12 +653,13 @@ function compareHtml() {
     <div class="seg seg-sm cmp-days" role="group" aria-label="Tag">${p.dates.map((_, d) => `<button type="button" data-act="cmpday" data-d="${d}" aria-pressed="${d === S.day}">${esc(dayName(d))}</button>`).join('')}</div>
     <div class="cmp-sel">${[0, 1, 2].map(i => `<label><span class="fine">Platz ${i + 1}</span><select data-cmp="${i}">${i === 2 ? `<option value="">– keiner –</option>` : ''}${opts(ids[i])}</select></label>`).join('')}</div>
     ${winner ? `<div class="wk-top t-${cls(bestOf(winner).score)}"><b>${esc(winner.name)}</b> ist ${esc(dayName(S.day).toLowerCase() === 'heute' ? 'heute' : 'an diesem Tag')} am besten: ${bestOf(winner).score}, ${winText(bestOf(winner))}.</div>` : ''}
+    ${duelHtml(sites, hours)}
     <div class="wk-wrap"><table class="cmp"><thead><tr><th>Uhr</th>${sites.map(x => `<th scope="col"><button type="button" class="linkish" data-act="site" data-id="${esc(x.id)}">${esc(x.name)}</button><small>${x.alt} m</small></th>`).join('')}</tr></thead>
       <tbody><tr class="cmp-best"><th scope="row">Fenster</th>${sites.map(x => `<td>${bestOf(x) ? winText(bestOf(x)).replace(' Uhr', '') : '–'}</td>`).join('')}</tr>
-      ${hours.map(i => { const h = p.h0 + i; return `<tr class="${h === nowH ? 'now' : ''}"><th scope="row">${h === nowH ? 'jetzt' : h}</th>${sites.map(x => { const v = x.days[S.day]?.scores?.[i]; return `<td><span class="mini-pill s-${cls(v)}">${num(v) ? v : '–'}</span></td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
-    <p class="fine">Name antippen für Details und Gründe.</p></div>`;
+      ${hours.map(i => { const h = p.h0 + i; return `<tr class="${h === nowH ? 'now' : ''}" data-i="${i}"><th scope="row">${h === nowH ? 'jetzt' : h}</th>${sites.map(x => { const v = x.days[S.day]?.scores?.[i]; return `<td><span class="mini-pill s-${cls(v)}">${num(v) ? v : '–'}</span></td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
+    <p class="fine">Name antippen für Details und Gründe. Der Tagesverlauf oben läuft Stunde für Stunde durch, die Tabelle zeigt alle Stunden auf einen Blick.</p></div>`;
 }
-function openCompare() { S.panel = 'compare'; dlg('#siteDlg', compareHtml()); }
+function openCompare() { S.panel = 'compare'; dlg('#siteDlg', compareHtml()); duelInit(); }
 function openWeek() { S.panel = 'week'; dlg('#siteDlg', weekHtml()); }
 
 /* ---- Lage */
@@ -1114,7 +1214,7 @@ function lbStatsHtml(flights) {
     return m;
   }, {})).sort((a, b) => b.n - a.n || b.min - a.min).slice(0, 6);
   const maxN = Math.max(1, ...sites.map(x => x.n));
-  return `<div class="panel"><h3>Statistik ${LB.year === 'all' ? 'letzte 12 Monate' : LB.year}</h3>
+  return `<div class="panel"><div class="lb-head"><h3>Statistik ${LB.year === 'all' ? 'letzte 12 Monate' : LB.year}</h3>${recapYear() ? `<button type="button" class="btn sec brief-btn" data-act="recap" title="Dein Flugjahr als kurzer Film, auch als Video zum Teilen">${PLAY_SVG} Rückblick ${recapYear()}</button>` : ''}</div>
     <p class="fine" style="margin:0 0 6px">${pool.length} Flüge · ${L.fmtDur(sumMin)} h${pool.length ? ' · im Schnitt ' + L.fmtDur(Math.round(sumMin / pool.length)) + ' h pro Flug' : ''}. Flugstunden je Monat:</p>
     <div class="st-chart" role="list" aria-label="Flugstunden je Monat">${bars}</div>
     ${kinds.length ? `<div class="st-kinds">${kinds.map(([k, n]) => `<span class="st-chip">${esc(L.FLIGHT_KINDS[k] || 'Andere')} <b>${n}</b></span>`).join('')}</div>` : ''}
@@ -1545,9 +1645,9 @@ const INTRO_ART = {
 const INTRO = [
   ['Willkommen bei AFC', 'AFC rechnet für jeden Startplatz im Berner Oberland stündlich aus, wie gut und wie sicher ein Start ist. Ab 80 Punkten sieht es gut aus, von 55 bis 79 nur mit Vorsicht, darunter besser am Boden bleiben.', 'score'],
   ['Immer mit Begründung', 'Tippe auf einen Startplatz: Unter «Kurz erklärt» steht, warum es passt oder nicht, zum Beispiel Rückenwind, Böen, Wolke am Start oder Gewitter am Nachmittag. Die Stundentabelle zeigt, wann das beste Fenster ist.', 'why'],
-  ['Die Karte lebt', 'Auf der Karte lässt der Play-Knopf den ganzen Tag ablaufen: Sonne und Schatten wandern, die Thermik baut auf, der Wind fliesst dem Gelände entlang. Tippe irgendwo hin, dann erklärt AFC, warum es dort steigt oder nicht. Mit «Route» planst du eine Strecke von A nach B.', 'film'],
-  ['Startplatz und Flug in 3D', 'Bei jedem Startplatz zeigt «In 3D ansehen» den Berg mit Kabeln, Lee, Wind und der Landevolte. Im Flugbuch fliegst du einen Flug mit IGC-Datei nochmals ab und siehst, wo die Prognose gestimmt hat.', 'd3'],
-  ['Briefing in 15 Sekunden', 'Merke dir deine Startplätze mit dem Stern. «Briefing» zeigt für jeden einen kurzen Film mit Score, bestem Fenster und den wichtigsten Gründen. Du kannst ihn als Video sichern oder in der Gruppe teilen.', 'brief'],
+  ['Die Karte lebt', 'Auf der Karte lässt der Play-Knopf den ganzen Tag ablaufen: Sonne und Schatten wandern, die Thermik baut auf, der Wind fliesst dem Gelände entlang. Tippe irgendwo hin, dann erklärt AFC, warum es dort steigt oder nicht. «3D» zeigt denselben Tag als Überflug mit Wolken und Nebelmeer, mit «Route» planst du eine Strecke von A nach B.', 'film'],
+  ['Startplatz und Flug in 3D', 'Bei jedem Startplatz zeigt «In 3D ansehen» den Berg mit Kabeln, Lee, Wind und der Landevolte. Im Flugbuch fliegst du einen Flug mit IGC-Datei nochmals ab und siehst, wo die Prognose gestimmt hat. Mit «+ Flug» fliegen weitere eigene Flüge oder die IGC-Dateien deiner Kollegen gleichzeitig mit.', 'd3'],
+  ['Briefing in 15 Sekunden', 'Merke dir deine Startplätze mit dem Stern. «Briefing» zeigt für jeden einen kurzen Film mit Score, bestem Fenster und den wichtigsten Gründen. Du kannst ihn als Video sichern oder in der Gruppe teilen. Im Flugbuch macht «Rückblick» aus deinem Flugjahr einen Film, und «Vergleichen» lässt zwei Startplätze Stunde für Stunde gegeneinander laufen.', 'brief'],
   ['Testphase: deine Rückmeldung zählt', 'Unter «Profil» trägst du Erfahrung und Schirm ein, daraus wählt AFC deine Grenzen. Beim Sprechblasen-Knopf oben rechts schickst du Lars jederzeit eine Idee oder einen Fehler, und nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. AFC ersetzt nie deine eigene Beurteilung am Startplatz.', 'test']
 ];
 function showIntro(i = 0) {
@@ -3118,6 +3218,7 @@ document.addEventListener('click', async e => {
     case 'groupzoom': if (M.groupBounds) { M.map.fitBounds(M.groupBounds, { padding: [60, 60], maxZoom: 16 }); $('#mapSheet').hidden = true; } break;
     case 'week': openWeek(); break;
     case 'compare': openCompare(); break;
+    case 'duelplay': duelPlay(!CMP.playing); break;
     case 'cmpday': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openCompare(); break;
     case 'wksite': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openSite(b.dataset.id); break;
     case 'wkday': S.day = Number(b.dataset.d); S.dayPicked = true; closeDlg($('#siteDlg')); render(); break;
@@ -3163,6 +3264,8 @@ document.addEventListener('click', async e => {
     case 'briefnav': if (!BR.rec && BR.ids.length > 1) briefLoad((BR.k + Number(b.dataset.v) + BR.ids.length) % BR.ids.length); break;
     case 'briefrec': briefRecord(); break;
     case 'briefshare': briefShare(); break;
+    case 'recap': recapOpen(); break;
+    case 'recapyear': if (!BR.rec && BR.data?.recap && b.dataset.v !== BR.data.st.year) recapLoad(b.dataset.v); break;
     case 'site3d': open3dSite(id); break;
     case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(err.message)); break;
     case 'v3dclose': closeDlg($('#v3dDlg')); break;
@@ -3183,7 +3286,10 @@ document.addEventListener('click', async e => {
     case 'v3dfplay': v3dFlightPlay(!V3.fl?.playing); break;
     case 'v3dspeed': if (V3.fl) { V3.fl.speed = Number(b.dataset.v) || 60; $$('#v3dBar [data-act="v3dspeed"]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); } break;
     case 'v3dfollow': if (V3.fl) { V3.fl.follow = !V3.fl.follow; b.setAttribute('aria-pressed', String(V3.fl.follow)); V3.scene?.invalidate(); } break;
-    case 'v3dcmp': { const c = $('#v3dCard'); c.hidden = !c.hidden; b.setAttribute('aria-pressed', String(!c.hidden)); break; }
+    case 'v3dcmp': if (V3.fl) v3dFlightCard(V3.fl.card === 'cmp' ? null : 'cmp'); break;
+    case 'v3dfadd': if (V3.fl) v3dFlightCard(V3.fl.card === 'add' ? null : 'add'); break;
+    case 'v3dfown': { const F = V3.fl, x = F && LB.data?.flights.find(q => q.id === id); if (x) v3dFlightSet([...(FLX.get(F.f.id) || []), { key: 'own' + x.id, own: x.id }]); break; }
+    case 'v3dfdel': { const F = V3.fl; if (F) v3dFlightSet((FLX.get(F.f.id) || []).filter(o => o.key !== F.others[Number(b.dataset.v)]?.key)); break; }
     case 'film': FILM.playing || FILM.busy || FILM.starting ? filmStop() : filmStart(); break;
     case 'tab': if (dlgEl) closeDlg(dlgEl); setTab(b.dataset.tab); break;
     case 'grpday': G.date = b.dataset.v || null; G.data = null; renderGroup(); break;
@@ -3304,6 +3410,7 @@ document.addEventListener('change', e => {
     store.set('cmp', [...new Set(ids)]); openCompare(); return;
   }
   if (t.id === 'lbIgc') { importIgc([...t.files]); t.value = ''; return; }
+  if (t.id === 'v3dIgc') { v3dAddIgc([...t.files]); t.value = ''; return; }
   if (t.id === 'photoIn') { setPhoto(t.files[0]); t.value = ''; return; }
   if (t.closest('#fbForm') && t.name === 'kind') { const ta = $('#fbForm textarea'); if (ta) ta.placeholder = FB_KINDS[t.value][1]; return; }
   if (t.closest('#fbForm') && t.name === 'shot') { const l = t.closest('label'); if (l && t.files[0]) l.firstChild.textContent = 'Bild angehängt ✓ '; return; }
@@ -3335,7 +3442,8 @@ document.addEventListener('input', e => {
     const v = Number(e.target.value);
     if (V3.playing) { V3.t = v; v3dPlay(false); } else { V3.hour = V3.t = Math.round(v); $('#v3dHourT').textContent = `${V3.hour} Uhr`; v3dApply(); }
   }
-  if (e.target.id === 'v3dScrub' && V3.fl) { const F = V3.fl; F.drag = true; F.i = Number(e.target.value) / 1000 * (F.n - 1); v3dFlightPose(); V3.scene?.invalidate(); }
+  if (e.target.id === 'duelScrub') { duelPlay(false); duelShow(Number(e.target.value)); }
+  if (e.target.id === 'v3dScrub' && V3.fl) { const F = V3.fl; F.drag = true; F.now = F.tA + Number(e.target.value) / 1000 * (F.tB - F.tA); v3dFlightPose(); V3.scene?.invalidate(); }
   if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
@@ -4085,8 +4193,62 @@ function varioCol(v) {
 function v3dFlightBar() {
   const F = V3.fl;
   return `<div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dfplay" aria-pressed="false" aria-label="Flug abspielen" title="Flug abspielen">${PLAY_SVG}</button><b id="v3dHourT">${esc(F.f.start || '')}</b><input id="v3dScrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Zeitpunkt im Flug"></div>
-    <div class="v3d-chips" role="group" aria-label="Wiedergabe">${[30, 60, 150].map(v => v3dChip('v3dspeed', v, v + '×', F.speed === v)).join('')}${v3dChip('v3dfollow', '', 'Schirm folgen', F.follow)}${v3dChip('v3dcmp', '', 'Prognose', true)}</div>
-    <p class="fine v3d-note">Spur: rot steigt, blau sinkt. Orange Säulen sind deine Thermiken${num(F.f.afcFc?.top) ? ', der blaue Ring zeigt, bis wohin AFC die Thermik vorhergesagt hat' : ''}. <span id="v3dRelief"></span></p>`;
+    <div class="v3d-chips" role="group" aria-label="Wiedergabe">${[30, 60, 150].map(v => v3dChip('v3dspeed', v, v + '×', F.speed === v)).join('')}${v3dChip('v3dfollow', '', 'Schirm folgen', F.follow)}${v3dChip('v3dcmp', '', 'Prognose', F.card === 'cmp')}${v3dChip('v3dfadd', '', F.others.length ? `Flüge (${F.others.length + 1})` : '+ Flug', F.card === 'add')}</div>
+    <p class="fine v3d-note">Spur: rot steigt, blau sinkt. Orange Säulen sind deine Thermiken${num(F.f.afcFc?.top) ? ', der blaue Ring zeigt, bis wohin AFC die Thermik vorhergesagt hat' : ''}. ${F.others.length ? `Die anderen Flüge haben je eine Farbe und laufen nach der Uhrzeit mit${F.others.some(o => o.date !== F.f.date) ? ', Flüge von anderen Tagen zur selben Tageszeit' : ''}. ` : ''}<span id="v3dRelief"></span></p>`;
+}
+/* ---- Mehrere Flüge gleichzeitig: eigene Flüge und IGC-Dateien von Kollegen laufen nach der Uhrzeit mit */
+const FLX = new Map();                                     // Flug-ID -> weitere Flüge dieser Ansicht (nur im Speicher, nichts wird gespeichert)
+const FL_COLS = ['#b98cff', '#5fe0a0', '#ffd24a', '#ff8fb8', '#63d2ff'], FL_ME = '#ff5a36';
+/** Karte unter dem Gelände: Prognose gegen Flug ('cmp'), Flüge dazunehmen ('add') oder zu (null). */
+function v3dFlightCard(kind) {
+  const F = V3.fl, card = $('#v3dCard');
+  if (!F || !card) return;
+  F.card = kind;
+  card.hidden = !kind;
+  if (kind === 'cmp') card.innerHTML = v3dCmpHtml(F.f);
+  if (kind === 'add') {
+    const L = LG(), used = new Set(F.others.map(o => o.own).filter(Boolean)), full = F.others.length >= FL_COLS.length;
+    const own = (LB.data?.flights || []).filter(x => x.id !== F.f.id && !used.has(x.id) && x.track?.line?.length > 2);
+    const same = own.filter(x => x.date === F.f.date), site = own.filter(x => x.date !== F.f.date && F.f.siteId && x.siteId === F.f.siteId).slice(0, 4);
+    const row = (col, name, sub, del) => `<div class="v3d-fl"><i style="background:${col}"></i><span><b>${esc(name)}</b> <small>${esc(sub)}</small></span>${del != null ? `<button type="button" class="v3d-fx" data-act="v3dfdel" data-v="${del}" aria-label="${esc(name)} entfernen">×</button>` : ''}</div>`;
+    const sub = o => [o.date !== F.f.date ? ddmm(o.date) + o.date.slice(0, 4) : '', o.start && o.start + ' Uhr', o.durMin && L.fmtDur(o.durMin) + ' h'].filter(Boolean).join(' · ');
+    const cand = x => `<button type="button" class="v3d-chip" data-act="v3dfown" data-id="${esc(x.id)}">+ ${esc(x.date !== F.f.date ? ddmm(x.date) + ' ' : '')}${esc(x.start || '')}${x.durMin ? ' · ' + L.fmtDur(x.durMin) + ' h' : ''}</button>`;
+    card.innerHTML = `<div class="v3d-flh"><b>Flüge zusammen ansehen</b>${full ? '' : '<label class="v3d-chip lb-file v3d-igc">+ IGC von Kollegen<input type="file" id="v3dIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label>'}</div>
+      <div class="v3d-fls">${row(FL_ME, 'Dein Flug', sub(F.f), null)}${F.others.map((o, k) => row(o.col, o.name, sub(o), k)).join('')}</div>
+      ${full ? `<p class="fine">Mehr als ${FL_COLS.length + 1} Flüge zusammen werden unübersichtlich. Entferne zuerst einen.</p>` : `
+      ${same.length ? `<p class="fine">Deine weiteren Flüge an diesem Tag:</p><div class="v3d-chips">${same.map(cand).join('')}</div>` : ''}
+      ${site.length ? `<p class="fine">Frühere Flüge vom selben Startplatz:</p><div class="v3d-chips">${site.map(cand).join('')}</div>` : ''}`}
+      <p class="fine">Lass dir die IGC-Datei deiner Kollegen schicken, zum Beispiel per WhatsApp oder AirDrop. Sie wird nur hier gezeigt und nirgends gespeichert.</p>`;
+  }
+  $$('#v3dBar [data-act="v3dcmp"]').forEach(b => b.setAttribute('aria-pressed', String(kind === 'cmp')));
+  $$('#v3dBar [data-act="v3dfadd"]').forEach(b => b.setAttribute('aria-pressed', String(kind === 'add')));
+}
+/** Flüge der Ansicht ändern und neu aufbauen (der Ausschnitt muss alle Spuren fassen). */
+function v3dFlightSet(list, card = 'add') {
+  const F = V3.fl;
+  if (!F) return;
+  FLX.set(F.f.id, list.slice(0, FL_COLS.length));
+  open3dFlight(F.f.id, { now: F.now, card, speed: F.speed });
+}
+async function v3dAddIgc(files) {
+  const F = V3.fl, I = window.AFCIgc;
+  if (!F || !I || !files?.length) return;
+  const list = (FLX.get(F.f.id) || []).slice(), c = F.pts?.[0] || F.f.track.line[0];
+  let bad = 0, far = 0, over = 0;
+  for (const file of files) {
+    if (list.length >= FL_COLS.length) { over++; continue; }
+    let a = null;
+    try { a = file.size < 20e6 ? I.analyzeIgc(await file.text(), file.name) : null; } catch { /* nicht lesbar */ }
+    const line = a?.track?.line;
+    if (!line || line.length < 3) { bad++; continue; }
+    if (haversineKm(c[0], c[1], line[0][0], line[0][1]) > 40) { far++; continue; }
+    const base = String(a.pilot || '').replace(/[_]+/g, ' ').trim() || file.name.replace(/\.igc$/i, '');
+    list.push({ key: 'igc' + Date.now().toString(36) + list.length, own: null, name: base.slice(0, 22), date: a.date, start: a.start, durMin: a.durMin, line });
+  }
+  if (V3.fl !== F) return;
+  const msg = [bad && `${bad} ${bad === 1 ? 'Datei' : 'Dateien'} nicht lesbar`, far && `${far === 1 ? 'ein Flug liegt' : far + ' Flüge liegen'} zu weit weg von deinem`, over && `höchstens ${FL_COLS.length + 1} Flüge zusammen`].filter(Boolean).join(', ');
+  if (msg) toast(msg[0].toUpperCase() + msg.slice(1) + '.');
+  if (list.length !== (FLX.get(F.f.id) || []).length) v3dFlightSet(list);
 }
 function v3dCmpHtml(f) {
   const fc = f.afcFc, L = LG(), sym = { ok: '✓', more: '↑', less: '↓' };
@@ -4097,17 +4259,22 @@ function v3dCmpHtml(f) {
     ${rv.length ? `<div class="v3d-rv">${rv.map(x => `<div class="rv-${x.lvl}"><i aria-hidden="true">${sym[x.lvl]}</i><span><b>${esc(x.k)}:</b> ${esc(x.note)}<small>Prognose ${esc(x.fc)} · Flug ${esc(x.real)}</small></span></div>`).join('')}</div>` : ''}
     ${f.afcVerdict ? `<p class="fine">Dein Urteil: ${esc(L.VERDICTS[f.afcVerdict])}.</p>` : ''}`;
 }
-async function open3dFlight(id) {
+async function open3dFlight(id, keep = null) {
   const f = LB.data?.flights.find(x => x.id === id), line = f?.track?.line;
   if (!f || !Array.isArray(line) || line.length < 3) { toast('Zu diesem Flug gibt es keine Spur. Mit einer IGC-Datei zeigt AFC den Flug in 3D.'); return; }
   if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann die 3D-Ansicht nicht darstellen.'); return; }
   v3dEnd();
   const tok = V3.tok, n = line.length, dur = Math.max(60, (f.durMin || 0) * 60 || n * 10), dtp = dur / (n - 1);
   const t0 = Date.parse(`${f.date}T${f.start || '12:00'}:00`);
-  const la = line.map(p => p[0]), lo = line.map(p => p[1]), cLat = (Math.min(...la) + Math.max(...la)) / 2, cLon = (Math.min(...lo) + Math.max(...lo)) / 2;
-  const ext = Math.max(...line.map(p => haversineKm(cLat, cLon, p[0], p[1]))) * 1000, R = Math.min(32000, Math.max(3500, ext * 1.35 + 1500));
+  // weitere Flüge dieser Ansicht: eigene aus dem Flugbuch (frisch gelesen) und geladene IGC-Dateien; alle am Tag des Hauptflugs
+  const others = (FLX.get(id) || []).map(o => (o.own ? (x => x && x.track?.line?.length > 2 && { ...o, name: 'Dein Flug' + (x.start ? ' ' + x.start : ''), tag: x.date !== f.date ? ddmm(x.date) : x.start || 'Flug', date: x.date, start: x.start, durMin: x.durMin, line: x.track.line })(LB.data.flights.find(x => x.id === o.own)) : o)).filter(Boolean)
+    .map((o, k) => { const on = o.line.length, od = Math.max(60, (o.durMin || 0) * 60 || on * 10); const ot = Date.parse(`${f.date}T${o.start || f.start || '12:00'}:00`); return { ...o, tag: o.tag || o.name.split(' ')[0].slice(0, 12), col: FL_COLS[k], n: on, dtp: od / (on - 1), t0: ot, t1: ot + od * 1000 }; });
+  const allPts = [...line, ...others.flatMap(o => o.line)];
+  const la = allPts.map(p => p[0]), lo = allPts.map(p => p[1]), cLat = (Math.min(...la) + Math.max(...la)) / 2, cLon = (Math.min(...lo) + Math.max(...lo)) / 2;
+  const ext = Math.max(...allPts.map(p => haversineKm(cLat, cLon, p[0], p[1]))) * 1000, R = Math.min(32000, Math.max(3500, ext * 1.35 + 1500));
   const vario = line.map((p, i) => (line[Math.min(n - 1, i + 1)][2] - line[Math.max(0, i - 1)][2]) / ((Math.min(n - 1, i + 1) - Math.max(0, i - 1)) * dtp));
-  const F = V3.fl = { f, n, dtp, t0, i: 0, speed: 60, playing: false, follow: true, vario, shown: -1, hudT: 0, sunT: 0, drag: false };
+  const t1 = t0 + dur * 1000, tA = Math.min(t0, ...others.map(o => o.t0)), tB = Math.max(t1, ...others.map(o => o.t1));
+  const F = V3.fl = { f, n, dtp, t0, t1, i: 0, tA, tB, now: Math.min(tB, Math.max(tA, keep?.now ?? tA)), others, card: keep?.card ?? 'cmp', speed: keep?.speed || 60, playing: false, follow: true, vario, shown: -1, hud: -1, hudT: 0, sunT: 0, drag: false };
   V3.mode = 'flight';
   dlg('#v3dDlg', v3dShell(`${f.siteName || 'Flug'} · ${ddmm(f.date)}${f.date.slice(0, 4)}`, [f.start && f.start + ' Uhr', f.durMin && LG().fmtDur(f.durMin) + ' h', num(f.km) && f.km + ' km', num(f.maxAlt) && 'max. ' + Math.round(f.maxAlt) + ' m'].filter(Boolean).join(' · '), v3dFlightBar()));
   try {
@@ -4121,12 +4288,16 @@ async function open3dFlight(id) {
     sc.setLines('trackH', [{ pts, color: [0, 0, 0, 0.45], width: 6.5 }], { xray: false });
     sc.setLines('track', [{ pts, colors: vario.map(varioCol), width: 3.6 }], { xray: true });
     sc.setTris('curt', sc.curtain(pts, '#ffffff', 0.2, 0.02));
+    for (const o of others) o.pts = o.line.map(q => [q[0], q[1], Math.max(q[2], sc.ground(q[0], q[1]) + 4)]);
+    sc.setLines('othH', others.map(o => ({ pts: o.pts, color: [0, 0, 0, 0.4], width: 5.5 })), { xray: false });
+    sc.setLines('oth', others.map(o => ({ pts: o.pts, color: o.col, width: 3.1 })), { xray: true });
     const th = (f.track.thermals || []).filter(x => num(x.lat) && num(x.alt) && num(x.base));
     sc.setTris('therm', th.flatMap(x => sc.column(x.lat, x.lon, x.base, x.alt, Math.max(55, R * 0.012), [1, 0.55, 0.12])));
     const ms = [
       { id: 'st', lat: pts[0][0], lon: pts[0][1], cls: 'top', html: `<span class="v3d-pin st">S</span><span class="v3d-name">${esc(f.siteName || 'Start')}</span>` },
       { id: 'ld', lat: pts[n - 1][0], lon: pts[n - 1][1], cls: 'top', yield: true, html: `<span class="v3d-pin land">L</span><span class="v3d-name">${esc(f.landingName || 'Landung')}</span>` },
       ...th.slice().sort((a, b) => b.gain - a.gain).slice(0, 5).map((x, i) => ({ id: 'th' + i, lat: x.lat, lon: x.lon, alt: x.alt, air: true, yield: true, cls: 'tag th', html: `+${x.rate} m/s<small>${esc(x.at || '')} · bis ${x.alt} m</small>` })),
+      ...others.map((o, k) => ({ id: 'gl' + k, lat: o.pts[0][0], lon: o.pts[0][1], alt: o.pts[0][2], air: true, center: true, cls: 'glider sub', html: GLIDER_SVG.replace('#ff5a36', o.col) + `<span class="v3d-gn">${esc(o.tag)}</span>` })),
       { id: 'gl', lat: pts[0][0], lon: pts[0][1], alt: pts[0][2], air: true, center: true, cls: 'glider', html: GLIDER_SVG }
     ];
     const fc = f.afcFc, rr = Math.min(R * 0.8, Math.max(700, ext * 0.8));
@@ -4140,21 +4311,22 @@ async function open3dFlight(id) {
     sc.setMarkers(ms);
     { const rn = $('#v3dRelief'); if (rn) rn.textContent = RELIEF_NOTE(sc.dem); }
     sc.setSun(AFC3D.sunAt(t0 + dur * 500, cLat, cLon)); F.sunT = t0 + dur * 500;
-    $('#v3dHud').innerHTML = '<div class="v3d-box v3d-stats"><span><b id="fAlt">–</b><small>m ü. M.</small></span><span><b id="fVar">–</b><small>m/s</small></span><span><b id="fAgl">–</b><small>m über Grund</small></span><span><b id="fDist">–</b><small>km vom Start</small></span></div>';
-    const card = $('#v3dCard'); card.innerHTML = v3dCmpHtml(f); card.hidden = false;
+    $('#v3dHud').innerHTML = '<div class="v3d-box v3d-stats"><span><b id="fAlt">–</b><small>m ü. M.</small></span><span><b id="fVar">–</b><small>m/s</small></span><span><b id="fAgl">–</b><small>m über Grund</small></span><span><b id="fDist">–</b><small>km vom Start</small></span></div>'
+      + (others.length ? `<div class="v3d-box v3d-pil"><span><i style="background:${FL_ME}"></i>Du<b id="fP">–</b></span>${others.map((o, k) => `<span><i style="background:${o.col}"></i>${esc(o.tag)}<b id="fP${k}">–</b></span>`).join('')}</div>` : '');
+    v3dFlightCard(F.card);
     // erst der Überblick über den ganzen Flug, dann zum Start und los
     const brg = (Math.atan2((pts[n - 1][1] - pts[0][1]) * sc.mLon, (pts[n - 1][0] - pts[0][0]) * 111320) / D2R + 360) % 360;
     V3.home = { lat: cLat, lon: cLon, alt: (Math.min(...pts.map(p => p[2])) + Math.max(...pts.map(p => p[2]))) / 2, az: (brg + 300) % 360, el: 38, dist: Math.max(R * 1.25, 3000) };
     sc.flyTo(V3.home, 0);
     sc.onFrame = v3dFlightFrame; sc.onUser = () => {};
     v3dFlightPose();
-    if (!noMotion()) setTimeout(() => { if (tok === V3.tok && V3.fl === F && !F.playing && F.i === 0) v3dFlightPlay(true); }, 1400);
+    if (!noMotion() && !keep) setTimeout(() => { if (tok === V3.tok && V3.fl === F && !F.playing && F.now === F.tA) v3dFlightPlay(true); }, 1400);
   } catch (e) { if (tok === V3.tok) v3dFail('Der Flug konnte nicht in 3D gezeigt werden: ' + e.message); }
 }
 function v3dFlightPlay(on) {
   const F = V3.fl, btn = $('#v3dPlay');
   if (!F || !btn) return;
-  if (on && F.i >= F.n - 1) F.i = 0;
+  if (on && F.now >= F.tB) F.now = F.tA;
   F.playing = on; btn.setAttribute('aria-pressed', String(on));
   if (on && F.follow) v3dCam({ dist: Math.min(V3.scene.cam.dist, Math.max(2600, V3.scene.R * 0.45)), el: 30 }, 1600);
   V3.scene?.invalidate();
@@ -4162,52 +4334,67 @@ function v3dFlightPlay(on) {
 function v3dFlightFrame(ts, dt) {
   const F = V3.fl;
   if (!F) return false;
-  if (F.playing) { F.i = Math.min(F.n - 1, F.i + dt / 1000 * F.speed / F.dtp); if (F.i >= F.n - 1) v3dFlightPlay(false); }
-  if (F.i !== F.shown || F.follow) v3dFlightPose(ts);
+  if (F.playing) {
+    F.now = Math.min(F.tB, F.now + dt * F.speed);
+    // Pause zwischen zwei Flügen (niemand in der Luft): direkt zum nächsten Start
+    const spans = [[F.t0, F.t1], ...F.others.map(o => [o.t0, o.t1])];
+    if (!spans.some(q => F.now >= q[0] && F.now <= q[1] + 20000)) { const nx = spans.map(q => q[0]).filter(q => q > F.now); if (nx.length) F.now = Math.min(...nx); }
+    if (F.now >= F.tB) v3dFlightPlay(false);
+  }
+  if (F.now !== F.shown || F.now !== F.hud || F.follow) v3dFlightPose(ts);
   return F.playing;
 }
 /** Schirm an die Stelle F.i setzen, Anzeige nachführen, Kamera folgt weich. */
 function v3dFlightPose(ts = performance.now()) {
   const F = V3.fl, sc = V3.scene;
   if (!F || !sc || !F.pts) return;
-  const i0 = Math.min(F.n - 2, Math.floor(F.i)), k = F.i - i0, a = F.pts[i0], b = F.pts[i0 + 1];
-  const lat = a[0] + (b[0] - a[0]) * k, lon = a[1] + (b[1] - a[1]) * k, alt = a[2] + (b[2] - a[2]) * k, gr = sc.ground(lat, lon);
-  if (F.i !== F.shown) {
+  // Stelle auf einer Spur zur Zeit F.now: vor dem Start am Startpunkt, nach der Landung am Landepunkt
+  const at = (pts, t0, dtp, n) => { const j = Math.min(n - 1, Math.max(0, (F.now - t0) / (dtp * 1000))), j0 = Math.min(n - 2, Math.floor(j)), q = j - j0, a = pts[j0], b = pts[j0 + 1]; return [a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q, a[2] + (b[2] - a[2]) * q, j]; };
+  const state = (t0, t1, alt) => (F.now < t0 ? 'am Start' : F.now >= t1 ? 'gelandet' : Math.round(alt) + ' m');
+  const [lat, lon, alt, fi] = at(F.pts, F.t0, F.dtp, F.n), gr = sc.ground(lat, lon);
+  F.i = fi;
+  const i0 = Math.min(F.n - 2, Math.floor(F.i)), k = F.i - i0;
+  if (F.now !== F.shown) {
     sc.moveMarker('gl', lat, lon, alt);
+    F.others.forEach((o, j) => { const q = o.pos = at(o.pts, o.t0, o.dtp, o.n); sc.moveMarker('gl' + j, q[0], q[1], q[2]); });
     sc.setLines('drop', [{ pts: [[lat, lon, alt], [lat, lon, Math.min(alt, gr)]], color: [1, 1, 1, 0.85], width: 1.6 }], { bias: 0.001 });
   }
   if (F.follow && !sc.flying) {
-    const p = sc.toLocal(lat, lon, alt), t = sc.cam.t, q = F.playing ? 0.09 : 0.25;
+    // ist dein Flug noch nicht gestartet oder schon gelandet, folgt die Kamera dem, der gerade fliegt
+    const lead = F.now >= F.t0 && F.now <= F.t1 ? null : F.others.find(o => o.pos && F.now >= o.t0 && F.now <= o.t1);
+    const p = lead ? sc.toLocal(lead.pos[0], lead.pos[1], lead.pos[2]) : sc.toLocal(lat, lon, alt), t = sc.cam.t, q = F.playing ? 0.09 : 0.25;
     if (Math.hypot(p[0] - t[0], p[1] - t[1], p[2] - t[2]) > 2) { for (let j = 0; j < 3; j++) t[j] += (p[j] - t[j]) * q; sc.invalidate(); }
   }
-  const now = F.t0 + F.i * F.dtp * 1000;
+  const now = F.now;
   if (Math.abs(now - F.sunT) > 15 * 60000) { F.sunT = now; sc.setSun(AFC3D.sunAt(now, lat, lon)); }
-  if (F.i !== F.shown && (ts - F.hudT > 110 || !F.playing)) {
-    F.hudT = ts;
+  if (F.now !== F.hud && (ts - F.hudT > 110 || !F.playing)) {   // Anzeige höchstens neunmal je Sekunde, aber nie auf einem alten Stand stehen lassen
+    F.hudT = ts; F.hud = F.now;
     const v = F.vario[i0] + (F.vario[i0 + 1] - F.vario[i0]) * k, set = (id, t) => { const el = $('#' + id); if (el) el.textContent = t; };
     set('fAlt', Math.round(alt)); set('fVar', (v >= 0 ? '+' : '') + v.toFixed(1)); set('fAgl', Math.max(0, Math.round((alt - gr) / 10) * 10)); set('fDist', haversineKm(F.pts[0][0], F.pts[0][1], lat, lon).toFixed(1));
     set('v3dHourT', new Date(now).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' }));
     const fv = $('#fVar'); if (fv) fv.className = v > 0.5 ? 'up' : v < -1.5 ? 'down' : '';
-    if (!F.drag && $('#v3dScrub')) $('#v3dScrub').value = Math.round(F.i / (F.n - 1) * 1000);
+    if (!F.drag && $('#v3dScrub')) $('#v3dScrub').value = Math.round((F.now - F.tA) / (F.tB - F.tA) * 1000);
+    if (F.others.length) { set('fP', state(F.t0, F.t1, alt)); F.others.forEach((o, j) => set('fP' + j, state(o.t0, o.t1, o.pos?.[2]))); }
   }
-  F.shown = F.i;
+  F.shown = F.now;
 }
 
 /* ------------------------------------------------------------------ Briefing: 15-Sekunden-Film je Startplatz (Zeichenfläche 720 × 1280), als Video speicherbar */
-const BR = { ids: [], k: 0, t: 0, last: 0, raf: 0, scene: null, data: null, playing: false, rec: null, file: null, tok: 0 };
+const BR = { ids: [], k: 0, t: 0, last: 0, raf: 0, scene: null, data: null, playing: false, rec: null, file: null, tok: 0, len: 15 };
 const BR_LEN = 15, BR_W = 720, BR_H = 1280;
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const WHY_ORDER = { bad: 0, warn: 1, ok: 2 };
 
-function briefShell() {
+function briefShell(recap = null) {
   return `<div class="v3d brief">
-    <div class="v3d-top"><div><h2 id="v3dT">Briefing</h2><p class="fine" id="v3dSub"></p></div><button class="x-btn" type="button" data-act="v3dclose" aria-label="Schliessen">×</button></div>
-    <div class="v3d-stage brief-stage"><canvas id="briefC" width="${BR_W}" height="${BR_H}" role="img" aria-label="Briefing als kurzer Film. Der Inhalt steht als Text unter dem Film."></canvas>
-      <div class="v3d-load" id="v3dLoad"><div class="spinner"></div><span>Briefing wird vorbereitet …</span></div></div>
+    <div class="v3d-top"><div><h2 id="v3dT">${recap ? 'Rückblick' : 'Briefing'}</h2><p class="fine" id="v3dSub"></p></div><button class="x-btn" type="button" data-act="v3dclose" aria-label="Schliessen">×</button></div>
+    <div class="v3d-stage brief-stage"><canvas id="briefC" width="${BR_W}" height="${BR_H}" role="img" aria-label="${recap ? 'Rückblick auf dein Flugjahr' : 'Briefing'} als kurzer Film. Der Inhalt steht als Text unter dem Film."></canvas>
+      <div class="v3d-load" id="v3dLoad"><div class="spinner"></div><span>${recap ? 'Rückblick' : 'Briefing'} wird vorbereitet …</span></div></div>
     <div class="v3d-bar">
       <div class="brief-prog" id="briefProg" aria-hidden="true"></div>
       <div class="brief-acts">
-        <button type="button" class="film-btn" id="briefPlay" data-act="briefplay" aria-pressed="false" aria-label="Briefing abspielen oder anhalten" title="Abspielen oder anhalten">${PLAY_SVG}</button>
+        <button type="button" class="film-btn" id="briefPlay" data-act="briefplay" aria-pressed="false" aria-label="Film abspielen oder anhalten" title="Abspielen oder anhalten">${PLAY_SVG}</button>
+        ${recap && recap.years.length > 1 ? recap.years.slice(0, 4).map(y => v3dChip('recapyear', y, y, y === recap.y)).join('') : ''}
         ${BR.ids.length > 1 ? '<button type="button" class="v3d-chip" data-act="briefnav" data-v="-1" aria-label="Vorheriger Startplatz">‹</button><button type="button" class="v3d-chip" data-act="briefnav" data-v="1" aria-label="Nächster Startplatz">›</button>' : ''}
         <button type="button" class="v3d-chip" id="briefRec" data-act="briefrec" ${typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream ? 'hidden' : ''}>Als Video speichern</button>
         <button type="button" class="v3d-chip" id="briefShare" data-act="briefshare">In der Gruppe teilen</button>
@@ -4239,7 +4426,7 @@ function briefText(D) {
 async function briefLoad(k) {
   briefStop();
   const tok = BR.tok, s = siteById(BR.ids[k]), day = S.day;
-  Object.assign(BR, { k, t: 0, last: 0, file: null });
+  Object.assign(BR, { k, t: 0, last: 0, file: null, len: BR_LEN });
   $('#v3dSub').textContent = `${s.name} · ${dayName(day)} ${dayDate(day)}${BR.ids.length > 1 ? ` · ${k + 1} von ${BR.ids.length}` : ''}`;
   $('#briefProg').innerHTML = BR.ids.map((_, i) => `<i class="${i < k ? 'done' : ''}"><b></b></i>`).join('');
   $('#briefRec').textContent = 'Als Video speichern'; $('#briefRec').disabled = false;
@@ -4278,11 +4465,11 @@ async function briefLoad(k) {
 }
 function briefSync() {
   const b = $('#briefPlay'); if (b) b.setAttribute('aria-pressed', String(BR.playing));
-  const p = $('#briefProg')?.children[BR.k]?.firstElementChild; if (p) p.style.width = Math.min(100, BR.t / BR_LEN * 100).toFixed(1) + '%';
+  const p = $('#briefProg')?.children[BR.k]?.firstElementChild; if (p) p.style.width = Math.min(100, BR.t / BR.len * 100).toFixed(1) + '%';
 }
 function briefPlay(on) {
   if (!BR.data) return;
-  if (on && BR.t >= BR_LEN) BR.t = 0;
+  if (on && BR.t >= BR.len) BR.t = 0;
   BR.playing = on; BR.last = 0; briefSync();
   if (on && !BR.raf) BR.raf = requestAnimationFrame(briefTick);
 }
@@ -4292,10 +4479,10 @@ function briefTick(ts) {
   const dt = Math.min(0.1, (ts - (BR.last || ts)) / 1000); BR.last = ts;
   BR.t += dt;
   briefDraw(dt); briefSync();
-  if (BR.t >= BR_LEN + (BR.rec ? 0.15 : 1.3)) {
+  if (BR.t >= BR.len + (BR.rec ? 0.15 : 1.3)) {
     if (BR.rec) return briefRecEnd();
     if (BR.k < BR.ids.length - 1) return briefLoad(BR.k + 1);     // nächster Favorit
-    BR.playing = false; BR.t = BR_LEN; return briefSync();
+    BR.playing = false; BR.t = BR.len; return briefSync();
   }
   BR.raf = requestAnimationFrame(briefTick);
 }
@@ -4303,6 +4490,7 @@ function briefTick(ts) {
 function briefDraw(dt) {
   const cv = $('#briefC'), D = BR.data;
   if (!cv || !D) return;
+  if (D.recap) return recapDraw(dt);
   const x = cv.getContext('2d'), t = BR.t, W = BR_W, H = BR_H, sc = BR.scene;
   const ph = (a, b) => Math.min(1, Math.max(0, (t - a) / (b - a))), eo = v => 1 - Math.pow(1 - v, 3);
   const NUM = '"Barlow Condensed", "Barlow", system-ui, sans-serif', TXT = '"Barlow", system-ui, -apple-system, sans-serif';
@@ -4408,19 +4596,19 @@ function briefRecord() {
     if (tok !== BR.tok) return;
     BR.rec = null;
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
-    BR.file = new File(parts, `AFC-Briefing-${D.s.id}-${D.date}.${ext}`, { type: mime.split(';')[0] });
+    BR.file = new File(parts, `${D.file || `AFC-Briefing-${D.s.id}-${D.date}`}.${ext}`, { type: mime.split(';')[0] });
     btn.disabled = false; btn.textContent = navigator.canShare?.({ files: [BR.file] }) ? 'Video teilen' : 'Video sichern';
     toast('Das Video ist bereit.');
   };
   BR.rec = rec; BR.t = 0; btn.disabled = true; btn.textContent = 'Aufnahme läuft …';
   rec.start(); briefPlay(true);
 }
-function briefRecEnd() { BR.playing = false; BR.t = BR_LEN; briefSync(); try { BR.rec?.stop(); } catch { BR.rec = null; } }
+function briefRecEnd() { BR.playing = false; BR.t = BR.len; briefSync(); try { BR.rec?.stop(); } catch { BR.rec = null; } }
 async function briefSend() {
   const f = BR.file, D = BR.data;
   if (!f || !D) return;
   if (navigator.canShare?.({ files: [f] })) {
-    try { await navigator.share({ files: [f], title: 'AFC Briefing ' + D.s.name, text: briefText(D) }); } catch (e) { if (e.name !== 'AbortError') toast('Teilen nicht möglich: ' + e.message); }
+    try { await navigator.share({ files: [f], title: D.title || 'AFC Briefing ' + D.s.name, text: D.text || briefText(D) }); } catch (e) { if (e.name !== 'AbortError') toast('Teilen nicht möglich: ' + e.message); }
     return;
   }
   const u = URL.createObjectURL(f), a = document.createElement('a');
@@ -4433,9 +4621,176 @@ async function briefShare() {
   if (!ME.user) { toast('Zum Teilen in der Gruppe brauchst du ein Konto.'); return; }
   const btn = $('#briefShare'); btn.disabled = true;
   try {
-    groupSet(await jsonPost('/api/community', { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
+    groupSet(await jsonPost('/api/community', D.recap ? { kind: 'report', text: D.text } : { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
     toast('In der Gruppe geteilt'); btn.textContent = 'Geteilt ✓';
   } catch (e) { btn.disabled = false; toast('Nicht geteilt: ' + e.message); }
+}
+
+/* ------------------------------------------------------------------ Saison-Rückblick: das Flugjahr als kurzer Film (läuft im Rahmen des Briefings) */
+const RC_LEN = 22;
+const recapYears = () => [...new Set((LB.data?.flights || []).map(f => f.date.slice(0, 4)))].sort().reverse();
+const recapYear = () => { const ys = recapYears(); return LB.year !== 'all' && ys.includes(LB.year) ? LB.year : ys[0] || null; };
+function recapText(st) {
+  const L = LG(), fl = n => `${n} ${n === 1 ? 'Flug' : 'Flüge'}`;
+  return `Mein Flugjahr ${st.year}: ${fl(st.n)}${st.min ? `, ${L.fmtDur(st.min)} h in der Luft` : ''} an ${st.days} ${st.days === 1 ? 'Tag' : 'Tagen'}${st.sites.length > 1 ? `, ${st.sites.length} Startplätze` : ''}.${st.longest ? ` Längster Flug ${L.fmtDur(st.longest.durMin)} h${st.longest.siteName ? ` (${st.longest.siteName})` : ''}.` : ''}${st.highest ? ` Höchster Punkt ${Math.round(st.highest.maxAlt)} m.` : ''}`;
+}
+function recapOpen(y = recapYear()) {
+  if (!y || !LG()) { toast('Für den Rückblick braucht es mindestens einen Flug im Flugbuch.'); return; }
+  v3dEnd();
+  V3.mode = 'brief';
+  Object.assign(BR, { ids: [], k: 0, file: null });
+  dlg('#v3dDlg', briefShell({ y, years: recapYears() }));
+  recapLoad(y);
+}
+async function recapLoad(y) {
+  briefStop();
+  const tok = BR.tok, st = LG().seasonStats(LB.data.flights, y);
+  Object.assign(BR, { k: 0, t: 0, last: 0, file: null, len: RC_LEN });
+  $('#v3dSub').textContent = `Flugjahr ${y} · ${st.n} ${st.n === 1 ? 'Flug' : 'Flüge'}`;
+  $('#briefProg').innerHTML = '<i><b></b></i>';
+  $('#briefRec').textContent = 'Als Video speichern'; $('#briefRec').disabled = false;
+  $$('#v3dDlg [data-act="recapyear"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === y)));
+  $('#v3dLoad').hidden = false;
+  try {
+    const [g] = await Promise.all([thermalGrid().catch(() => null), document.fonts?.load?.('700 60px "Barlow Condensed"').catch(() => {})]);
+    if (tok !== BR.tok || V3.mode !== 'brief') return;
+    // Schauplatz: der meistbesuchte Startplatz mit bekannter Lage, sonst der Start der ersten Spur. Darüber die Spuren des Jahres.
+    const home = S.plan ? st.sites.map(x => x.id && siteById(x.id)).find(x => x && num(x.lat)) || null : null;
+    const tr = st.flights.filter(f => f.track?.line?.length > 2);
+    const c = home ? { lat: home.lat, lon: home.lon } : tr[0] ? { lat: tr[0].track.line[0][0], lon: tr[0].track.line[0][1] } : null;
+    const az0 = (num(home?.aspects?.[0]) ? home.aspects[0] : 180) + 135;
+    let sc = null, shown = 0;
+    if (c && g && window.AFC3D?.supported() && g.la0 < c.lat && c.lat < g.la0 + g.ny * g.dla && g.lo0 < c.lon && c.lon < g.lo0 + g.nx * g.dlo) {
+      const near = tr.filter(f => haversineKm(c.lat, c.lon, f.track.line[0][0], f.track.line[0][1]) < 5).slice(-40);
+      const ext = Math.max(0, ...near.flatMap(f => f.track.line.map(p => haversineKm(c.lat, c.lon, p[0], p[1])))) * 1000;
+      const R = Math.round(Math.min(11000, Math.max(5200, ext * 1.1 + 600)));
+      const dem = await AFC3D.loadDem(DEM_URL, { ...c, radius: R }, { grid: g, timeout: 4000 }).catch(() => null);
+      if (tok !== BR.tok || V3.mode !== 'brief') return;
+      try {
+        sc = new AFC3D.Scene(null, g, { size: [BR_W, BR_H], interactive: false, manual: true, fov: 42 });
+        sc.setArea({ ...c, radius: R, n: dem ? 221 : 121, dem });
+        sc.flyTo({ ...c, alt: sc.ground(c.lat, c.lon) - R * 0.04, az: az0, el: 25, dist: R * 1.6 }, 0);
+        sc.setSun({ az: 215, elev: 38 });
+        const kLon = Math.cos(c.lat * D2R) * 111320, inside = p => Math.abs(p[0] - c.lat) * 111320 < R * 0.97 && Math.abs(p[1] - c.lon) * kLon < R * 0.97;
+        const lines = near.map(f => { const l = f.track.line, n = l.findIndex(p => !inside(p)); return (n < 0 ? l : l.slice(0, n)).map(p => [p[0], p[1], Math.max(p[2], sc.ground(p[0], p[1]) + 4)]); }).filter(l => l.length > 1);
+        shown = lines.length;
+        sc.setLines('trkH', lines.map(pts => ({ pts, color: [0, 0, 0, 0.4], width: 5.5 })), { xray: false });
+        sc.setLines('trk', lines.map(pts => ({ pts, color: [1, 0.8, 0.32, 0.95], width: 2.8 })), { xray: true });
+        sc.setDrape(BASES.photo.url);
+      } catch { sc?.destroy(); sc = null; }
+    }
+    const D = BR.data = { recap: true, st, az0, name: ME.user?.name?.split(' ')[0] || '', file: `AFC-Rueckblick-${y}`, title: `Mein Flugjahr ${y}`, text: recapText(st) };
+    $('#briefNote').textContent = D.text + (shown ? ` Im Hintergrund: ${home ? home.name : 'dein Fluggebiet'} mit ${shown === 1 ? 'deiner Spur' : `${shown} deiner Spuren`}.` : '');
+    BR.scene = sc;
+    $('#v3dLoad').hidden = true;
+    if (noMotion()) { BR.t = 7.6; briefDraw(0); briefSync(); } else briefPlay(true);
+  } catch (e) { if (tok === BR.tok) v3dFail('Der Rückblick konnte nicht geladen werden: ' + e.message); }
+}
+/** Ein Bild des Rückblicks zum Zeitpunkt BR.t: Titel, Zahlen, Monate, Höhepunkte, Startplätze, Schluss. */
+function recapDraw(dt) {
+  const cv = $('#briefC'), D = BR.data, st = D.st, L = LG();
+  const x = cv.getContext('2d'), t = BR.t, W = BR_W, H = BR_H, sc = BR.scene;
+  const ph = (a, b) => Math.min(1, Math.max(0, (t - a) / (b - a))), eo = v => 1 - Math.pow(1 - v, 3);
+  const win = (a, b) => eo(ph(a, a + 0.6)) * (1 - ph(b - 0.45, b));
+  const NUM = '"Barlow Condensed", "Barlow", system-ui, sans-serif', TXT = '"Barlow", system-ui, -apple-system, sans-serif', SKY = '#6cc3e2', SOFT = '#c9d6cc', GOLD = '#ffcc52';
+  const text = (s, px, py, font, fill, align = 'left', a = 1) => { if (a <= 0) return; x.globalAlpha = Math.min(1, a); x.font = font; x.fillStyle = fill; x.textAlign = align; x.fillText(s, px, py); x.globalAlpha = 1; };
+  const fit = (s, max, font) => { x.font = font; if (x.measureText(s).width <= max) return s; let n = s.length; while (n > 3 && x.measureText(s.slice(0, n) + '…').width > max) n--; return s.slice(0, n).trimEnd() + '…'; };
+  const box = (px, py, w, h, r, fill) => { x.beginPath(); if (x.roundRect) x.roundRect(px, py, w, h, r); else x.rect(px, py, w, h); x.fillStyle = fill; x.fill(); };
+  const fl = n => (n === 1 ? 'Flug' : 'Flüge'), dateLong = d => new Date(d + 'T12:00').toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' });
+  const where = f => [f.siteName, ddmm(f.date)].filter(Boolean).join(' · ');
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.textBaseline = 'alphabetic';
+  if (sc) { sc.cam.az = D.az0 + t * 4.4; sc.renderNow(dt); x.drawImage(sc.canvas, 0, 0, W, H); }
+  else { const g = x.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#34526f'); g.addColorStop(1, '#16241c'); x.fillStyle = g; x.fillRect(0, 0, W, H); }
+  // Abdunkeln: am Anfang und am Schluss bleibt das Gelände heller
+  const dim = 0.3 + 0.3 * ph(2.6, 3.6) - 0.22 * ph(20.4, 21.2);
+  x.fillStyle = `rgba(6,14,10,${dim.toFixed(3)})`; x.fillRect(0, 0, W, H);
+  let g = x.createLinearGradient(0, 0, 0, 380); g.addColorStop(0, 'rgba(6,14,10,.9)'); g.addColorStop(1, 'rgba(6,14,10,0)'); x.fillStyle = g; x.fillRect(0, 0, W, 380);
+  g = x.createLinearGradient(0, 900, 0, H); g.addColorStop(0, 'rgba(6,14,10,0)'); g.addColorStop(1, 'rgba(6,14,10,.94)'); x.fillStyle = g; x.fillRect(0, 900, W, H - 900);
+  // Kopf
+  let a = eo(ph(0.15, 0.9));
+  x.save(); if ('letterSpacing' in x) x.letterSpacing = '5px';
+  text('AFC RÜCKBLICK', 40, 92 - (1 - a) * 18, `600 26px ${TXT}`, SKY, 'left', a); x.restore();
+  text(st.year, W - 40, 96, `700 44px ${NUM}`, '#fff', 'right', eo(ph(3.2, 3.9)) * (1 - ph(20.3, 20.7)));
+  const head = (s, a2) => text(s, 40, 232 + (1 - Math.min(1, a2)) * 14, `700 62px ${NUM}`, '#fff', 'left', a2);
+  // 1 Titel
+  a = win(0.3, 3.3);
+  if (a > 0) {
+    text(D.name ? `${D.name}, dein Flugjahr` : 'Dein Flugjahr', W / 2, 560, `500 44px ${TXT}`, SOFT, 'center', a);
+    x.save(); x.translate(W / 2, 800); const z = 0.86 + 0.14 * eo(ph(0.3, 1.5)); x.scale(z, z);
+    text(st.year, 0, 0, `700 290px ${NUM}`, '#fff', 'center', a); x.restore();
+    x.globalAlpha = a; x.fillStyle = GOLD; x.fillRect(W / 2 - 120 * eo(ph(0.9, 1.8)), 850, 240 * eo(ph(0.9, 1.8)), 6); x.globalAlpha = 1;
+  }
+  // 2 Die grossen Zahlen
+  if (t > 3 && t < 8.5) {
+    head('Das war deine Saison', win(3.2, 8.4));
+    const rows = [[k => String(Math.round(st.n * k)), fl(st.n)], st.min ? [k => L.fmtDur(Math.round(st.min * k)), 'Stunden in der Luft'] : null, [k => String(Math.round(st.days * k)), st.days === 1 ? 'Flugtag' : 'Flugtage'], st.km >= 1 ? [k => String(Math.round(st.km * k)), 'Kilometer vom Start zur Landung'] : null].filter(Boolean);
+    rows.forEach(([val, label], i) => {
+      const t0 = 3.5 + i * 0.5, u = eo(ph(t0, t0 + 0.7)) * (1 - ph(7.95, 8.4)), y = 430 + i * 205;
+      text(val(eo(ph(t0, t0 + 1.9))), 40 - (1 - Math.min(1, u)) * 30, y, `700 150px ${NUM}`, i === 0 ? GOLD : '#fff', 'left', u);
+      text(label, 44, y + 46, `500 32px ${TXT}`, SOFT, 'left', u);
+    });
+  }
+  // 3 Monate
+  if (t > 8 && t < 13) {
+    const out = 1 - ph(12.35, 12.8), byMin = st.min > 0, v = m => (byMin ? m.min : m.n), mx = Math.max(1, ...st.per.map(v)), topI = st.per.reduce((b, m, i) => (v(m) > v(st.per[b]) ? i : b), 0);
+    head(byMin ? 'Flugstunden je Monat' : 'Flüge je Monat', win(8.4, 12.8));
+    st.per.forEach((m, i) => {
+      const u = eo(ph(8.6 + i * 0.07, 9.5 + i * 0.07)), h = (v(m) ? 14 + 420 * v(m) / mx : 5) * u, bx = 48 + i * 52;
+      x.globalAlpha = out * (u > 0 ? 1 : 0); box(bx, 880 - h, 44, h, 8, i === topI && v(m) ? GOLD : v(m) ? 'rgba(255,255,255,.86)' : 'rgba(255,255,255,.22)'); x.globalAlpha = 1;
+      text(MONTHS[i].slice(0, 1), bx + 22, 922, `600 26px ${TXT}`, i === topI ? '#fff' : '#a9b9ad', 'center', out * eo(ph(8.4, 9)));
+    });
+    const tm = st.per[topI], u = eo(ph(10.2, 10.9)) * out;
+    if (v(tm)) {
+      text('Stärkster Monat', 40, 1010, `500 28px ${TXT}`, SKY, 'left', u);
+      text(MONTHS[topI], 40 - (1 - Math.min(1, u)) * 24, 1086, `700 84px ${NUM}`, '#fff', 'left', u);
+      text(`${tm.n} ${fl(tm.n)}${tm.min ? ' · ' + L.fmtDur(tm.min) + ' h' : ''}`, 40, 1134, `500 30px ${TXT}`, SOFT, 'left', u);
+    }
+  }
+  // 4 Höhepunkte
+  if (t > 12.4 && t < 17.7) {
+    const out = 1 - ph(17.15, 17.6), bd = st.bestDay;
+    head('Deine Höhepunkte', win(12.8, 17.6));
+    const cards = [
+      bd && st.days > 1 ? ['Bester Tag', dateLong(bd.date), `${bd.n} ${fl(bd.n)}${bd.min ? ' · ' + L.fmtDur(bd.min) + ' h in der Luft' : ''}`] : null,
+      st.longest ? ['Längster Flug', L.fmtDur(st.longest.durMin) + ' h', where(st.longest)] : null,
+      st.highest ? ['Höchster Punkt', Math.round(st.highest.maxAlt) + ' m', where(st.highest)] : null,
+      st.farthest && st.farthest.km >= 1 ? ['Weitester Flug', String(st.farthest.km).replace('.', ',') + ' km', where(st.farthest)] : null,
+      st.climb ? ['Stärkstes Steigen', '+' + st.climb.track.climbMax.toFixed(1).replace('.', ',') + ' m/s', where(st.climb)] : null
+    ].filter(Boolean).slice(0, 4);
+    cards.forEach(([k, val, sub], i) => {
+      const u = eo(ph(12.9 + i * 0.55, 13.6 + i * 0.55)) * out, y = 300 + i * 212, bx = 40 - (1 - Math.min(1, u)) * 60;
+      if (u <= 0) return;
+      x.globalAlpha = u; box(bx, y, 640, 188, 22, 'rgba(8,16,12,.8)'); box(bx, y + 24, 6, 140, 3, GOLD); x.globalAlpha = 1;
+      text(k, bx + 34, y + 50, `500 27px ${TXT}`, SKY, 'left', u);
+      const f = k === 'Bester Tag' ? `700 58px ${NUM}` : `700 78px ${NUM}`;
+      text(fit(val, 580, f), bx + 34, y + (k === 'Bester Tag' ? 118 : 124), f, '#fff', 'left', u);
+      text(fit(sub, 580, `500 25px ${TXT}`), bx + 34, y + 162, `500 25px ${TXT}`, SOFT, 'left', u);
+    });
+    if (!cards.length) text('Trage Dauer und Höhe ein oder lade IGC-Dateien: dann stehen hier deine Höhepunkte.', W / 2, 640, `500 26px ${TXT}`, SOFT, 'center', win(12.9, 17.6));
+  }
+  // 5 Startplätze
+  if (t > 17.2 && t < 20.9) {
+    const out = 1 - ph(20.35, 20.8), top = st.sites.slice(0, 4), mx = Math.max(1, ...top.map(s => s.n));
+    head(st.sites.length === 1 ? 'Dein Startplatz' : 'Deine Startplätze', win(17.6, 20.8));
+    top.forEach((s, i) => {
+      const u = eo(ph(17.7 + i * 0.3, 18.4 + i * 0.3)) * out, k = eo(ph(17.9 + i * 0.3, 19.2 + i * 0.3)), y = 380 + i * 168;
+      let px = 54; x.font = `700 ${px}px ${NUM}`;
+      while (px > 40 && x.measureText(s.name).width > 470) { px -= 2; x.font = `700 ${px}px ${NUM}`; }
+      text(fit(s.name, 470, `700 ${px}px ${NUM}`), 40, y, `700 ${px}px ${NUM}`, '#fff', 'left', u);
+      text(`${s.n}×${s.min ? ' · ' + L.fmtDur(s.min) + ' h' : ''}`, W - 40, y, `600 32px ${NUM}`, SOFT, 'right', u);
+      x.globalAlpha = Math.min(1, u); box(40, y + 22, 640, 14, 7, 'rgba(255,255,255,.16)'); if (k > 0.01) box(40, y + 22, Math.max(14, 640 * s.n / mx * k), 14, 7, i === 0 ? GOLD : 'rgba(255,255,255,.86)'); x.globalAlpha = 1;
+    });
+    if (st.sites.length > 4) text(`und ${st.sites.length - 4} ${st.sites.length - 4 === 1 ? 'weiterer' : 'weitere'}`, 40, 380 + 4 * 168 - 30, `500 28px ${TXT}`, SOFT, 'left', eo(ph(19.1, 19.7)) * out);
+  }
+  // 6 Schluss
+  a = eo(ph(20.7, 21.4));
+  if (a > 0) {
+    x.globalAlpha = a * 0.84; box(40, 500, 640, 250, 24, 'rgba(8,16,12,.86)'); x.globalAlpha = 1;
+    text(`Flugjahr ${st.year}`, W / 2, 596 + (1 - a) * 14, `700 84px ${NUM}`, '#fff', 'center', a);
+    text(`${st.n} ${fl(st.n)}${st.min ? ' · ' + L.fmtDur(st.min) + ' h' : ''} · ${st.days} ${st.days === 1 ? 'Flugtag' : 'Flugtage'}`, W / 2, 652, `600 32px ${TXT}`, GOLD, 'center', a);
+    text('Auf viele weitere schöne Flüge', W / 2, 706, `500 27px ${TXT}`, SOFT, 'center', a);
+  }
+  text(`AFC · aus deinem Flugbuch${sc?.draped ? ' · Luftbild © swisstopo' : ''}`, W / 2, 1262, `500 18px ${TXT}`, '#8fa095', 'center', 1);
 }
 
 /* ------------------------------------------------------------------ Austausch unter den Piloten */

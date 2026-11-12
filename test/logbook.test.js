@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanFlight, cleanGear, cleanSettings, logStats, gearStatus, profileFromLog, fmtDur, cleanBackup, flightsCsv, siteFeedback } from '../lib/logbook.js';
+import { cleanFlight, cleanGear, cleanSettings, logStats, seasonStats, gearStatus, profileFromLog, fmtDur, cleanBackup, flightsCsv, siteFeedback } from '../lib/logbook.js';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 
@@ -147,4 +147,31 @@ test('Flugbuch: Höhe Start und Landung, Höhendifferenz', async () => {
   assert.equal(cleanFlight({ date: '2026-09-01', startAlt: 99999 }).startAlt, 9000);
   const csv = flightsCsv([f], []);
   assert.match(csv, /;1924;1060;864;/);
+});
+
+test('seasonStats: Zahlen eines Flugjahrs für den Rückblick', () => {
+  const fl = [
+    { date: '2026-06-06', start: '12:10', durMin: 95, km: 12.4, maxAlt: 2810, siteId: 'amis', siteName: 'Amisbühl', track: { climbMax: 3.1 } },
+    { date: '2026-06-06', start: '16:20', durMin: 12, km: 2.1, maxAlt: 1340, siteId: 'amis', siteName: 'Amisbühl' },
+    { date: '2026-07-04', start: '11:55', durMin: 130, km: 8, maxAlt: 3120, siteId: 'niesen', siteName: 'Niesen', track: { climbMax: 2.2 } },
+    { date: '2026-03-14', start: '13:00', durMin: 0, siteName: 'Wiese' },
+    { date: '2025-08-23', start: '13:00', durMin: 300, km: 60, maxAlt: 3900, siteId: 'first', siteName: 'First' }
+  ];
+  const s = seasonStats(fl, '2026');
+  assert.equal(s.n, 4);
+  assert.equal(s.min, 237);
+  assert.equal(s.km, 23);
+  assert.equal(s.days, 3);
+  assert.deepEqual(s.per.map(m => m.n), [0, 0, 1, 0, 0, 2, 1, 0, 0, 0, 0, 0]);
+  assert.equal(s.per[5].min, 107);
+  assert.equal(s.bestDay.date, '2026-07-04');            // meiste Flugzeit an einem Tag
+  assert.equal(s.longest.durMin, 130);
+  assert.equal(s.highest.maxAlt, 3120);
+  assert.equal(s.farthest.km, 12.4);
+  assert.equal(s.climb.track.climbMax, 3.1);
+  assert.deepEqual(s.sites.map(x => [x.name, x.n]), [['Amisbühl', 2], ['Niesen', 1], ['Wiese', 1]]);
+  assert.equal(s.flights[0].date, '2026-03-14');         // nach Datum geordnet
+  const e = seasonStats(fl, '2024');
+  assert.equal(e.n, 0); assert.equal(e.bestDay, null); assert.equal(e.longest, null); assert.deepEqual(e.sites, []);
+  assert.equal(seasonStats([{ date: '2026-05-01' }], 2026).longest, null);   // ohne Dauer kein «längster Flug»
 });
