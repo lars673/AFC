@@ -130,7 +130,7 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal(xc.pilots, 1); assert.equal(xc.flights, 2, 'älterer Flug ohne Typ bekommt das heutige Profil'); assert.equal(xc.streng, 2); assert.equal(xc.nofly.wind, 1);
     assert.ok(ov.json.groups.find(g => g.key === 'l:expert').flights >= 1);
     assert.equal(ov.json.verdicts.streng, 2);
-    assert.equal(ov.json.invites[0].usedBy, 'Beat Muster');
+    assert.equal(ov.json.invites.find(i => i.kind === 'invite').usedBy, 'Beat Muster');
     assert.equal((await call('PUT', '/api/admin/survey', { on: true }, A)).status, 200);
     assert.equal((await call('GET', '/api/me', null, B)).json.survey, true);
     assert.equal((await call('POST', '/api/feedback', { kind: 'survey', answers: { nps: 9, gut: 'Begründungen' } }, B)).status, 200);
@@ -162,6 +162,16 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal((await call('POST', '/api/auth/login', { email: 'beat@test.ch', password: 'Neues-Passwort-9' })).status, 401);
     assert.equal((await call('GET', '/api/admin/overview', null, A)).json.users.length, 1);
     assert.ok(fs.readdirSync(dir).some(f => f.startsWith('afc-vor-konten-')), 'Kopie vor der Umstellung');
+    // Gruppenlink: ein Link für mehrere, zählt mit, danach voll
+    assert.equal((await call('POST', '/api/admin/invite', { kind: 'group', max: 1 }, A)).status, 400);
+    const gr = await call('POST', '/api/admin/invite', { kind: 'group', max: 2, note: 'Club' }, A);
+    assert.equal(gr.status, 200); assert.equal(gr.json.max, 2);
+    assert.equal((await call('GET', '/api/auth/state?invite=' + gr.json.code)).json.invite.ok, true);
+    assert.equal((await call('POST', '/api/auth/register', { invite: gr.json.code, name: 'G1', email: 'g1@test.ch', password: 'Grindelwald-1' })).status, 200);
+    assert.equal((await call('POST', '/api/auth/register', { invite: gr.json.code, name: 'G2', email: 'g2@test.ch', password: 'Grindelwald-1' })).status, 200);
+    assert.equal((await call('POST', '/api/auth/register', { invite: gr.json.code, name: 'G3', email: 'g3@test.ch', password: 'Grindelwald-1' })).status, 400, 'Gruppenlink voll');
+    const gov = await call('GET', '/api/admin/overview', null, A);
+    if (gov.status === 200) { const g = gov.json.invites.find(x => x.code === gr.json.code); assert.equal(g.uses, 2); assert.equal(g.max, 2); }
   } finally { child.kill(); await mock.close(); }
 });
 

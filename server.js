@@ -724,9 +724,14 @@ function loginBlocked(email) {
   loginFails.set(email, l);
   return l.length >= 8;
 }
+// Gruppenlink (kind 'group'): ein Link für mehrere Personen, zählt mit (uses von max_uses)
+if (!dbAll('PRAGMA table_info(invites)').some(c => c.name === 'max_uses')) db.exec('ALTER TABLE invites ADD COLUMN max_uses INTEGER; ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0;');
+const GROUP_MAX = 50;
 const inviteRow = code => {
   const r = /^[a-z0-9]{6,20}$/.test(String(code || '')) ? dbGet('SELECT * FROM invites WHERE code=?', [code]) : null;
-  return r && !r.used_by && (!r.expires || r.expires > nowIso()) ? r : null;
+  if (!r || (r.expires && r.expires <= nowIso())) return null;
+  if (r.kind === 'group') return (r.uses || 0) < (r.max_uses || 0) ? r : null;
+  return r.used_by ? null : r;
 };
 function userStats(uid) {
   const fl = dbAll("SELECT data FROM logbook WHERE uid=? AND kind='flight'", [uid]).map(r => JSON.parse(r.data));
@@ -860,14 +865,15 @@ async function accountRoute(req, res, p, u) {
   if (p === '/api/auth/register' && req.method === 'POST') {
     const b = await body();
     const inv = inviteRow(b.invite);
-    if (!inv || inv.kind !== 'invite') return sendJson(req, res, 400, { error: 'Dieser Einladungslink ist nicht mehr gültig. Bitte Lars um einen neuen.' });
+    if (!inv || (inv.kind !== 'invite' && inv.kind !== 'group')) return sendJson(req, res, 400, { error: inv?.kind === 'reset' ? 'Dieser Link ist zum Passwort-Setzen.' : 'Dieser Einladungslink ist nicht mehr gültig oder schon von allen benutzt. Bitte Lars um einen neuen.' });
     const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);
     if (!name) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' });
     if (!email) return sendJson(req, res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben' });
     if (bad) return sendJson(req, res, 400, { error: bad });
     if (dbGet('SELECT 1 x FROM users WHERE email=?', [email])) return sendJson(req, res, 409, { error: 'Mit dieser E-Mail gibt es schon ein Konto. Bitte anmelden.' });
     const user = createUser({ email, name, pw: b.password, role: 'pilot' });
-    dbRun('UPDATE invites SET used_by=?, used_at=? WHERE code=?', [user.id, nowIso(), inv.code]);
+    if (inv.kind === 'group') dbRun('UPDATE invites SET uses=uses+1, used_at=? WHERE code=?', [nowIso(), inv.code]);
+    else dbRun('UPDATE invites SET used_by=?, used_at=? WHERE code=?', [user.id, nowIso(), inv.code]);
     if (b.prefs) dbRun('UPDATE users SET prefs=? WHERE id=?', [JSON.stringify(cleanUserPrefs(b.prefs)), user.id]);
     setSession(req, res, user.id);
     return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [user.id])));
@@ -1006,7 +1012,7 @@ async function accountRoute(req, res, p, u) {
     if (p === '/api/admin/overview' && req.method === 'GET') {
       const users = dbAll('SELECT * FROM users ORDER BY created').map(x => ({ ...publicUser(x), lastSeen: x.last_seen, profile: cleanProfile(JSON.parse(x.profile || '{}')), stats: userStats(x.id), push: dbGet('SELECT COUNT(*) n FROM push_subs WHERE uid=?', [x.id]).n, feedback: dbGet('SELECT COUNT(*) n FROM feedback WHERE uid=?', [x.id]).n }));
       const names = Object.fromEntries(users.map(x => [x.id, x.name]));
-      const invites = dbAll('SELECT * FROM invites ORDER BY created DESC LIMIT 60').map(x => ({ code: x.code, kind: x.kind, note: x.note, created: x.created, expires: x.expires, usedBy: x.used_by ? names[x.used_by] || '(gelöscht)' : null, usedAt: x.used_at, forUser: x.uid ? names[x.uid] || null : null }));
+      const invites = dbAll('SELECT * FROM invites ORDER BY created DESC LIMIT 60').map(x => ({ code: x.code, kind: x.kind, note: x.note, created: x.created, expires: x.expires, usedBy: x.used_by ? names[x.used_by] || '(gelöscht)' : null, usedAt: x.used_at, forUser: x.uid ? names[x.uid] || null : null, max: x.max_uses || null, uses: x.uses || 0 }));
       const feedback = dbAll('SELECT id, uid, at, kind, data, done FROM feedback ORDER BY at DESC LIMIT 200').map(r => ({ id: r.id, at: r.at, kind: r.kind, done: !!r.done, who: names[r.uid] || '(gelöscht)', ...JSON.parse(r.data) }));
       const errors = dbAll('SELECT id, uid, at, n, data FROM client_errors ORDER BY at DESC LIMIT 60').map(r => ({ id: r.id, at: r.at, n: r.n, who: names[r.uid] || '–', ...JSON.parse(r.data) }));
       const verdicts = {};
@@ -1016,15 +1022,18 @@ async function accountRoute(req, res, p, u) {
     if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
     if (p === '/api/admin/invite' && req.method === 'POST') {
       const b = await body();
-      const kind = b.kind === 'reset' ? 'reset' : 'invite';
+      const kind = b.kind === 'reset' ? 'reset' : b.kind === 'group' ? 'group' : 'invite';
       const uid = kind === 'reset' ? String(b.uid || '') : null;
       if (kind === 'reset' && !dbGet('SELECT 1 x FROM users WHERE id=?', [uid])) return sendJson(req, res, 404, { error: 'Konto nicht gefunden' });
-      const code = newCode(10), days = kind === 'reset' ? 3 : Math.min(60, Math.max(1, Number(b.days) || 30));
-      dbRun('INSERT INTO invites(code,kind,note,uid,created,expires) VALUES(?,?,?,?,?,?)', [code, kind, cleanText(b.note, 60) || null, uid, nowIso(), new Date(Date.now() + days * 86400000).toISOString()]);
-      return sendJson(req, res, 200, { ok: true, code, kind, expires: new Date(Date.now() + days * 86400000).toISOString() });
+      const max = kind === 'group' ? Math.round(Number(b.max)) : null;
+      if (kind === 'group' && !(max >= 2 && max <= GROUP_MAX)) return sendJson(req, res, 400, { error: `Ein Gruppenlink gilt für 2 bis ${GROUP_MAX} Personen` });
+      const code = newCode(10), days = kind === 'reset' ? 3 : Math.min(60, Math.max(1, Number(b.days) || (kind === 'group' ? 14 : 30)));
+      const expires = new Date(Date.now() + days * 86400000).toISOString();
+      dbRun('INSERT INTO invites(code,kind,note,uid,created,expires,max_uses) VALUES(?,?,?,?,?,?,?)', [code, kind, cleanText(b.note, 60) || null, uid, nowIso(), expires, max]);
+      return sendJson(req, res, 200, { ok: true, code, kind, expires, max });
     }
     const di = p.match(/^\/api\/admin\/invite\/([a-z0-9]{6,20})$/);
-    if (di && req.method === 'DELETE') { dbRun('DELETE FROM invites WHERE code=? AND used_by IS NULL', [di[1]]); return sendJson(req, res, 200, { ok: true }); }
+    if (di && req.method === 'DELETE') { dbRun("DELETE FROM invites WHERE code=? AND (used_by IS NULL OR kind='group')", [di[1]]); return sendJson(req, res, 200, { ok: true }); }
     const fd = p.match(/^\/api\/admin\/feedback\/(\d+)$/);
     if (fd && req.method === 'PUT') { const b = await body(); dbRun('UPDATE feedback SET done=? WHERE id=?', [b.done ? 1 : 0, Number(fd[1])]); return sendJson(req, res, 200, { ok: true }); }
     const fs2 = p.match(/^\/api\/admin\/feedback\/(\d+)\/shot$/);

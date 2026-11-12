@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.5.1';
+const APP_VER = '12.5.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3456,6 +3456,7 @@ document.addEventListener('click', async e => {
     case 'nofly': closeDlg($('#siteDlg')); noflyForm(id || [...S.fav][0]); break;
     case 'survey': surveyForm(); break;
     case 'invite': inviteCreate(); break;
+    case 'invgroup': groupInviteCreate(); break;
     case 'admin': openAdmin(); break;
     case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); break;
     case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(err.message); } break;
@@ -3468,7 +3469,7 @@ document.addEventListener('click', async e => {
     case 'admdone': try { await jsonPost('/api/admin/feedback/' + id, { done: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
     case 'admshot': try { const j = await rawFetch(`/api/admin/feedback/${id}/shot`).then(r => r.json()); if (j.shot) dlg('#msgDlg', `<div class="dlg-in"><img src="${esc(j.shot)}" alt="Bildschirmfoto" style="max-width:100%;border-radius:8px"><div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Schliessen</button></div></div>`); } catch (err) { toast(err.message); } break;
     case 'admerrclear': try { await jsonPost('/api/admin/errors', undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
-    case 'invshow': inviteShow(id, b.dataset.v); break;
+    case 'invshow': { const i = ADM.data?.invites?.find(x => x.code === id); inviteShow(id, b.dataset.v, i?.note || '', i?.max || 0, i?.expires || ''); break; }
     case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
     case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
     case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast('Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
@@ -5470,7 +5471,7 @@ function testPanel() {
   const open = d ? d.feedback.filter(x => !x.done).length : null;
   return `<div class="panel test-panel"><h3>Testphase</h3>
     ${d ? `<div class="pcard-stats" style="margin-bottom:10px"><div><b>${d.users.length}</b><span>Piloten</span></div><div><b>${open}</b><span>neue Rück­meldungen</span></div><div><b>${d.users.reduce((t, u) => t + u.stats.verdicts, 0)}</b><span>Flüge bewertet</span></div><div><b>${d.errors.reduce((t, x) => t + x.n, 0)}</b><span>App-Fehler</span></div></div>` : '<p class="fine" style="margin:0 0 8px">Lade …</p>'}
-    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Freund einladen</button><button class="btn sec" type="button" data-act="admin">Übersicht öffnen</button></div></div>`;
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Freund einladen</button><button class="btn sec" type="button" data-act="invgroup">Gruppenlink</button><button class="btn sec" type="button" data-act="admin">Übersicht öffnen</button></div></div>`;
 }
 const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
 function adminHtml() {
@@ -5505,9 +5506,15 @@ function adminHtml() {
       <h3 class="adm-h">Nach Flugstil</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('s:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>
       <h3 class="adm-h">Nach Stufe</h3><div class="adm-fb">${g.filter(x => x.key.startsWith('l:')).map(row).join('') || '<p>Noch keine Angaben.</p>'}</div>`;
   }
-  if (t === 'inv') body = `<p>Jeder Freund bekommt einen eigenen Link. Er gilt 30 Tage und nur für ein Konto.</p><button class="btn" type="button" data-act="invite">Neuen Einladungslink erstellen</button>
-    <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : 'Einladung'))}</b><small>${i.kind === 'reset' ? `Neues Passwort für ${esc(i.forUser || '?')} · ` : ''}${i.usedBy ? `benutzt von ${esc(i.usedBy)} ${esc(whenTxt(i.usedAt))}` : i.expires < new Date().toISOString() ? 'abgelaufen' : `offen bis ${esc(new Date(i.expires).toLocaleDateString('de-CH'))}`}</small>
-      ${!i.usedBy && i.expires > new Date().toISOString() ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">Löschen</button></span>` : ''}</div>`).join('')}</div>`;
+  if (t === 'inv') {
+    const now = new Date().toISOString();
+    const state = i => i.kind === 'group' ? `Gruppenlink · ${i.uses} von ${i.max} benutzt · ${i.expires < now ? 'abgelaufen' : i.uses >= i.max ? 'voll' : `offen bis ${new Date(i.expires).toLocaleDateString('de-CH')}`}`
+      : `${i.kind === 'reset' ? `Neues Passwort für ${i.forUser || '?'} · ` : ''}${i.usedBy ? `benutzt von ${i.usedBy} ${whenTxt(i.usedAt)}` : i.expires < now ? 'abgelaufen' : `offen bis ${new Date(i.expires).toLocaleDateString('de-CH')}`}`;
+    const live = i => i.expires > now && (i.kind === 'group' ? i.uses < i.max : !i.usedBy);
+    body = `<p>Jeder Freund bekommt einen eigenen Link (30 Tage, ein Konto). Für mehrere auf einmal: ein Gruppenlink für bis zu 50 Personen (14 Tage).</p><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Neuen Einladungslink erstellen</button><button class="btn sec" type="button" data-act="invgroup">Gruppenlink erstellen</button></div>
+    <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : i.kind === 'group' ? 'Gruppenlink' : 'Einladung'))}</b><small>${esc(state(i))}</small>
+      ${live(i) ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">${i.kind === 'group' ? 'Beenden' : 'Löschen'}</button></span>` : ''}</div>`).join('')}</div>`;
+  }
   if (t === 'err') body = d.errors.length ? `<button class="btn sec" type="button" data-act="admerrclear">Liste leeren</button><div class="adm-fb">${d.errors.map(e => `<div class="adm-f"><div class="adm-f-h"><b>${esc(e.msg)}</b><small>${e.n}× · ${esc(e.who)} · ${esc(whenTxt(e.at))}</small></div><small class="fine">${esc([e.src && e.src + ':' + e.line, e.page && 'Ansicht ' + (TAB_NAMES[e.page] || e.page), e.ver && 'Version ' + e.ver].filter(Boolean).join(' · '))}</small>${e.stack ? `<pre class="adm-stack">${esc(e.stack)}</pre>` : ''}</div>`).join('')}</div>` : '<p>Keine App-Fehler gemeldet.</p>';
   return `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">Testphase</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     <div class="seg seg-sm adm-tabs" role="tablist">${tabs.map(([k, n]) => `<button type="button" data-act="admtab" data-v="${k}" aria-pressed="${t === k}">${n}</button>`).join('')}</div>
@@ -5520,14 +5527,33 @@ async function openAdmin(tab) {
   try { await adminLoad(); if (isOpen($('#siteDlg')) && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(e.message); }
 }
 const inviteUrl = (code, kind) => `${location.origin}/?${kind === 'reset' ? 'reset' : 'invite'}=${code}`;
-function inviteShow(code, kind = 'invite', note = '') {
+function inviteShow(code, kind = 'invite', note = '', max = 0, expires = '') {
   const url = inviteUrl(code, kind);
-  const text = kind === 'reset' ? `Hier kannst du dein AFC-Passwort neu setzen (gilt 3 Tage): ${url}` : `Hoi${note ? ' ' + note : ''}! Hier ist deine Einladung zur AFC-Testphase. Zuerst Tailscale einrichten (siehe Anleitung), dann diesen Link auf dem Handy öffnen: ${url}`;
-  dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">${kind === 'reset' ? 'Link für ein neues Passwort' : 'Einladung' + (note ? ' für ' + esc(note) : '')}</h2>
-    <p>Schick diesen Link ${kind === 'reset' ? '' : 'zusammen mit der Anleitung '}per WhatsApp oder SMS. Er funktioniert nur einmal.</p>
+  // Im Internet gehostet braucht niemand mehr Tailscale
+  const hosted = !!(ST.data?.update?.hosted || ST.data?.hosted);
+  const how = hosted ? 'Öffne diesen Link auf dem Handy, wähle ein Passwort und lege AFC über Teilen › «Zum Home-Bildschirm» ab' : 'Zuerst Tailscale einrichten (siehe Anleitung), dann diesen Link auf dem Handy öffnen';
+  const until = expires ? new Date(expires).toLocaleDateString('de-CH') : '';
+  const text = kind === 'reset' ? `Hier kannst du dein AFC-Passwort neu setzen (gilt 3 Tage): ${url}`
+    : kind === 'group' ? `Hoi zäme! Hier ist die Einladung zur AFC-Testphase${note ? ' für ' + note : ''}. ${how}: ${url}  (gilt für ${max} Personen${until ? ' bis ' + until : ''})`
+    : `Hoi${note ? ' ' + note : ''}! Hier ist deine Einladung zur AFC-Testphase. ${how}: ${url}`;
+  const once = kind === 'group' ? `Er gilt für ${max} Personen${until ? ' bis ' + esc(until) : ''}. Jeder legt damit sein eigenes Konto an.` : 'Er funktioniert nur einmal.';
+  dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">${kind === 'reset' ? 'Link für ein neues Passwort' : kind === 'group' ? 'Gruppenlink' + (note ? ' für ' + esc(note) : '') : 'Einladung' + (note ? ' für ' + esc(note) : '')}</h2>
+    <p>Schick diesen Link ${kind === 'reset' || hosted ? '' : 'zusammen mit der Anleitung '}per WhatsApp oder SMS${kind === 'group' ? ', gern in den Gruppenchat' : ''}. ${once}</p>
     <p class="inv-url"><code>${esc(url)}</code></p>
     <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap">${navigator.share ? '<button class="btn" type="button" data-act="invshare">Teilen …</button>' : ''}<button class="btn ${navigator.share ? 'sec' : ''}" type="button" data-act="invcopy">Text kopieren</button><button class="btn sec" type="button" data-act="closemsg">Fertig</button></div></div>`);
   ADM.share = { text, url };
+}
+async function groupInviteCreate() {
+  const n = prompt('Für wie viele Personen soll der Gruppenlink gelten? (2 bis 50)', '13');
+  if (n === null) return;
+  const max = Math.round(Number(n));
+  if (!(max >= 2 && max <= 50)) { toast('Bitte eine Zahl von 2 bis 50 eingeben'); return; }
+  const note = prompt('Name der Gruppe (nur für deine Übersicht, z. B. «Fliegerclub»)', '') ?? '';
+  try {
+    const j = await jsonPost('/api/admin/invite', { kind: 'group', max, note: note.trim() });
+    inviteShow(j.code, 'group', note.trim(), j.max, j.expires);
+    adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {});
+  } catch (e) { toast(e.message); }
 }
 async function inviteCreate() {
   const note = prompt('Für wen ist die Einladung? (Vorname, nur für deine Übersicht)');
