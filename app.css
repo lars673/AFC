@@ -1280,3 +1280,5 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 /* Entscheid: ruhige Gebietsliste und Weg zum nächsten besseren Tag */
 .alist-more { display: block; width: 100%; padding: 14px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--accent); font: 600 16px/1.2 var(--f-body); cursor: pointer; }
 .hl-next { display: inline-flex; align-items: center; gap: 8px; }
+.site-fb { padding: 4px 2px 8px; }
+.site-fb .ribbon { margin-top: 12px; }

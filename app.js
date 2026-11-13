@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.9.1';
+const APP_VER = '12.9.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -160,7 +160,9 @@ async function loadDetail(id, { quiet = false } = {}) {
 /** Nach dem Laden des Plans: Details der Favoriten und Wächter-Plätze im Hintergrund speichern. */
 async function prefetchDetails() {
   if (S.offline || navigator.connection?.saveData) return;
-  const ids = [...new Set([...S.fav, ...WT.list.map(w => w.siteId)])].filter(id => S.plan && siteById(id)).slice(0, 8);
+  // dazu der beste Startplatz von heute und morgen: wer am Startplatz ohne Empfang nachschaut, meint meist diesen
+  const tops = (S.plan?.days || []).slice(0, 2).map(d => d?.top?.siteId).filter(Boolean);
+  const ids = [...new Set([...S.fav, ...WT.list.map(w => w.siteId), ...tops])].filter(id => S.plan && siteById(id)).slice(0, 8);
   for (const id of ids) {
     const k = `${S.level}:${id}`, old = detStoreGet(k);
     if (old && Date.now() - old.at < 20 * 60000) continue;
@@ -2023,8 +2025,17 @@ async function openSite(id) {
     renderSite(true);
   } catch (e) {
     flowEnd(); miniEnd();
-    dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div><div class="empty">Details konnten nicht geladen werden: ${esc(e.message)}</div></div>`);
+    dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${siteFallbackHtml(base, e)}</div>`);
   }
+}
+/** Ohne Verbindung und ohne gespeicherte Details: das Wichtigste aus dem Plan zeigen statt einer Fehlermeldung. */
+function siteFallbackHtml(base, e) {
+  const d = base.days?.[S.day], b = d?.best;
+  const why = !navigator.onLine || /fetch|Empfang|Network/i.test(e?.message || '') ? 'Keine Verbindung' : esc(e?.message || 'Fehler');
+  return `<div class="site-fb"><div class="hl-best" style="cursor:default"><span class="mini-pill s-${cls(b?.score)}">${b ? b.score : '–'}</span><span class="hl-bt"><small>${esc(dayName(S.day))}, Stand ${esc(new Date(S.plan.now).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' }))} Uhr</small><b>${b ? esc(winText(b)) : 'Kein Flugfenster'}</b><span>${base.alt} m</span></span></div>
+    ${d ? ribbon(d.scores, b, {}) : ''}
+    <p class="fine" style="margin:12px 0 0"><b>${why}.</b> Die Stunden-Details für diesen Startplatz sind auf diesem Gerät noch nicht gespeichert. Favoriten und die besten Startplätze speichert AFC von selbst, solange du Empfang hast.</p>
+    <div class="btn-row" style="justify-content:flex-start;margin-top:10px"><button class="btn" type="button" data-act="site" data-id="${esc(base.id)}">Nochmals versuchen</button></div></div>`;
 }
 /** Landeplatz: nächster offizieller Landeplatz im Gebiet, Prognose zur gewählten Stunde und Messung in der Nähe. */
 /** Landeplatz zum Startplatz: Landeplätze des Gebiets, sonst der nächste im Umkreis von 5 km (z.B. Lehn für Amisbühl). */
