@@ -1,4 +1,5 @@
-// AFC 8.0 – Backend: holt Messwerte und Prognosen, rechnet die Bewertung und liefert sie als schlanke JSON-API.
+// AFC – Backend: holt Messwerte und Prognosen, rechnet die Bewertung und liefert sie als schlanke JSON-API.
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import fsc from 'node:fs';
@@ -38,7 +39,8 @@ import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/um
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_VERSION = '8.0';
+// Version: eine Quelle (package.json); test/version.test.js prüft, dass App und Service Worker dieselbe tragen
+const SERVER_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version.replace(/\.0$/, ''); } catch { return '?'; } })();
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';          // leer = nur gleiche Herkunft
