@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.9';
+const APP_VER = '12.9.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -434,7 +434,7 @@ function headlineHtml(h, conf, sky) {
   const s = h.site ? siteById(h.site) : null, area = s ? S.plan.areas.find(a => a.sites.includes(s.id)) : null;
   const best = s ? `<button type="button" class="hl-best" data-act="site" data-id="${esc(s.id)}"><span class="mini-pill s-${cls(h.score)}" data-cu="hl">${h.score}</span><span class="hl-bt"><small>${h.score >= 55 ? 'Bester Start' : 'Bester Startplatz, trotzdem zu tief'}</small><b>${esc(s.name)}</b><span>${h.win[0]}–${h.win[1]} Uhr${area && !s.name.startsWith(area.name) ? ' · ' + esc(area.name) : ''}</span></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : '';
   const notes = s ? (h.notes?.length ? `<ul class="hl-notes">${h.notes.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
-  return `<div class="headline ${h.tone}">${h.site ? hlSkyHtml(sky) : ''}<h2>${esc(h.title)}</h2>${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${esc(dayName(h.next))} ansehen</button>` : ''}</div>`;
+  return `<div class="headline ${h.tone}">${h.site ? hlSkyHtml(sky) : ''}<h2>${esc(h.title)}</h2>${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
 }
 
 /** Kompakte Zeile pro Gebiet: Name, bester Start mit Fenster, Score; aufklappbar für alle Startplätze. */
@@ -509,11 +509,21 @@ function renderDecide() {
   const el = $('#v-decide');
   if (!S.plan) { el.innerHTML = stateBox(); return; }
   const p = S.plan, h = headlineFor(S.day);
+  // Schlechter Tag: direkt zum nächsten besseren Tag führen, statt den Piloten suchen zu lassen
+  if (!(h.next > 0) && !(h.score >= 55)) {
+    const sc = i => p.days[i]?.top?.best.score ?? -1;
+    let nx = p.days.findIndex((x, i) => i > S.day && sc(i) >= 80);
+    if (nx < 0) nx = p.days.findIndex((x, i) => i > S.day && sc(i) >= 55);
+    if (nx > 0) { h.next = nx; h.nextScore = sc(nx); }
+  }
   const favSites = [...S.fav].map(siteById).filter(Boolean);
   const near = S.sort === 'near' && S.pos;
   const dist = a => Math.min(...a.sites.map(siteById).filter(Boolean).map(x => haversineKm(S.pos[0], S.pos[1], x.lat, x.lon)));
   const areas = [...p.areas].sort((a, b) => near ? dist(a) - dist(b) : (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
   const nowH = nowHourToday();
+  // Ruhige Liste: zuerst nur, was in Frage kommt (ab 55), mindestens 6 Gebiete; der Rest auf Wunsch
+  const okN = areas.filter(a => (a.days[S.day]?.best.score ?? -1) >= 55).length;
+  const shown = S.allAreas || near || areas.length <= 8 ? areas : areas.slice(0, Math.max(6, okN));
   el.innerHTML = `
     ${watchLineHtml()}
     ${surveyCard()}
@@ -528,7 +538,7 @@ function renderDecide() {
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
       <button type="button" class="ico-btn" data-act="week" aria-label="Wochenblick" title="Wochenblick"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><button type="button" class="ico-btn" data-act="compare" aria-label="Startplätze vergleichen" title="Vergleichen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button></div></div>
-    <div class="card alist">${areas.map(areaRow).join('')}</div>
+    <div class="card alist">${shown.map(areaRow).join('')}${shown.length < areas.length ? `<button type="button" class="alist-more" data-act="allareas">Alle ${areas.length} Gebiete zeigen</button>` : ''}</div>
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
 
@@ -3676,6 +3686,7 @@ document.addEventListener('click', async e => {
     case 'wksite': S.day = Number(b.dataset.d); S.dayPicked = true; render(); openSite(b.dataset.id); break;
     case 'wkday': S.day = Number(b.dataset.d); S.dayPicked = true; closeDlg($('#siteDlg')); render(); break;
     case 'closemsg': closeDlg($('#msgDlg')); break;
+    case 'allareas': S.allAreas = true; renderDecide(); break;
     case 'myafc': openMy(b.dataset.q); break;
     case 'myq': mySend(b.dataset.q); break;
     case 'mynew': myNew(); break;

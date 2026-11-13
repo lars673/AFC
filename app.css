@@ -1276,3 +1276,7 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .my-send { border-radius: 999px; width: 46px; padding: 0; display: grid; place-items: center; }
 .my-fine { margin: 6px 0 0; }
 @media (prefers-reduced-motion: reduce) { .my-ask .my-spark, .my-typing i, .my-q, .my-a.new { animation: none; } }
+
+/* Entscheid: ruhige Gebietsliste und Weg zum nächsten besseren Tag */
+.alist-more { display: block; width: 100%; padding: 14px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--accent); font: 600 16px/1.2 var(--f-body); cursor: pointer; }
+.hl-next { display: inline-flex; align-items: center; gap: 8px; }
