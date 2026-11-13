@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.9.3';
+const APP_VER = '12.10';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -23,6 +23,16 @@ function reportError(msg, src, line, stack) {
   if (!msg || ERR.n >= 8 || ERR.seen.has(sig) || /ResizeObserver|Script error\.?$/.test(msg)) return;
   ERR.seen.add(sig); ERR.n++;
   rawFetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg: String(msg).slice(0, 300), src: String(src || '').replace(location.origin, ''), line, stack: String(stack || '').slice(0, 1500), page: typeof S === 'undefined' ? '' : S.tab, ver: APP_VER, device: navigator.userAgent.slice(0, 160) }) }).catch(() => {});
+}
+/** Fehler in Worten für Piloten: keine englischen Browser-Meldungen («Failed to fetch», «Load failed») und keine Programmierfehler im Bild.
+    Was der Server auf Deutsch sagt, bleibt stehen; Unerwartetes wird still gemeldet und freundlich umschrieben. */
+function errTxt(e) {
+  const m = String(e?.message ?? e ?? '').trim();
+  if (navigator.onLine === false) return 'Keine Verbindung';
+  if (/abort|timeout|timed out/i.test(m)) return 'Keine Antwort, schlechter Empfang?';
+  if (!m || /failed to fetch|load failed|networkerror|network request failed|fetch failed|network connection|internet connection|err_[a-z_]+/i.test(m)) return 'AFC ist gerade nicht erreichbar';
+  if (/unexpected (token|end)|json|not valid|undefined|null\b|cannot read|not a function|not defined|typeerror|syntaxerror|rangeerror|object object|the operation|the string did not match/i.test(m)) { reportError('Anzeige: ' + m, '', 0, e?.stack); return 'Das hat nicht geklappt, bitte nochmals versuchen'; }
+  return m;
 }
 window.addEventListener('error', e => { if (e.message) reportError(e.message, e.filename, e.lineno, e.error?.stack); });
 window.addEventListener('unhandledrejection', e => reportError('Promise: ' + (e.reason?.message || e.reason), '', 0, e.reason?.stack));
@@ -103,7 +113,7 @@ async function loadPlan(manual) {
       setTimeout(prefetchDetails, 1500);
     }
   } catch (e) {
-    S.offline = true; S.err = e.message || 'Netzwerkfehler';
+    S.offline = true; S.err = errTxt(e);
     if (!S.plan) {
       const c = store.get('plan');
       if (c?.plan && c.level === S.level) { S.plan = c.plan; S.cachedAt = c.at; }
@@ -334,8 +344,8 @@ function renderBanner() {
   const when = at ? (new Date(at).toDateString() === new Date().toDateString() ? `${timeOf(at)} Uhr` : `${new Date(at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit' })} ${timeOf(at)} Uhr`) : 'früher';
   if (S.refreshing && S.plan) msg = `Zeige letzten Stand von ${when}, neue Daten werden geladen …`;
   else if (S.offline && S.plan) {
-    msg = `Keine Verbindung (${S.err}). Letzter Stand von ${when} – nicht für den Startentscheid verwenden.`; bad = true;
-  } else if (S.offline) { msg = `Daten nicht erreichbar: ${S.err}`; bad = true; }
+    msg = `${/^(Keine Verbindung|AFC ist gerade)/.test(S.err) ? S.err : `Keine Verbindung (${S.err})`}. Letzter Stand von ${when} – nicht für den Startentscheid verwenden.`; bad = true;
+  } else if (S.offline) { msg = /^(Keine Verbindung|AFC ist gerade)/.test(S.err) ? S.err + '.' : `Daten nicht erreichbar: ${S.err}`; bad = true; }
   else if (S.plan) {
     const s = S.plan.sources || {};
     const issues = [];
@@ -910,7 +920,7 @@ async function mySend(q) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'MyAFC antwortet gerade nicht.');
     t.a = j.reply; t.fresh = true; MY.left = j.left;
-  } catch (e) { t.err = navigator.onLine === false ? 'Keine Verbindung. MyAFC braucht Internet.' : e.message; }
+  } catch (e) { t.err = navigator.onLine === false ? 'Keine Verbindung. MyAFC braucht Internet.' : errTxt(e); }
   MY.busy = false;
   myRenderLog();
   t.fresh = false;
@@ -969,7 +979,7 @@ async function applyUpdate() {
       await new Promise(res => setTimeout(res, 1000));
     }
     throw new Error('AFC antwortet nicht. Auf dem Mac «AFC neu starten» doppelklicken.');
-  } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + err.message); }
+  } catch (err) { ST.busy = false; renderUpdBanner(); toast('Update fehlgeschlagen: ' + errTxt(err)); }
 }
 /** Was AFC an den Bergstationen selbst gelernt hat (Böenfehler der letzten 14 Tage). */
 const LEARN_WHEN = k => { const [b, sec] = k.split('|'); return `${{ am: 'Vormittag', mid: 'Mittag', pm: 'Nachmittag' }[b] || ''}${sec === 'ruhig' ? ', wenig Wind' : sec ? ', ' + sec + '-Wind' : ''}`; };
@@ -1250,7 +1260,7 @@ function renderBook() {
   const el = $('#v-book');
   if (!LB.data) {
     el.innerHTML = '<div class="warm"><div class="spinner"></div>Flugbuch wird geladen …</div>';
-    lbLoad().then(() => { if (S.tab === 'book') renderBook(); }).catch(err => { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+    lbLoad().then(() => { if (S.tab === 'book') renderBook(); }).catch(err => { el.innerHTML = `<div class="empty">${esc(errTxt(err))}</div>`; });
     return;
   }
   const L = LG(), d = LB.data, st = L.logStats(d.flights, d.settings);
@@ -1395,7 +1405,7 @@ async function pushEnable() {
     toast('Benachrichtigungen eingeschaltet. Tippe auf «Test senden».');
   } catch (err) {
     PU.state = Notification.permission === 'denied' ? 'denied' : 'off';
-    toast(PU.state === 'denied' ? 'Benachrichtigungen wurden nicht erlaubt.' : 'Einschalten hat nicht geklappt: ' + err.message);
+    toast(PU.state === 'denied' ? 'Benachrichtigungen wurden nicht erlaubt.' : 'Einschalten hat nicht geklappt: ' + errTxt(err));
   } finally { PU.busy = false; renderPush(); }
 }
 async function pushDisable() {
@@ -1412,7 +1422,7 @@ async function pushTest() {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
     toast('Test gesendet. Er sollte in wenigen Sekunden ankommen.');
-  } catch (err) { toast('Test fehlgeschlagen: ' + err.message); if (/abgelaufen/.test(err.message)) { PU.sub = null; PU.state = 'off'; renderPush(); } }
+  } catch (err) { toast('Test fehlgeschlagen: ' + errTxt(err)); if (/abgelaufen/.test(errTxt(err))) { PU.sub = null; PU.state = 'off'; renderPush(); } }
 }
 const renderPush = () => { const el = $('#pushPanel'); if (el) el.innerHTML = pushHtml(); };
 function pushHtml() {
@@ -1479,7 +1489,7 @@ async function lbExport(kind) {
     const r = await lbFetch('/api/logbook/export.' + kind);
     if (!r.ok) throw new Error('Fehler ' + r.status);
     await saveFile(`AFC-Flugbuch-${todayKey()}.${kind}`, await r.blob());
-  } catch (err) { toast('Export fehlgeschlagen: ' + err.message); }
+  } catch (err) { toast('Export fehlgeschlagen: ' + errTxt(err)); }
 }
 async function lbRestore(file) {
   if (!file) return;
@@ -1495,7 +1505,7 @@ async function lbRestore(file) {
     await lbLoad(true);
     toast(`Eingespielt: ${j.added} neue und ${j.updated} aktualisierte Flüge, ${j.gear} Ausrüstungsteile`);
     renderBook(); setTimeout(lbSyncProfile, 2500);
-  } catch (err) { toast('Einspielen fehlgeschlagen: ' + err.message); }
+  } catch (err) { toast('Einspielen fehlgeschlagen: ' + errTxt(err)); }
 }
 /** Druckansicht (auch für «Als PDF sichern»): Zusammenfassung, Flugliste, Ausrüstung. */
 function lbPrint() {
@@ -1520,7 +1530,7 @@ const toMin = hm => (hm ? Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5)) :
 async function importIgc(files) {
   const I = window.AFCIgc, L = LG();
   if (!I || !L || !files?.length) return;
-  const d = await lbLoad().catch(err => { toast(err.message); return null; });
+  const d = await lbLoad().catch(err => { toast(errTxt(err)); return null; });
   if (!d) return;
   const starts = [...(S.plan?.sites || []), ...(S.plan?.unrated || [])], lands = S.plan?.landings || [];
   const def = d.settings.defaults || {};
@@ -1635,7 +1645,7 @@ function flightForm(id, copyId) {
     if (!num(item.afcScore) || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcScore = afcScoreAt(item.siteId, item.date, item.start) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcScore : null);
     if (!item.afcFc || (f && (f.siteId !== item.siteId || f.date !== item.date || f.start !== item.start))) item.afcFc = (await afcFcAt(item.siteId, item.date, item.start)) ?? (f && f.siteId === item.siteId && f.date === item.date ? f.afcFc : null);
     try { await lbSave('flight', item); closeDlg($('#msgDlg')); toast('Flug gespeichert'); renderBook(); }
-    catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
+    catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + errTxt(err); }
   });
 }
 
@@ -1680,7 +1690,7 @@ function gearForm(id) {
         await lbSave('settings', { ...d.settings, defaults: defs });
       }
       closeDlg($('#msgDlg')); toast('Gespeichert'); renderBook();
-    } catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + err.message; }
+    } catch (err) { $('#lbErr').textContent = 'Nicht gespeichert: ' + errTxt(err); }
   });
 }
 
@@ -1815,7 +1825,9 @@ function toast(msg) {
   if (typeof t.showPopover === 'function') {
     try { if (t.popover !== 'manual') t.popover = 'manual'; if (t.matches(':popover-open')) t.hidePopover(); t.showPopover(); } catch { /* bleibt ein gewöhnlicher Hinweis */ }
   }
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; try { if (t.matches(':popover-open')) t.hidePopover(); } catch { /* ohne Popover */ } }, Math.max(3200, msg.length * 70));
+  const gone = () => { t.classList.remove('out'); t.hidden = true; try { if (t.matches(':popover-open')) t.hidePopover(); } catch { /* ohne Popover */ } };
+  t.classList.remove('out');
+  clearTimeout(toastT); toastT = setTimeout(() => { if (noMotion()) return gone(); t.classList.add('out'); toastT = setTimeout(gone, 200); }, Math.max(3200, msg.length * 70));
 }
 
 /* ---- Gesten (nur mit dem Finger): seitlich wischen wechselt den Tag, ein Fenster lässt sich nach unten wegziehen,
@@ -2223,7 +2235,7 @@ async function volteSet(id, btn) {
   if (btn.dataset.clear) delete lands[id];
   else lands[id] = { dir: Number(box.querySelector('[data-volte=dir]').value), side: box.querySelector('[data-volte=side]').value };
   try { await lbSave('settings', { ...d.settings, lands }); toast(btn.dataset.clear ? 'Volte entfernt' : 'Volte gespeichert'); if (S.detailData?.site) renderSite(); }
-  catch (e) { toast('Speichern fehlgeschlagen: ' + e.message); }
+  catch (e) { toast('Speichern fehlgeschlagen: ' + errTxt(e)); }
 }
 function profileHtml(prof) {
   if (!prof?.length) return '<p class="fine">Kein Windprofil verfügbar (Höhenmodell fehlt).</p>';
@@ -2239,7 +2251,24 @@ function fold(key, title, sum, body, o = {}) {
 }
 document.addEventListener('toggle', e => { const d = e.target; if (d.dataset?.fold) FOLD.set(d.dataset.fold, d.open); }, true);
 // weiches Aufklappen nur nach einem Tipp, nicht bei jedem Neuzeichnen
-document.addEventListener('click', e => { const d = e.target.closest?.('details.fold > summary')?.parentElement; if (d) d.classList.toggle('fold-anim', !d.open); });
+document.addEventListener('click', e => {
+  const d = e.target.closest?.('details > summary')?.parentElement;
+  if (!d || e.defaultPrevented || e.target.closest('a, button, input, select, textarea, label')) return;
+  const opening = !d.open || !!d._closing;
+  d.classList.toggle('fold-anim', opening && d.classList.contains('fold'));
+  if (noMotion() || typeof d.animate !== 'function') return;          // dann klappt der Browser wie gewohnt
+  // Die Höhe gleitet statt zu springen, auf und zu; ein zweiter Tipp unterwegs kehrt einfach um.
+  e.preventDefault();
+  const from = d.offsetHeight;
+  d._fa?.cancel();
+  let to;
+  if (opening) { d.open = true; to = d.offsetHeight; }
+  else { d.open = false; to = d.offsetHeight; d.open = true; }
+  d._closing = !opening; d.style.overflow = 'hidden';
+  const a = d._fa = d.animate({ height: [from + 'px', to + 'px'] }, { duration: Math.min(360, 200 + Math.abs(to - from) * .25), easing: 'cubic-bezier(.2,.7,.2,1)' });
+  const end = fin => { if (d._fa !== a) return; d._fa = null; d._closing = false; d.style.overflow = ''; if (fin && !opening) d.open = false; };
+  a.onfinish = () => end(true); a.oncancel = () => end(false);
+});
 
 /* ---- Flugtag-Wächter: «Heute fliege ich hier» (lib/watch.js) */
 const WT = { list: [], devices: 0, to: 20 };
@@ -2266,7 +2295,7 @@ async function toggleWatch(id) {
     toast(!on ? 'Wächter beendet' : j.devices ? 'Wächter aktiv. AFC meldet sich, wenn es kippt.' : 'Wächter aktiv, aber noch kein Gerät für Benachrichtigungen angemeldet (Profil › Benachrichtigungen).');
     if (S.detailData?.site?.id === id) renderSite();
     if (S.tab === 'decide') renderDecide();
-  } catch (err) { toast('Nicht geklappt: ' + err.message); }
+  } catch (err) { toast('Nicht geklappt: ' + errTxt(err)); }
 }
 /* ---- Webcams je Startplatz: Windfinder listet alle Webcams im Umkreis mit Entfernung und letzter Aufnahme */
 const WF = slug => 'https://www.windfinder.com/webcams/' + slug;
@@ -2306,7 +2335,7 @@ async function fillCam(s) {
   } catch { /* Link bleibt */ }
 }
 async function camSet(id) {
-  const d = await lbLoad().catch(err => { toast(err.message); return null; });
+  const d = await lbLoad().catch(err => { toast(errTxt(err)); return null; });
   if (!d) return;
   const cur = d.settings.cams?.[id] || '';
   const v = prompt('Adresse deiner Webcam (beginnt mit https://). Am besten die Adresse des Bildes: im Browser lange auf das Webcam-Bild drücken und «Bildadresse kopieren» wählen. Dann zeigt AFC das Bild direkt an. Leer lassen zum Entfernen.', cur);
@@ -2314,7 +2343,7 @@ async function camSet(id) {
   const cams = { ...(d.settings.cams || {}) };
   if (v.trim()) { const u = LG().httpsUrl(v); if (!u) { toast('Bitte eine Adresse mit https:// eingeben.'); return; } cams[id] = u; } else delete cams[id];
   try { await lbSave('settings', { ...d.settings, cams }); toast(v.trim() ? 'Webcam gespeichert' : 'Webcam entfernt'); if (S.detailData?.site?.id === id) renderSite(); }
-  catch (err) { toast('Nicht gespeichert: ' + err.message); }
+  catch (err) { toast('Nicht gespeichert: ' + errTxt(err)); }
 }
 function renderSite(fresh = false) {
   const d = S.detailData, day = d.days[S.day];
@@ -2417,7 +2446,7 @@ function reportForm(id) {
       if (!r.ok) throw new Error(j.error || `Fehler ${r.status}`);
       const log = store.get('log', []); log.push({ siteId: id, name: s.name, launchTime: body.launchTime, launched: body.launched, quality: body.quality, afcScore: body.afcScore, note: body.note }); store.set('log', log.slice(-200));
       closeDlg($('#msgDlg')); toast('Danke, Flug gemeldet');
-    } catch (err) { $('#repErr').textContent = 'Nicht gemeldet: ' + err.message; }
+    } catch (err) { $('#repErr').textContent = 'Nicht gemeldet: ' + errTxt(err); }
   });
 }
 
@@ -2462,7 +2491,7 @@ async function setRadar(on) {
       if (!RAD.layer) RAD.layer = L.tileLayer(radarUrl(ts), { opacity: 0.65, maxNativeZoom: 7, maxZoom: 18, zIndex: 450, attribution: 'Radar <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>' }).addTo(M.map);
       else RAD.layer.setUrl(radarUrl(ts));
       chip.textContent = `Regenradar ${timeOf(new Date(ts * 1000).toISOString())} Uhr`; chip.hidden = false;
-    } catch (e) { chip.textContent = 'Regenradar: ' + e.message; chip.hidden = false; }
+    } catch (e) { chip.textContent = 'Regenradar: ' + errTxt(e); chip.hidden = false; }
   };
   await draw(false);
   RAD.timer = setInterval(() => { if (S.tab === 'map') draw(true); }, 10 * 60000);
@@ -2530,7 +2559,7 @@ async function fillRadarNear(s) {
   try {
     const v = await radarNear(s.lat, s.lon), d = v.now ? Math.max(1, Math.round(v.now.d)) : null, html = radarNearHtml(v);
     st = { id: s.id, at: Date.now(), html, lvl: /rad-near warn/.test(html) ? 'warn' : '', sum: d == null ? `kein Regen im Umkreis von ${v.radiusKm} km` : d <= 2 ? 'Regen hier' : `Regen ${d} km ${DIR8_ADJ[Math.round(v.now.deg / 45) % 8]}` };
-  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Regenradar nicht verfügbar', html: `<p class="fine" style="margin:0">Regenradar nicht verfügbar (${esc(e.message)}).</p>` }; }
+  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Regenradar nicht verfügbar', html: `<p class="fine" style="margin:0">Regenradar nicht verfügbar (${esc(errTxt(e))}).</p>` }; }
   NEAR.radar = st;
   if ($('#radarNear') === el) nearShow('radar', st);
 }
@@ -2647,7 +2676,7 @@ async function updateObst() {
     j = await r.json().catch(() => ({}));
     if (r.status === 202) { say('Kabel und Hindernisse werden geladen …'); setTimeout(() => { if (n === OB.n) { OB.key = ''; updateObst(); } }, 8000); return; }
     if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
-  } catch (e) { if (n === OB.n) say('Kabel und Hindernisse nicht verfügbar: ' + e.message); return; }
+  } catch (e) { if (n === OB.n) say('Kabel und Hindernisse nicht verfügbar: ' + errTxt(e)); return; }
   if (n !== OB.n || !obstOn()) return;
   OB.at = j.at; OB.key = key;
   if (!M.map.getPane('obst')) { const pn = M.map.createPane('obst'); pn.style.zIndex = 440; }
@@ -2698,7 +2727,7 @@ async function fillObstNear(s) {
       ${ka ? `<p class="volte-warn" style="margin:6px 0">${ka === 1 ? 'Ein Kabel' : ka + ' Kabel oder Seilbahnen'} in der Nähe: Lage vor dem Start auf der Karte anschauen.</p>` : ''}
       <p class="fine" style="margin:4px 0">${OB_NOTE}</p>
       <button class="btn sec" type="button" data-act="obstmap" data-id="${esc(s.id)}">Kabel auf der Karte zeigen</button>` };
-  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Hindernisdaten nicht verfügbar', html: `<p class="fine" style="margin:0">Hindernisdaten nicht verfügbar (${esc(e.message)}).</p>` }; }
+  } catch (e) { st = { id: s.id, at: 0, lvl: '', sum: 'Hindernisdaten nicht verfügbar', html: `<p class="fine" style="margin:0">Hindernisdaten nicht verfügbar (${esc(errTxt(e))}).</p>` }; }
   NEAR.obst = st;
   if ($('#obstNear') === el) nearShow('obst', st);
 }
@@ -2957,7 +2986,7 @@ async function updateWind() {
       d = await r.json();
       W.cache.set(key, d);
       if (W.cache.size > 60) W.cache.delete(W.cache.keys().next().value);
-    } catch (err) { if (req === W.req) { mapMsg('Windkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } return; }
+    } catch (err) { if (req === W.req) { mapMsg('Windkarte: ' + errTxt(err)); setTimeout(() => mapMsg(''), 6000); } return; }
   }
   if (req !== W.req || W.level === 'off') return;
   if (!W.layer) W.layer = new WindLayer().addTo(M.map);
@@ -3377,7 +3406,7 @@ async function computeRoute() {
     if (req !== RT.req) return;
     RT.res = res; mapMsg(''); drawRoute(); mapSheet('route'); syncWindBar();
     if (res.ok) M.map.fitBounds(L.latLngBounds(res.path), { paddingTopLeft: [40, 40], paddingBottomRight: [40, Math.min(360, $('#mapSheet').offsetHeight + 40)] });
-  } catch (err) { if (req === RT.req) { mapMsg('Route: ' + err.message); setTimeout(() => mapMsg(''), 7000); } }
+  } catch (err) { if (req === RT.req) { mapMsg('Route: ' + errTxt(err)); setTimeout(() => mapMsg(''), 7000); } }
 }
 const ISSUE_COL = { weak: '#d97706', low: '#dc2626', head: '#7c3aed', land: '#b45309', air: '#c2185b' };
 function drawRoute() {
@@ -3427,7 +3456,7 @@ async function updateThermal() {
   if (!T.modes.size) { thermalLayers(null); T.data = null; sunArc(null); return; }
   if (FILM.playing) {
     try { thermalLayers(await thermalGrid()); if (await filmPrepare()) filmDraw(); }
-    catch (err) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); }
+    catch (err) { mapMsg('Thermikkarte: ' + errTxt(err)); setTimeout(() => mapMsg(''), 6000); }
     return;
   }
   const iso = windTimeIso(), req = ++T.req;
@@ -3445,7 +3474,7 @@ async function updateThermal() {
       T.layers[mode]?.blend(d.img[mode]);
     }
     sunArc(d.sunPos);
-  } catch (err) { if (req === T.req) { mapMsg('Thermikkarte: ' + err.message); setTimeout(() => mapMsg(''), 6000); } }
+  } catch (err) { if (req === T.req) { mapMsg('Thermikkarte: ' + errTxt(err)); setTimeout(() => mapMsg(''), 6000); } }
 }
 
 /* ---- Tagesfilm: der ganze Tag läuft auf der Karte ab. Wind, Sonne und Schatten, Thermik, Soaring und Lee
@@ -3559,7 +3588,7 @@ async function filmStart() {
     if (tok !== FILM.tok) return;
     cancelAnimationFrame(FILM.raf); FILM.raf = 0;
     FILM.playing = false; FILM.busy = false; FILM.req++;
-    mapMsg('Tagesfilm: ' + err.message); setTimeout(() => { if (/^Tagesfilm: /.test($('#mapMsg').textContent)) mapMsg(''); }, 6000);
+    mapMsg('Tagesfilm: ' + errTxt(err)); setTimeout(() => { if (/^Tagesfilm: /.test($('#mapMsg').textContent)) mapMsg(''); }, 6000);
     syncWindBar(); updateWind(); updateThermal();
   } finally { FILM.starting = false; }
 }
@@ -3638,8 +3667,10 @@ function setTab(t) {
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
   if (t === 'profile') loadStatus();
   if (t === 'group') groupLoad().catch(() => {});
-  window.scrollTo({ top: 0 });
+  window.scrollTo({ top: 0, behavior: was === t && !noMotion() ? 'smooth' : 'auto' });   // gleicher Reiter nochmals: weich nach oben
 }
+// Der Kopf hebt sich mit einem feinen Schatten ab, sobald Inhalt darunter durchläuft
+{ let q = 0; const f = () => { q = 0; $('.top')?.classList.toggle('scrolled', window.scrollY > 6); }; window.addEventListener('scroll', () => { if (!q) q = requestAnimationFrame(f); }, { passive: true }); }
 // «Für Profis» merkt sich, ob es offen war
 document.addEventListener('toggle', e => { if (e.target.classList?.contains('pro-more')) store.set(e.target.dataset.k || 'proOpen', e.target.open); else if (e.target.dataset?.fold === 'pro') store.set('proOpen', e.target.open); else if (e.target.dataset?.fold === 'lagepro') store.set('lageOpen', e.target.open); }, true);
 document.addEventListener('click', async e => {
@@ -3667,23 +3698,23 @@ document.addEventListener('click', async e => {
     case 'invgroup': groupInviteCreate(); break;
     case 'admin': openAdmin(); break;
     case 'bakkey': backupKey(); break;
-    case 'bakkeydel': if (await ask({ title: 'Mac-Sicherung beenden?', text: 'Der Mac kann danach nichts mehr abholen, bis du einen neuen Schlüssel erstellst.', ok: 'Beenden', danger: true })) { try { await jsonPost('/api/admin/backup/key', undefined, 'DELETE'); await openAdmin('bak'); } catch (e) { toast(e.message); } } break;
+    case 'bakkeydel': if (await ask({ title: 'Mac-Sicherung beenden?', text: 'Der Mac kann danach nichts mehr abholen, bis du einen neuen Schlüssel erstellst.', ok: 'Beenden', danger: true })) { try { await jsonPost('/api/admin/backup/key', undefined, 'DELETE'); await openAdmin('bak'); } catch (e) { toast(errTxt(e)); } } break;
     case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); $('#siteDlg .adm-tabs [aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }); break;
-    case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(err.message); } break;
+    case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(errTxt(err)); } break;
     case 'admdel': {
       if (!(await ask({ title: `${b.dataset.v} entfernen?`, text: 'Konto, Flugbuch, Profil und Rückmeldungen werden gelöscht (vorher legt AFC eine Sicherung an).', ok: 'Entfernen', danger: true }))) break;
-      try { await jsonPost('/api/admin/user/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast('Entfernt'); } catch (err) { toast(err.message); }
+      try { await jsonPost('/api/admin/user/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast('Entfernt'); } catch (err) { toast(errTxt(err)); }
       break;
     }
-    case 'admsurvey': try { await jsonPost('/api/admin/survey', { on: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast(b.dataset.v === '1' ? 'Umfrage eingeschaltet' : 'Umfrage ausgeschaltet'); } catch (err) { toast(err.message); } break;
-    case 'admdone': try { await jsonPost('/api/admin/feedback/' + id, { done: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
-    case 'admshot': try { const j = await rawFetch(`/api/admin/feedback/${id}/shot`).then(r => r.json()); if (j.shot) dlg('#msgDlg', `<div class="dlg-in"><img src="${esc(j.shot)}" alt="Bildschirmfoto" style="max-width:100%;border-radius:8px"><div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Schliessen</button></div></div>`); } catch (err) { toast(err.message); } break;
-    case 'admerrclear': try { await jsonPost('/api/admin/errors', undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
+    case 'admsurvey': try { await jsonPost('/api/admin/survey', { on: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); toast(b.dataset.v === '1' ? 'Umfrage eingeschaltet' : 'Umfrage ausgeschaltet'); } catch (err) { toast(errTxt(err)); } break;
+    case 'admdone': try { await jsonPost('/api/admin/feedback/' + id, { done: b.dataset.v === '1' }, 'PUT'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(errTxt(err)); } break;
+    case 'admshot': try { const j = await rawFetch(`/api/admin/feedback/${id}/shot`).then(r => r.json()); if (j.shot) dlg('#msgDlg', `<div class="dlg-in"><img src="${esc(j.shot)}" alt="Bildschirmfoto" style="max-width:100%;border-radius:8px"><div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Schliessen</button></div></div>`); } catch (err) { toast(errTxt(err)); } break;
+    case 'admerrclear': try { await jsonPost('/api/admin/errors', undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(errTxt(err)); } break;
     case 'invshow': { const i = ADM.data?.invites?.find(x => x.code === id); inviteShow(id, b.dataset.v, i?.note || '', i?.max || 0, i?.expires || ''); break; }
-    case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(err.message); } break;
+    case 'invdel': try { await jsonPost('/api/admin/invite/' + id, undefined, 'DELETE'); await adminLoad(); dlg('#siteDlg', adminHtml()); } catch (err) { toast(errTxt(err)); } break;
     case 'invshare': navigator.share?.({ title: 'AFC-Testphase', text: ADM.share.text }).catch(() => {}); break;
     case 'invcopy': try { await navigator.clipboard.writeText(ADM.share.text); toast(ADM.share.toast || 'Kopiert. Jetzt in WhatsApp einfügen.'); } catch { prompt('Kopieren:', ADM.share.text); } break;
-    case 'day': goDay(Number(b.dataset.i)); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0 }); break;
+    case 'day': goDay(Number(b.dataset.i)); if (b.classList.contains('hl-next')) window.scrollTo({ top: 0, behavior: noMotion() ? 'auto' : 'smooth' }); break;
     case 'reload': loadPlan(true); break;
     case 'sources': setTab('profile'); setTimeout(() => $$('#v-profile .panel h3').find(h => h.textContent === 'Datenquellen')?.scrollIntoView({ behavior: 'smooth' }), 80); break;
     case 'toggle': S.open.has(id) ? S.open.delete(id) : S.open.add(id); store.set('open', [...S.open]); S.justOpen = S.open.has(id) ? id : null; renderDecide(); S.justOpen = null; break;
@@ -3746,7 +3777,7 @@ document.addEventListener('click', async e => {
     case 'recap': recapOpen(); break;
     case 'recapyear': if (!BR.rec && BR.data?.recap && b.dataset.v !== BR.data.st.year) recapLoad(b.dataset.v); break;
     case 'site3d': open3dSite(id); break;
-    case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(err.message)); break;
+    case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(errTxt(err))); break;
     case 'v3dclose': tiltClose(); break;
     case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
@@ -3774,14 +3805,14 @@ document.addEventListener('click', async e => {
     case 'film': FILM.playing || FILM.busy || FILM.starting ? filmStop() : filmStart(); break;
     case 'tab': if (dlgEl) closeDlg(dlgEl); setTab(b.dataset.tab); break;
     case 'grpday': G.date = b.dataset.v || null; G.data = null; renderGroup(); break;
-    case 'grplike': try { groupSet(await jsonPost(`/api/community/${id}/like${G.date ? '?date=' + G.date : ''}`)); } catch (err) { toast(err.message); } break;
-    case 'grpdel': if (await ask({ title: 'Beitrag löschen?', text: 'Antworten darauf werden auch gelöscht.', ok: 'Löschen', danger: true })) { try { groupSet(await jsonPost(`/api/community/${id}${G.date ? '?date=' + G.date : ''}`, undefined, 'DELETE')); } catch (err) { toast(err.message); } } break;
-    case 'grpshare': try { await jsonPost('/api/me', { prefs: { shareName: b.checked } }, 'PUT'); await groupLoad(); toast(b.checked ? 'Dein Name erscheint bei deinen Flügen' : 'Deine Flüge zählen ohne Namen'); } catch (err) { toast(err.message); } break;
+    case 'grplike': try { groupSet(await jsonPost(`/api/community/${id}/like${G.date ? '?date=' + G.date : ''}`)); } catch (err) { toast(errTxt(err)); } break;
+    case 'grpdel': if (await ask({ title: 'Beitrag löschen?', text: 'Antworten darauf werden auch gelöscht.', ok: 'Löschen', danger: true })) { try { groupSet(await jsonPost(`/api/community/${id}${G.date ? '?date=' + G.date : ''}`, undefined, 'DELETE')); } catch (err) { toast(errTxt(err)); } } break;
+    case 'grpshare': try { await jsonPost('/api/me', { prefs: { shareName: b.checked } }, 'PUT'); await groupLoad(); toast(b.checked ? 'Dein Name erscheint bei deinen Flügen' : 'Deine Flüge zählen ohne Namen'); } catch (err) { toast(errTxt(err)); } break;
     case 'barfold': store.set('barFold', !$('#windBar').classList.contains('folded')); syncWindBar(); break;
     case 'route': routeStart(); break;
     case 'intro': showIntro(); break;
-    case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(err.message)); break;
-    case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(err.message)); break;
+    case 'lbflight': lbLoad().then(() => flightForm(id)).catch(err => toast(errTxt(err))); break;
+    case 'lbgear': lbLoad().then(() => gearForm(id)).catch(err => toast(errTxt(err))); break;
     case 'lbyear': LB.year = b.dataset.v; LB.all = false; renderBook(); break;
     case 'lball': LB.all = true; renderBook(); break;
     case 'fb': {
@@ -3792,7 +3823,7 @@ document.addEventListener('click', async e => {
         const fb = LG().siteFeedback(LB.data.flights)[f.siteId];
         toast(b.dataset.v === 'richtig' ? 'Danke! Gut zu wissen.' : fb?.adj ? `Danke! AFC passt die Bewertung für ${f.siteName} an (${fb.adj > 0 ? '+' : ''}${fb.adj}).` : `Danke! Ab ${LG().FEEDBACK_MIN_N} Rückmeldungen passt AFC die Bewertung für ${f.siteName} an.`);
         rerender(); if (b.dataset.v !== 'richtig') loadPlan();
-      } catch (err) { toast('Nicht gespeichert: ' + err.message); }
+      } catch (err) { toast('Nicht gespeichert: ' + errTxt(err)); }
       break;
     }
     case 'camset': camSet(id); break;
@@ -3806,7 +3837,7 @@ document.addEventListener('click', async e => {
     case 'fbskip': store.set('fbSkip', [...store.get('fbSkip', []), id].slice(-50)); rerender(); break;
     case 'lbcsv': lbExport('csv'); break;
     case 'lbjson': lbExport('json'); break;
-    case 'lbprint': lbLoad().then(lbPrint).catch(err => toast(err.message)); break;
+    case 'lbprint': lbLoad().then(lbPrint).catch(err => toast(errTxt(err))); break;
     case 'lbbackup': {
       try {
         const r = await lbFetch('/api/logbook/backup', { method: 'POST' });
@@ -3814,14 +3845,14 @@ document.addEventListener('click', async e => {
         if (!r.ok) throw new Error(j.error || 'Fehler ' + r.status);
         LB.data.backup = j.backup; renderBook();
         toast(!j.backup.at ? 'Das Flugbuch ist noch leer' : j.backup.cloudError ? 'Auf dem Mac gesichert, iCloud hat nicht geklappt' : 'Flugbuch gesichert');
-      } catch (err) { toast('Sicherung fehlgeschlagen: ' + err.message); }
+      } catch (err) { toast('Sicherung fehlgeschlagen: ' + errTxt(err)); }
       break;
     }
     case 'lbcopyflight': { const fid = b.closest('form')?.dataset.id; if (fid) flightForm(null, fid); break; }
     case 'lbdelflight': case 'lbdelgear': {
       const fid = b.closest('form')?.dataset.id, kind = a === 'lbdelflight' ? 'flight' : 'gear';
       if (!fid || !(await ask({ title: kind === 'flight' ? 'Flug löschen?' : 'Ausrüstung löschen?', text: kind === 'flight' ? 'Der Flug wird aus dem Flugbuch entfernt.' : 'Flüge mit diesem Teil bleiben erhalten. Tipp: «Ausgemustert» behält die Stunden.', ok: 'Löschen', danger: true }))) break;
-      try { await lbDelete(kind, fid); toast('Gelöscht'); renderBook(); } catch (err) { toast('Nicht gelöscht: ' + err.message); }
+      try { await lbDelete(kind, fid); toast('Gelöscht'); renderBook(); } catch (err) { toast('Nicht gelöscht: ' + errTxt(err)); }
       break;
     }
     case 'airtoggle': { const on = !(airOn('air') || airOn('wild')); store.set('ov', { ...store.get('ov', {}), air: on, wild: on }); syncLayerPanel(); updateAir(); if (on) { mapMsg('Lufträume: rot gesperrt, orange Gefahrengebiet, grün Wildschutz. Antippen für Details.'); setTimeout(() => mapMsg(''), 5000); } else $('#mapSheet').hidden = true; break; }
@@ -3836,7 +3867,7 @@ document.addEventListener('click', async e => {
     case 'btrun': {
       b.disabled = true;
       try { const r = await fetch('/api/backtest', { method: 'POST', headers: { 'X-AFC-Client': clientId } }); const j = await r.json(); if (!r.ok) throw new Error(j.error); if (ST.data) ST.data.backtest = j; toast('Rückblick-Test läuft, dauert einige Minuten'); }
-      catch (err) { toast('Nicht gestartet: ' + err.message); }
+      catch (err) { toast('Nicht gestartet: ' + errTxt(err)); }
       refreshStatus();
       setTimeout(loadStatus, 180000);
       break;
@@ -3851,7 +3882,7 @@ document.addEventListener('click', async e => {
         const j = await r.json();
         const blob = new Blob([JSON.stringify({ server: j, lokal: { flugbuch: store.get('log', []), favoriten: [...S.fav] } }, null, 2)], { type: 'application/json' });
         const a2 = document.createElement('a'); a2.href = URL.createObjectURL(blob); a2.download = 'afc-meine-daten.json'; a2.click(); setTimeout(() => URL.revokeObjectURL(a2.href), 2000);
-      } catch (err) { toast('Export fehlgeschlagen: ' + err.message); }
+      } catch (err) { toast('Export fehlgeschlagen: ' + errTxt(err)); }
       break;
     }
     case 'wipe': {
@@ -3860,7 +3891,7 @@ document.addEventListener('click', async e => {
         const r = await fetch('/api/privacy/delete', { method: 'DELETE', headers: { 'X-AFC-Client': clientId } });
         if (!r.ok) throw new Error('Fehler ' + r.status);
         store.del('log'); toast('Daten gelöscht'); renderProfile();
-      } catch (err) { toast('Löschen fehlgeschlagen: ' + err.message); }
+      } catch (err) { toast('Löschen fehlgeschlagen: ' + errTxt(err)); }
       break;
     }
     default: break;
@@ -3877,13 +3908,13 @@ document.addEventListener('submit', e => {
   if (fid === 'surveyForm') sendSurvey(e.target);
   if (fid === 'pwForm') {
     const f = Object.fromEntries(new FormData(e.target)), err = e.target.querySelector('.gate-err');
-    jsonPost('/api/me/password', f).then(() => { closeDlg($('#msgDlg')); toast('Passwort geändert'); }).catch(x => { err.textContent = x.message; });
+    jsonPost('/api/me/password', f).then(() => { closeDlg($('#msgDlg')); toast('Passwort geändert'); }).catch(x => { err.textContent = errTxt(x); });
   }
   if (e.target.id === 'pilotForm') { e.preventDefault(); savePilot(e.target); }
   if (e.target.id === 'lbSettings') {
     e.preventDefault();
     const x = Object.fromEntries(new FormData(e.target));
-    lbSave('settings', { ...LB.data.settings, flightsBefore: x.flightsBefore, hoursBefore: x.hoursBefore }).then(() => { toast('Gespeichert'); renderBook(); }).catch(err => toast(err.message));
+    lbSave('settings', { ...LB.data.settings, flightsBefore: x.flightsBefore, hoursBefore: x.hoursBefore }).then(() => { toast('Gespeichert'); renderBook(); }).catch(err => toast(errTxt(err)));
   }
 });
 document.addEventListener('change', e => {
@@ -4050,7 +4081,7 @@ async function gateSubmit(form) {
     if (mode === 'login' || mode === 'register') for (const k of PERSONAL) store.del(k);   // Gerät könnte vorher jemand anderem gehört haben
     store.set('welcome', mode);
     location.replace(mode === 'register' || mode === 'setup' ? '/?tab=profile' : '/');
-  } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = { login: 'Anmelden', register: 'Konto erstellen', reset: 'Passwort speichern', setup: 'Konto erstellen' }[mode]; }
+  } catch (e) { err.textContent = errTxt(e); btn.disabled = false; btn.textContent = { login: 'Anmelden', register: 'Konto erstellen', reset: 'Passwort speichern', setup: 'Konto erstellen' }[mode]; }
 }
 async function logout() {
   if (!(await ask({ title: 'Abmelden?', text: 'Auf diesem Gerät abmelden. Dein Flugbuch und dein Profil bleiben auf dem Mac gespeichert.', ok: 'Abmelden' }))) return;
@@ -4204,7 +4235,7 @@ async function saveProfile(form) {
     setMe(j); closeDlg($('#msgDlg')); toast(pl ? `Profil gespeichert, Stufe «${LEVEL_INFO[pl.level][0]}»` : 'Profil gespeichert'); S.detail.clear();
     lbAlignBefore().catch(() => {});
     render(); if (lvChanged) loadPlan();
-  } catch (e) { err.textContent = 'Nicht gespeichert: ' + e.message; }
+  } catch (e) { err.textContent = 'Nicht gespeichert: ' + errTxt(e); }
 }
 /** Profilbild: auf dem Gerät quadratisch zuschneiden und verkleinern (320 px JPEG), dann hochladen. */
 async function setPhoto(file) {
@@ -4219,7 +4250,7 @@ async function setPhoto(file) {
     URL.revokeObjectURL(url);
     const j = await jsonPost('/api/me/photo', { photo: c.toDataURL('image/jpeg', 0.86) }, 'PUT');
     setMe(j); toast('Profilbild gespeichert'); if (S.tab === 'profile') renderProfile();
-  } catch (e) { toast('Bild nicht gespeichert: ' + e.message); }
+  } catch (e) { toast('Bild nicht gespeichert: ' + errTxt(e)); }
 }
 async function photoMenu() {
   if (!ME.user?.photo) { $('#photoIn')?.click(); return; }
@@ -4228,7 +4259,7 @@ async function photoMenu() {
     d.onclick = e => { const b = e.target.closest('[data-r]'); if (b) { d.onclick = null; closeDlg(d); res(b.dataset.r); } };
   });
   if (r === 'new') $('#photoIn')?.click();
-  if (r === 'del') { try { setMe(await jsonPost('/api/me/photo', undefined, 'DELETE')); renderProfile(); toast('Bild entfernt'); } catch (e) { toast(e.message); } }
+  if (r === 'del') { try { setMe(await jsonPost('/api/me/photo', undefined, 'DELETE')); renderProfile(); toast('Bild entfernt'); } catch (e) { toast(errTxt(e)); } }
 }
 function accountPanel() {
   if (!ME.user) return '';
@@ -4250,7 +4281,7 @@ async function deleteAccount() {
   const pw = prompt('Zur Sicherheit: dein Passwort');
   if (!pw) return;
   try { await jsonPost('/api/me', { password: pw }, 'DELETE'); for (const k of PERSONAL) store.del(k); alert('Dein Konto ist gelöscht. Danke fürs Testen!'); location.replace('/'); }
-  catch (e) { toast(e.message); }
+  catch (e) { toast(errTxt(e)); }
 }
 
 /* ---- Testphase: Rückmeldungen, «heute nicht gestartet», Umfrage */
@@ -4289,7 +4320,7 @@ async function sendFeedback(form) {
     const shot = f && f.size ? await shrinkImage(f).catch(() => null) : null;
     await jsonPost('/api/feedback', { kind: fd.get('kind'), text, page: S.tab, site: form.dataset.site || null, ver: APP_VER, device: navigator.userAgent.slice(0, 160), shot });
     closeDlg($('#msgDlg')); toast('Danke! Lars hat deine Rückmeldung.');
-  } catch (e) { err.textContent = 'Nicht gesendet: ' + e.message; btn.disabled = false; btn.textContent = 'Senden'; }
+  } catch (e) { err.textContent = 'Nicht gesendet: ' + errTxt(e); btn.disabled = false; btn.textContent = 'Senden'; }
 }
 const NOFLY = { wind: 'Zu viel Wind oder Böen', thermal: 'Thermik zu stark', weak: 'Zu schwach, nicht lohnend', cloud: 'Wolken oder Nebel am Start', rain: 'Regen oder Gewitter', foehn: 'Föhn oder Bise', time: 'Keine Zeit', feeling: 'Bauchgefühl', other: 'Anderes' };
 function noflyForm(siteId) {
@@ -4465,7 +4496,7 @@ async function open3dSite(id) {
     v3dCam(V3.home, 2600);
     sc.onFrame = v3dSiteFrame;
     v3dSiteMarkers(); v3dApply(); v3dCables();
-  } catch (e) { if (tok === V3.tok) v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + e.message); }
+  } catch (e) { if (tok === V3.tok) v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + errTxt(e)); }
 }
 /** Bewertung der Stunde aus den Details (wenn geladen), sonst der Score aus dem Plan. */
 function v3dHourData() {
@@ -4503,7 +4534,7 @@ async function v3dApply() {
   const sc = V3.scene, tok = V3.tok, reg = V3.mode === 'region', s = reg ? V3.reg : V3.site, iso = filmIso(S.plan.dates[S.day], V3.hour);
   if (!sc || (V3.mode !== 'site' && !reg)) return;
   let d = null, err = '';
-  try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + e.message + ').'; }
+  try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + errTxt(e) + ').'; }
   if (tok !== V3.tok || V3.scene !== sc) return;
   V3.d = d;
   if (!V3.playing) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
@@ -4721,7 +4752,7 @@ async function v3dPlay(on) {
   }
   const tok = V3.tok;
   btn.classList.add('busy');
-  try { await filmLoad(); } catch (e) { if (tok === V3.tok) { btn.classList.remove('busy'); toast('Tag abspielen: ' + e.message); } return; }
+  try { await filmLoad(); } catch (e) { if (tok === V3.tok) { btn.classList.remove('busy'); toast('Tag abspielen: ' + errTxt(e)); } return; }
   if (tok !== V3.tok) return;
   // Bilder der gewählten Ebene für alle Stunden vorab rechnen, damit der Tag ohne Ruckeln läuft
   if (V3.layer && FILM.frames) {
@@ -4773,7 +4804,7 @@ async function open3dRegion() {
     sc.onUser = () => { if (!V3.tour) return; V3.tour = false; $('#v3dBar [data-act="v3dtour"]')?.setAttribute('aria-pressed', 'false'); };
     await v3dApply();
     if (tok === V3.tok && !noMotion()) v3dPlay(true);
-  } catch (e) { if (tok === V3.tok) v3dFail('Der Tagesfilm konnte nicht aufgebaut werden: ' + e.message); }
+  } catch (e) { if (tok === V3.tok) v3dFail('Der Tagesfilm konnte nicht aufgebaut werden: ' + errTxt(e)); }
 }
 /* ---- Karte kippt in 3D: derselbe Ort, derselbe Ausschnitt. Die Karte neigt sich, das Gelände übernimmt aus demselben
    Blickwinkel und dreht dann weich in die Schrägsicht; beim Schliessen geht es denselben Weg zurück. */
@@ -4824,7 +4855,7 @@ async function open3dMap() {
     if (tok !== V3.tok) return;
     show();
     v3dCam(V3.home, 1900);
-  } catch (e) { if (tok === V3.tok) { show(); v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + e.message); } }
+  } catch (e) { if (tok === V3.tok) { show(); v3dFail('Die 3D-Ansicht konnte nicht aufgebaut werden: ' + errTxt(e)); } }
 }
 /** Zurück zur Karte: Kamera dreht in den Blick der geneigten Karte, 3D blendet aus, die Karte richtet sich auf. */
 function tiltClose() {
@@ -5006,7 +5037,7 @@ async function open3dFlight(id, keep = null) {
     sc.onFrame = v3dFlightFrame; sc.onUser = () => {};
     v3dFlightPose();
     if (!noMotion() && !keep) setTimeout(() => { if (tok === V3.tok && V3.fl === F && !F.playing && F.now === F.tA) v3dFlightPlay(true); }, 1400);
-  } catch (e) { if (tok === V3.tok) v3dFail('Der Flug konnte nicht in 3D gezeigt werden: ' + e.message); }
+  } catch (e) { if (tok === V3.tok) v3dFail('Der Flug konnte nicht in 3D gezeigt werden: ' + errTxt(e)); }
 }
 /* ---- Pilotensicht: die Kamera sitzt im Gurtzeug. Ort und Blickrichtung sind geglättet, damit beim Kreisen nichts schwindlig macht. */
 /** Weicher Schnitt statt eines Sprungs: Bild kurz abblenden, umstellen, aufblenden. */
@@ -5200,7 +5231,7 @@ async function briefLoad(k) {
     BR.scene = sc;
     $('#v3dLoad').hidden = true;
     if (noMotion()) { BR.t = 13; briefDraw(0); briefSync(); } else briefPlay(true);
-  } catch (e) { if (tok === BR.tok) v3dFail('Das Briefing konnte nicht geladen werden: ' + e.message); }
+  } catch (e) { if (tok === BR.tok) v3dFail('Das Briefing konnte nicht geladen werden: ' + errTxt(e)); }
 }
 function briefSync() {
   const b = $('#briefPlay'); if (b) b.setAttribute('aria-pressed', String(BR.playing));
@@ -5328,7 +5359,7 @@ function briefRecord() {
   const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } });
   if (!mime) { toast('Dieses Gerät kann hier kein Video aufnehmen.'); return; }
   let rec;
-  try { rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime, videoBitsPerSecond: 5000000 }); } catch (e) { toast('Die Aufnahme liess sich nicht starten: ' + e.message); return; }
+  try { rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime, videoBitsPerSecond: 5000000 }); } catch (e) { toast('Die Aufnahme liess sich nicht starten: ' + errTxt(e)); return; }
   const parts = [], D = BR.data, tok = BR.tok;
   rec.ondataavailable = e => { if (e.data?.size) parts.push(e.data); };
   rec.onstop = () => {
@@ -5347,7 +5378,7 @@ async function briefSend() {
   const f = BR.file, D = BR.data;
   if (!f || !D) return;
   if (navigator.canShare?.({ files: [f] })) {
-    try { await navigator.share({ files: [f], title: D.title || 'AFC Briefing ' + D.s.name, text: D.text || briefText(D) }); } catch (e) { if (e.name !== 'AbortError') toast('Teilen nicht möglich: ' + e.message); }
+    try { await navigator.share({ files: [f], title: D.title || 'AFC Briefing ' + D.s.name, text: D.text || briefText(D) }); } catch (e) { if (e.name !== 'AbortError') toast('Teilen nicht möglich: ' + errTxt(e)); }
     return;
   }
   const u = URL.createObjectURL(f), a = document.createElement('a');
@@ -5362,7 +5393,7 @@ async function briefShare() {
   try {
     groupSet(await jsonPost('/api/community', D.recap ? { kind: 'report', text: D.text } : { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
     toast('In der Gruppe geteilt'); btn.textContent = 'Geteilt ✓';
-  } catch (e) { btn.disabled = false; toast('Nicht geteilt: ' + e.message); }
+  } catch (e) { btn.disabled = false; toast('Nicht geteilt: ' + errTxt(e)); }
 }
 
 /* ------------------------------------------------------------------ Saison-Rückblick: das Flugjahr als kurzer Film (läuft im Rahmen des Briefings) */
@@ -5423,7 +5454,7 @@ async function recapLoad(y) {
     BR.scene = sc;
     $('#v3dLoad').hidden = true;
     if (noMotion()) { BR.t = 7.6; briefDraw(0); briefSync(); } else briefPlay(true);
-  } catch (e) { if (tok === BR.tok) v3dFail('Der Rückblick konnte nicht geladen werden: ' + e.message); }
+  } catch (e) { if (tok === BR.tok) v3dFail('Der Rückblick konnte nicht geladen werden: ' + errTxt(e)); }
 }
 /** Ein Bild des Rückblicks zum Zeitpunkt BR.t: Titel, Zahlen, Monate, Höhepunkte, Startplätze, Schluss. */
 function recapDraw(dt) {
@@ -5608,7 +5639,7 @@ function renderGroup() {
   if (!ME.user) { el.innerHTML = '<div class="panel"><h3>Austausch</h3><p>Der Austausch braucht ein Konto. Lars kann dich mit einem Einladungslink dazunehmen.</p></div>'; return; }
   if (!G.data) {
     el.innerHTML = '<div class="warm"><div class="spinner"></div>Austausch wird geladen …</div>';
-    if (!G.req) G.req = groupLoad().catch(err => { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }).finally(() => { G.req = null; });
+    if (!G.req) G.req = groupLoad().catch(err => { el.innerHTML = `<div class="empty">${esc(errTxt(err))}</div>`; }).finally(() => { G.req = null; });
     return;
   }
   const d = G.data, t = d.today, y = new Date(Date.parse(t) - 86400000).toISOString().slice(0, 10);
@@ -5633,7 +5664,7 @@ async function groupPost(form) {
   try {
     groupSet(await jsonPost('/api/community', { ...b, view: G.date || undefined }));
     if (!parent) { G.form = null; store.set('grpForm', null); toast('Geteilt'); }
-  } catch (e) { if (err) err.textContent = 'Nicht gesendet: ' + e.message; else toast('Nicht gesendet: ' + e.message); }
+  } catch (e) { if (err) err.textContent = 'Nicht gesendet: ' + errTxt(e); else toast('Nicht gesendet: ' + errTxt(e)); }
 }
 async function sendNofly(form) {
   const fd = new FormData(form), err = form.querySelector('.gate-err');
@@ -5643,7 +5674,7 @@ async function sendNofly(form) {
   try {
     await jsonPost('/api/feedback', { kind: 'nofly', reason: fd.get('reason'), text: String(fd.get('text') || '').trim(), site, score: num(score) ? score : s?.days[S.plan.dates.indexOf(todayKey())]?.best?.score ?? null, page: S.tab, ver: APP_VER });
     closeDlg($('#msgDlg')); toast('Danke! Das hilft AFC, solche Tage besser einzuschätzen.');
-  } catch (e) { err.textContent = 'Nicht gesendet: ' + e.message; }
+  } catch (e) { err.textContent = 'Nicht gesendet: ' + errTxt(e); }
 }
 const SURVEY = [
   ['use', 'Wie oft hast du AFC benutzt?', ['täglich', 'mehrmals pro Woche', 'ab und zu', 'kaum']],
@@ -5669,7 +5700,7 @@ async function sendSurvey(form) {
   for (const [k, , t] of SURVEY) { const v = fd.get(k); if (v != null && v !== '') answers[k] = typeof t === 'number' ? Number(v) : String(v); }
   if (Object.keys(answers).length < 3) { form.querySelector('.gate-err').textContent = 'Bitte mindestens drei Fragen beantworten.'; return; }
   try { await jsonPost('/api/feedback', { kind: 'survey', answers, ver: APP_VER }); ME.survey = false; closeDlg($('#msgDlg')); toast('Vielen Dank fürs Mitmachen!'); render(); }
-  catch (e) { form.querySelector('.gate-err').textContent = e.message; }
+  catch (e) { form.querySelector('.gate-err').textContent = errTxt(e); }
 }
 const surveyCard = () => (ME.survey ? `<div class="lb-ask survey-card"><div><b>Umfrage zum Testende</b> <span class="fine">Zwei Minuten, sieben Fragen. Damit wird AFC besser.</span></div><div class="lb-ask-btns"><button type="button" class="btn" data-act="survey">Jetzt ausfüllen</button></div></div>` : '');
 function dayAskHtml() {
@@ -5763,7 +5794,7 @@ async function openAdmin(tab) {
   if (tab) ADM.tab = tab;
   S.panel = 'admin';
   dlg('#siteDlg', adminHtml());
-  try { await adminLoad(); if (isOpen($('#siteDlg')) && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(e.message); }
+  try { await adminLoad(); if (isOpen($('#siteDlg')) && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(errTxt(e)); }
 }
 const inviteUrl = (code, kind) => `${location.origin}/?${kind === 'reset' ? 'reset' : 'invite'}=${code}`;
 function inviteShow(code, kind = 'invite', note = '', max = 0, expires = '') {
@@ -5793,7 +5824,7 @@ async function backupKey() {
       <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invcopy">Kopieren</button><button class="btn sec" type="button" data-act="closemsg">Fertig</button></div></div>`);
     ADM.share = { text, url: location.origin, toast: 'Kopiert. Jetzt im Mac-Fenster einfügen.' };
     adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); }).catch(() => {});
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(errTxt(e)); }
 }
 async function groupInviteCreate() {
   const n = prompt('Für wie viele Personen soll der Gruppenlink gelten? (2 bis 50)', '13');
@@ -5805,13 +5836,13 @@ async function groupInviteCreate() {
     const j = await jsonPost('/api/admin/invite', { kind: 'group', max, note: note.trim() });
     inviteShow(j.code, 'group', note.trim(), j.max, j.expires);
     adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {});
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(errTxt(e)); }
 }
 async function inviteCreate() {
   const note = prompt('Für wen ist die Einladung? (Vorname, nur für deine Übersicht)');
   if (note === null) return;
   try { const j = await jsonPost('/api/admin/invite', { note: note.trim() }); inviteShow(j.code, 'invite', note.trim()); adminLoad().then(() => { if (S.panel === 'admin' && isOpen($('#siteDlg'))) dlg('#siteDlg', adminHtml()); if (S.tab === 'profile') renderProfile(); }).catch(() => {}); }
-  catch (e) { toast(e.message); }
+  catch (e) { toast(errTxt(e)); }
 }
 
 /* ---------------------------------------------------------------- Start */

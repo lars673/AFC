@@ -1283,3 +1283,22 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .site-fb { padding: 4px 2px 8px; }
 .site-fb .ribbon { margin-top: 12px; }
 .gate-links { margin-top: 18px; text-align: center; }
+
+/* ---- 12.10 Fliessend: was beim Scrollen und beim Auf- und Zuklappen passiert, gleitet. Nur Deckkraft und Verschiebung
+   (das rechnet die Grafikkarte, auch auf älteren Handys), im Tempo der übrigen App, und aus bei «Bewegung reduzieren». */
+.top { transition: box-shadow var(--t2) var(--ease); }
+.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
+.toast.out { animation: toast-out .2s ease-in forwards; }
+@keyframes toast-out { to { opacity: 0; transform: translate(-50%, 8px); } }
+/* Zeilen und Karten tauchen beim Scrollen weich von unten auf. Der Stand hängt nur an der Scroll-Position:
+   kein Flackern beim Neuzeichnen, kein Skript. Browser ohne Scroll-Zeitachse zeigen alles wie bisher. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .card { overflow: clip; }   /* «hidden» wäre ein eigener Scroll-Bereich: die Zeilen darin würden die Seite nicht mehr sehen */
+    .view:not(.live):not(#v-map) > .panel, .view:not(.live) .alist > .arow, .view:not(.live) .cards .srow, .view:not(.live) .lb-row, .view:not(.live) .grp-post, .view:not(.live) .st-card {
+      animation: scroll-in linear both; animation-timeline: view(block 0px var(--tabs-h)); animation-range: entry 0px entry 96px;
+    }
+  }
+}
+@keyframes scroll-in { from { opacity: 0; translate: 0 16px; scale: .985; } }
+@media (min-width: 760px) { @supports (animation-timeline: view()) { .view .panel, .view .arow, .view .srow, .view .lb-row, .view .grp-post, .view .st-card { animation-timeline: view(); } } }
