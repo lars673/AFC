@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.8.3';
+const APP_VER = '12.9';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1094,7 +1094,7 @@ function renderProfile() {
     <div class="panel"><h3>Datenschutz</h3>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="export">Meine Daten exportieren</button><button class="btn sec" type="button" data-act="wipe">Meine Daten löschen</button><a class="btn sec" href="/privacy">Datenschutzerklärung</a></div></div>
     </details>
-    <p class="fine">AFC ${esc(S.plan?.version || APP_VER)} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten.</p>`;
+    <p class="fine">AFC ${esc(S.plan?.version || APP_VER)} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten. <a href="/genau" target="_blank" rel="noopener">So genau war AFC</a></p>`;
   el.querySelector('.prof-tech')?.addEventListener('toggle', e => { S.techOpen = e.target.open; });
   if (isAdminMe() && !ADM.data && !ADM.req) ADM.req = adminLoad().then(() => { if (S.tab === 'profile') renderProfile(); }).catch(() => {}).finally(() => { ADM.req = null; });
 }

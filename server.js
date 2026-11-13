@@ -34,6 +34,7 @@ import { zipHas, parseObstacleKmz, indexObstacles, obstaclesInBox, obstaclesNear
 import { httpGet } from './lib/http.js';
 import { fetchEnsemble, ensembleCheck, pairDiff, ENS_MIN } from './lib/ensemble.js';
 import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
+import { accuracyData, accuracyHtml } from './lib/genau.js';
 import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, toolStations, toolProfile, toolSites, MYAFC_MODEL, MYAFC_DAILY } from './lib/myafc.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
@@ -1290,6 +1291,15 @@ const server = http.createServer(async (req, res) => {
       kvSet('backup-mac', nowIso());
       return sendFullBackup(req, res, 'mac');
     }
+    // «So genau war AFC»: öffentlich, ohne Anmeldung, nur Summen (lib/genau.js)
+    if ((p === '/genau' || p === '/api/genau') && req.method === 'GET') {
+      if (limited(req, 'genau', 60)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+      const d = accuracyPublic();
+      if (p === '/api/genau') return sendJson(req, res, 200, { ok: true, ...d });
+      const b = Buffer.from(accuracyHtml(d, { version: SERVER_VERSION }));
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=600', 'Content-Security-Policy': CSP, ...SEC });
+      return res.end(b);
+    }
     if (p === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('ok'); }
 
     // Öffentlicher Zugang (Tailscale Funnel) ohne Konten wäre ein offenes Flugbuch für alle: dann gesperrt.
@@ -2016,6 +2026,14 @@ function feedbackSummary() {
   const fb = siteFeedbackByLevel(feedbackRecords()), names = Object.fromEntries(SITES.map(x => [x.id, x.name]));
   const list = Object.entries(fb.normal).map(([id, x]) => ({ id, name: names[id] || id, n: x.n, adj: x.adj, implicit: x.implicit, streng: x.streng, mild: x.mild, richtig: x.richtig }));
   return { sites: list.filter(x => x.adj).sort((a, b) => a.adj - b.adj), collecting: list.filter(x => !x.adj).length, records: list.reduce((t, x) => t + x.n, 0) };
+}
+let accCache = null;
+function accuracyPublic() {
+  if (accCache && Date.now() - accCache.at < 600000) return accCache.d;
+  const verdicts = {};
+  for (const r of dbAll("SELECT data FROM logbook WHERE kind='flight'")) { const v = JSON.parse(r.data).afcVerdict; if (v) verdicts[v] = (verdicts[v] || 0) + 1; }
+  accCache = { at: Date.now(), d: accuracyData({ history: backtestHistory(), verdicts }) };
+  return accCache.d;
 }
 function backtestStatus() {
   const h = backtestHistory();

@@ -30,6 +30,7 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
   const s = await boot('good', 18781);
   try {
     assert.equal((await fetch(s.base + '/healthz')).status, 200);
+    const g = await fetch(s.base + '/genau'); assert.equal(g.status, 200); assert.match(await g.text(), /So genau war AFC/);
     const r = await fetch(s.base + '/api/plan?level=normal');
     assert.equal(r.status, 200, s.log());
     const p = await r.json();
