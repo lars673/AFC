@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.9.2';
+const APP_VER = '12.9.3';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -4026,7 +4026,8 @@ function gateHtml(mode, o) {
     <form id="gateForm" data-mode="${mode}" data-code="${esc(o.code || '')}" novalidate>${T[2]}
       <p class="gate-err" role="alert"></p>
       <button class="btn gate-go" type="submit">${T[3]}</button></form>
-    ${T[4]}</div>`;
+    ${T[4]}
+    <p class="fine gate-links"><a href="/genau">So genau war AFC</a> · <a href="/privacy">Datenschutz</a></p></div>`;
 }
 function showGate(mode, o = {}) {
   let g = $('#gate');

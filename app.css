@@ -1282,3 +1282,4 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .hl-next { display: inline-flex; align-items: center; gap: 8px; }
 .site-fb { padding: 4px 2px 8px; }
 .site-fb .ribbon { margin-top: 12px; }
+.gate-links { margin-top: 18px; text-align: center; }
