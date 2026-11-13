@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.10.1';
+const APP_VER = '12.11';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1064,10 +1064,16 @@ function techHtml() {
   if (!d) return '<p class="fine" style="margin:0">Wird geladen …</p>';
   const o = d.openMeteo;
   if (!o) return `${learnedHtml(d.learned, d.learnGuard)}${pressureHtml(d.pressure, d.models, d.backfill)}${siteFbHtml(d.siteFeedback)}${thermalHtml(d.thermal)}`;
-  const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100));
-  return `<div><b>Open-Meteo heute: ${o.calls.toLocaleString('de-CH')} von ${o.limitDay.toLocaleString('de-CH')} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${o.lastHour.toLocaleString('de-CH')})</span>
-      <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${pct >= 80 ? 'background:var(--no)' : ''}"></span></div>
-      <p class="fine" style="margin:6px 0 0">Open-Meteo zählt je Ort und je 10 Wettergrössen einen Aufruf. Der Zähler beginnt um ${new Date(Date.parse(o.day + 'T00:00:00Z')).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })} Uhr neu.${pct >= 80 ? ' <b>Achtung: nahe am Tageslimit.</b>' : ''}</p></div>
+  const pct = Math.min(100, Math.round(o.calls / o.limitDay * 100)), pl = o.plan, n = x => Math.round(x).toLocaleString('de-CH');
+  const hm = ms => new Date(ms).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' });
+  const ev = m => (m >= 120 && m % 60 === 0 ? `${m / 60} Std.` : m >= 90 ? `${Math.round(m / 6) / 10} Std.` : `${m} Min.`);
+  const planTxt = pl ? `Hochrechnung bis ${hm(pl.resetAt)} Uhr: rund ${n(Math.min(pl.forecastToEnd, Math.max(o.calls, pl.budget)))}. Prognose alle ${ev(pl.jobs.fc?.everyMin || 60)}, Windkarte alle ${ev(pl.jobs.wind?.everyMin || 180)}${pl.jobs.ens ? `, Varianten alle ${ev(pl.jobs.ens.everyMin)}` : ''}; nachts seltener, weil dann niemand fliegt.` : '';
+  const warn = o.blockedUntil ? ` <b>Open-Meteo sperrt bis ${hm(o.blockedUntil)} Uhr, AFC zeigt so lange den letzten Stand.</b>`
+    : pl?.factor == null ? ' <b>Tagesplan aufgebraucht: AFC holt die Prognose nur noch alle 3 Stunden bis zum Neubeginn.</b>'
+    : pl.factor > 1 ? ` Sparmodus: Abstände leicht gestreckt, damit es bis ${hm(pl.resetAt)} Uhr reicht.` : '';
+  return `<div><b>Open-Meteo heute: ${n(o.calls)} von ${n(o.limitDay)} Gratis-Aufrufen</b> <span class="fine">(${pct} %, letzte Stunde ${n(o.lastHour)})</span>
+      <div class="usage-bar" aria-hidden="true"><span style="width:${pct}%;${o.blockedUntil ? 'background:var(--no)' : ''}"></span>${pl ? `<i style="left:${Math.min(100, Math.round(pl.budget / o.limitDay * 100))}%"></i>` : ''}</div>
+      <p class="fine" style="margin:6px 0 0">AFC teilt das Kontingent selber über den Tag ein (Plan: ${n(pl?.budget || o.limitDay)}, Rest ist Reserve). Wie viele Leute AFC brauchen, spielt keine Rolle: die Prognose wird einmal für alle geholt. ${planTxt} Der Zähler beginnt um ${hm(Date.parse(o.day + 'T00:00:00Z'))} Uhr neu.${warn}</p></div>
     ${myUsageHtml(d.myafc)}
     ${learnedHtml(d.learned, d.learnGuard)}
     ${pressureHtml(d.pressure, d.models, d.backfill)}

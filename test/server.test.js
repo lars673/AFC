@@ -198,10 +198,12 @@ test('Status zeigt Open-Meteo-Verbrauch, Update nur mit Autostart', async () => 
   } finally { await s.stop(); }
 });
 
-test('Open-Meteo-Gewichtung: Orte x angefangene 10 Variablen', async () => {
+test('Open-Meteo-Gewichtung: Orte x Variablen/10 x Tage/14, anteilig wie bei Open-Meteo', async () => {
   const { openMeteoWeight } = await import('../lib/http.js');
   assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2,3&longitude=1,2,3&hourly=a,b,c&forecast_days=5'), 3);
-  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2&longitude=1,2&hourly=' + 'v,'.repeat(14) + 'v&forecast_days=7'), 4);
+  assert.equal(openMeteoWeight('https://api.open-meteo.com/v1/forecast?latitude=1,2&longitude=1,2&hourly=' + 'v,'.repeat(14) + 'v&forecast_days=7'), 3);
+  // Archiv über 28 Tage: doppelt
+  assert.equal(openMeteoWeight('https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=1&longitude=1&hourly=a&start_date=2026-10-01&end_date=2026-10-28'), 2);
   assert.equal(openMeteoWeight('https://data.geo.admin.ch/x.csv'), 0);
 });
 

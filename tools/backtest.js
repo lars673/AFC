@@ -14,7 +14,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { httpGet } from '../lib/http.js';
+import { httpGet, openMeteoUsage } from '../lib/http.js';
+// Verbrauch am Schluss melden (der Server zählt ihn zum Tageskontingent)
+process.on('exit', () => { const c = openMeteoUsage().calls; if (c) process.stderr.write(`\nAFC_OM_CALLS ${c}\n`); });
 import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS } from '../lib/plan.js';
 import { CORE_STATIONS, parseCSVLine, loadStationList } from '../lib/stations.js';
 import { regionalFromObs } from '../lib/regional.js';
@@ -69,7 +71,7 @@ async function history(points, vars, models) {
           lastErr = null;
         } catch (e) {
           lastErr = e;
-          if (/HTTP 429/.test(e.message)) { process.stdout.write(' (Open-Meteo bremst, warte 1 Minute) '); await new Promise(r => setTimeout(r, 65000)); continue; }
+          if (/HTTP 429|Kontingent/.test(e.message)) { process.stdout.write(' (Open-Meteo bremst, warte 1 Minute) '); await new Promise(r => setTimeout(r, 65000)); continue; }
         }
         break;
       }

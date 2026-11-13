@@ -19,7 +19,8 @@ import { regionalFromObs } from './lib/regional.js';
 import { PlanModel, areasOf, isRanked, REF_POINT, FOEHN_POINTS, MOUNTAIN_ALT, LEARN_DAYS, LEARN_MIN_N } from './lib/plan.js';
 import { fetchWindGrid, windSlice, thermalSlice, WIND_LEVELS } from './lib/windgrid.js';
 import { cloudField, cloudPoints } from './lib/clouds.js';
-import { openMeteoUsage, initOpenMeteoUsage } from './lib/http.js';
+import { openMeteoUsage, initOpenMeteoUsage, addOpenMeteoUsage, openMeteoBlocked } from './lib/http.js';
+import { makePlan, everyMs, stretchFactor, needUntilReset, isDue, dayEnd } from './lib/budget.js';
 import { createUpdater } from './lib/updater.js';
 import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFeedbackByLevel, cleanPilotSnap, voterLevel } from './lib/logbook.js';
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
@@ -48,9 +49,9 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '';          // leer = nur gleich
 const PUBLIC_APP = process.env.PUBLIC_APP_URL || '';
 const TRUSTED_HOPS = Math.max(0, Number(process.env.AFC_TRUSTED_PROXY_HOPS ?? 1));
 const OBS_EVERY_MS = Number(process.env.AFC_OBS_MIN || 10) * 60000;
-const FC_EVERY_MS = Number(process.env.AFC_FORECAST_MIN || 60) * 60000;
-const WIND_EVERY_MS = Number(process.env.AFC_WINDGRID_MIN || 180) * 60000;
-const SNAP_FRESH_FC = Math.min(30 * 60000, FC_EVERY_MS / 2), SNAP_FRESH_WIND = Math.min(90 * 60000, WIND_EVERY_MS / 2);
+// Wann Prognose, Windraster und Varianten neu geholt werden, steuert der Tagesplan (lib/budget.js).
+const OM_PLAN = makePlan();
+const OM_PAUSE = 'Wetterdienst macht kurz Pause, AFC zeigt den letzten Stand';
 const MAX_BODY = 16 * 1024;
 const DATA = process.env.AFC_DATA_DIR ? path.resolve(process.env.AFC_DATA_DIR) : path.join(ROOT, 'data');
 
@@ -281,6 +282,11 @@ async function collectForecast() {
   // Föhnregel: Druck Lugano und Zürich-Kloten (2 Orte, kaum Verbrauch)
   const gradR = await fetchForecast(FOEHN_POINTS).catch(() => ({ byId: {} }));
   const at = nowIso();
+  if ([sitesR, areaR, plR, ecR, stR, gradR].some(r => r.limit)) {
+    // Open-Meteo sperrt: lieber der ganze letzte Stand als eine halbe neue Prognose
+    ingest.forecast = { ...ingest.forecast, ok: !!state.raw, at: ingest.forecast.at, error: OM_PAUSE };
+    return;
+  }
   if (!areaR.byId.REF) {
     ingest.forecast = { ...ingest.forecast, ok: false, at, error: areaR.errors.slice(-3).join(' | ') || 'keine Referenzdaten' };
     return;
@@ -300,13 +306,12 @@ async function collectForecast() {
 /* ------------------------------------------------------------------ Wettervarianten (Ensemble) */
 // Alle 6 Stunden (so oft rechnet MeteoSwiss neue Varianten), nur Gebietspunkte und die drei Druckorte, 3 Tage.
 const ENS_ON = process.env.AFC_ENSEMBLE ? process.env.AFC_ENSEMBLE === '1' : !process.env.AFC_OPENMETEO_URL;
-const ENS_EVERY_MS = Number(process.env.AFC_ENSEMBLE_MIN || 360) * 60000;
 const ENS_FILE = () => path.join(dataDir, 'ensemble.json');
 async function collectEnsemble() {
   const pts = [...AREAS.map(a => ({ id: a.id, lat: a.lat, lon: a.lon })), ...FOEHN_POINTS];
   const r = await fetchEnsemble(pts, { days: 3, model: state.ens?.model || null });
   const at = nowIso();
-  if (!r.members) { ingest.ensemble = { ...ingest.ensemble, ok: !!state.ens, at, error: r.errors.slice(-2).join(' | ') || 'keine Varianten' }; return; }
+  if (!r.members) { ingest.ensemble = { ...ingest.ensemble, ok: !!state.ens, at: r.limit ? ingest.ensemble.at : at, error: r.limit ? OM_PAUSE : r.errors.slice(-2).join(' | ') || 'keine Varianten' }; return; }
   state.ens = { byId: r.byId, model: r.model, members: r.members, at: Date.now() };
   ingest.ensemble = { ok: true, at, error: null, model: r.model, members: r.members, points: Object.keys(r.byId).length };
   storeEnsemble(state.ens);
@@ -480,7 +485,7 @@ async function collectWindGrid() {
     ingest.windgrid = { ok: true, at: nowIso(), error: null };
     fs.writeFile(path.join(dataDir, 'windgrid.json.tmp'), JSON.stringify(wg)).then(() => fs.rename(path.join(dataDir, 'windgrid.json.tmp'), path.join(dataDir, 'windgrid.json'))).catch(() => {});
   } catch (e) {
-    ingest.windgrid = { ...ingest.windgrid, ok: !!state.windgrid, at: nowIso(), error: errMsg(e) };
+    ingest.windgrid = { ...ingest.windgrid, ok: !!state.windgrid, at: e.limit ? ingest.windgrid.at : nowIso(), error: e.limit ? OM_PAUSE : errMsg(e) };
   }
 }
 function windResponse(ms, level) {
@@ -1400,7 +1405,7 @@ const server = http.createServer(async (req, res) => {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
         if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: openMeteoUsage(), update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), myafc: myafcUsage(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: { ...openMeteoUsage(), plan: omPlanStatus() }, update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), myafc: myafcUsage(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -1595,9 +1600,9 @@ async function loadSnapshot() {
     const raw = JSON.parse(await fs.readFile(path.join(dataDir, 'raw.json'), 'utf8'));
     if (Date.now() - raw.fetchedAt < 3 * 3600000 && raw.ref?.sea) {
       state.raw = raw;
-      // Nach einem Neustart (z. B. Update): eine höchstens 30 Minuten alte Prognose gilt als frisch und wird nicht neu geholt.
+      // Nach einem Neustart (z. B. Update) zählt der letzte Abruf weiter: neu geholt wird erst, wenn er nach Plan fällig ist.
       // Das spart das Gratis-Kontingent bei Open-Meteo (jeder Neustart kostete sonst rund 500 der 10 000 Aufrufe am Tag).
-      const fresh = Date.now() - raw.fetchedAt < SNAP_FRESH_FC, at = new Date(raw.fetchedAt).toISOString(), areas = Object.values(raw.areas || {});
+      const fresh = Date.now() - raw.fetchedAt < everyMs(OM_PLAN.jobs.fc, Date.now()), at = new Date(raw.fetchedAt).toISOString(), areas = Object.values(raw.areas || {});
       ingest.forecast = { ...ingest.forecast, ok: true, at, model: raw.model, error: fresh ? null : 'aus Zwischenspeicher, wird aktualisiert', points: Object.keys(raw.sites || {}).length };
       if (fresh) {
         ingest.pressure = { ok: areas.some(a => a?.pl), at, error: null };
@@ -1609,20 +1614,51 @@ async function loadSnapshot() {
   try {
     const e = JSON.parse(await fs.readFile(ENS_FILE(), 'utf8'));
     if (Date.now() - e.at < 12 * 3600000 && e.members) {
-      state.ens = e; state.ensFresh = Date.now() - e.at < ENS_EVERY_MS / 2;
+      state.ens = e; state.ensFresh = Date.now() - e.at < everyMs(OM_PLAN.jobs.ens, Date.now());
       ingest.ensemble = { ok: true, at: new Date(e.at).toISOString(), error: null, model: e.model, members: e.members, points: Object.keys(e.byId || {}).length };
     }
   } catch { /* kein Zwischenspeicher */ }
   try {
     const wg = JSON.parse(await fs.readFile(path.join(dataDir, 'windgrid.json'), 'utf8'));
     if (Date.now() - wg.fetchedAt < 8 * 3600000 && wg.levels) {
-      state.windgrid = wg; state.wgFresh = Date.now() - wg.fetchedAt < SNAP_FRESH_WIND;
+      state.windgrid = wg; state.wgFresh = Date.now() - wg.fetchedAt < everyMs(OM_PLAN.jobs.wind, Date.now());
       ingest.windgrid = { ok: true, at: new Date(wg.fetchedAt).toISOString(), error: state.wgFresh ? null : 'aus Zwischenspeicher, wird aktualisiert' };
     }
   } catch { /* kein Zwischenspeicher */ }
 }
 
 let busy = { obs: false, fc: false, wind: false };
+
+/* ------------------------------------------------------------------ Tagesplan Open-Meteo */
+// Alle 5 Minuten: Ist etwas fällig? Gemessen wird, was jeder Abruf wirklich kostet; damit rechnet der Plan weiter.
+const omJobs = {
+  fc: { run: () => collectForecast(), lastAt: () => state.raw?.fetchedAt || 0 },
+  wind: { run: () => collectWindGrid(), lastAt: () => state.windgrid?.fetchedAt || 0 },
+  ens: { run: () => collectEnsemble(), lastAt: () => state.ens?.at || 0, on: () => ENS_ON }
+};
+const omSched = { fc: {}, wind: {}, ens: {} };   // je Abruf: lastTry, cost (gemessen)
+function omJobList() {
+  return Object.entries(omJobs).filter(([, j]) => !j.on || j.on()).map(([id, j]) => ({ id, def: OM_PLAN.jobs[id], lastAt: j.lastAt(), cost: omSched[id].cost || OM_PLAN.jobs[id].cost }));
+}
+function omPlanStatus(now = Date.now()) {
+  const jobs = omJobList(), used = openMeteoUsage(now).calls, factor = stretchFactor(jobs, used, OM_PLAN.budget, now);
+  return { budget: OM_PLAN.budget, factor: Number.isFinite(factor) ? Math.round(factor * 100) / 100 : null, forecastToEnd: Math.round(used + needUntilReset(jobs, now)), resetAt: dayEnd(now),
+    jobs: Object.fromEntries(jobs.map(j => [j.id, { lastAt: j.lastAt || null, cost: Math.round(j.cost), everyMin: Math.round(everyMs(j.def, now) / 60000 * (Number.isFinite(factor) ? factor : 1)) }])) };
+}
+async function planTick(now = Date.now()) {
+  for (const j of omJobList()) {
+    if (busy[j.id]) continue;
+    const used = openMeteoUsage().calls;
+    const factor = stretchFactor(omJobList(), used, OM_PLAN.budget, now);
+    if (!isDue({ def: j.def, lastAt: j.lastAt, lastTry: omSched[j.id].lastTry, cost: j.cost, factor, used, budget: OM_PLAN.budget, now, blocked: openMeteoBlocked() })) continue;
+    omSched[j.id].lastTry = Date.now();
+    const before = openMeteoUsage().calls;
+    await tick(j.id, omJobs[j.id].run);
+    const spent = openMeteoUsage().calls - before;
+    // nur vollständige Abrufe messen (nicht nach Tageswechsel, nicht bei einem Abbruch mittendrin)
+    if (spent > 0 && omJobs[j.id].lastAt() >= omSched[j.id].lastTry) omSched[j.id].cost = omSched[j.id].cost ? Math.round((omSched[j.id].cost * 2 + spent) / 3) : spent;
+  }
+}
 async function tick(kind, fn) {
   if (busy[kind]) return;
   busy[kind] = true;
@@ -1758,8 +1794,9 @@ function healthProblems(now = Date.now()) {
   if (obsAge > 3) out.push({ id: 'obs', title: 'AFC: Messwerte fehlen', body: `Die letzten Messwerte der Stationen sind ${Number.isFinite(obsAge) ? Math.round(obsAge) + ' Stunden alt' : 'nicht vorhanden'}. Föhn und Wind am Berg werden nicht live geprüft.` });
   if (lbBackup.error) out.push({ id: 'backup', title: 'AFC: Flugbuch-Sicherung fehlgeschlagen', body: `Die Sicherung auf dem Mac hat nicht geklappt (${lbBackup.error}). Bitte im Flugbuch «Sicherungsdatei» antippen und die Datei selbst aufbewahren.` });
   if (storageProblem.degraded) out.push({ id: 'storage', title: 'AFC: Speicher nicht beschreibbar', body: 'AFC speichert gerade nur vorübergehend. Bitte auf dem Mac «AFC neu starten» doppelklicken.' });
-  const u = openMeteoUsage();
-  if (u.limitDay && u.calls >= u.limitDay * 0.9) out.push({ id: 'quota', title: 'AFC: Gratis-Kontingent fast aufgebraucht', body: `Open-Meteo: ${u.calls} von ${u.limitDay} Aufrufen heute. Wird es überschritten, fehlen bis Mitternacht neue Prognosen.` });
+  // Das Kontingent teilt AFC selber über den Tag ein (lib/budget.js). Melden muss es sich nur, wenn Open-Meteo trotzdem sperrt.
+  const blk = openMeteoBlocked(now);
+  if (blk) out.push({ id: 'quota', title: 'AFC: Wetterdienst sperrt kurz', body: `Open-Meteo nimmt bis ${new Date(blk).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Zurich' })} Uhr keine Abfragen an. AFC zeigt so lange die Prognose von ${state.raw ? new Date(state.raw.fetchedAt).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Zurich' }) : '–'} Uhr.` });
   return out;
 }
 async function healthTick(now = Date.now(), hour = null) {
@@ -1894,17 +1931,14 @@ async function start() {
     state.stationList = list;
     ingest.stations = { ok: true, at: nowIso(), error: null, note };
     await tick('obs', collectObservations);
-    if (state.fcFresh) invalidate(); else await tick('fc', collectForecast);
-    if (!state.wgFresh) await tick('wind', collectWindGrid);
-    if (ENS_ON && !state.ensFresh) await tick('ens', collectEnsemble);
+    invalidate();
+    await planTick();
     await tick('air', collectAirspace);
     await tick('obst', collectObstacles);
     if (BACKFILL_ON) await backfillRegional().catch(e => console.warn('Nachlernen', errMsg(e)));
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
-  timers.push(setInterval(() => tick('fc', collectForecast), FC_EVERY_MS));
-  timers.push(setInterval(() => tick('wind', collectWindGrid), WIND_EVERY_MS));
-  if (ENS_ON) timers.push(setInterval(() => tick('ens', collectEnsemble), ENS_EVERY_MS));
+  timers.push(setInterval(() => planTick(), 5 * 60000));   // Prognose, Windraster, Varianten: nach Tagesplan
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   timers.push(setInterval(() => tick('obst', collectObstacles), 3 * 3600000));   // prüft alle 3 h, lädt höchstens alle 20 h neu
@@ -1935,7 +1969,8 @@ function maybeBacktest(force = false) {
     let err = '';
     child.stderr.on('data', d => { err = (err + d).slice(-400); });
     child.on('error', e => res({ code: 1, err: String(e.message) }));
-    child.on('exit', code => res({ code, err }));
+    // Der Rückblick-Test läuft als eigener Prozess: seinen Open-Meteo-Verbrauch meldet er am Schluss, AFC zählt ihn dazu
+    child.on('close', code => { const m = err.match(/AFC_OM_CALLS ([\d.]+)/); if (m) addOpenMeteoUsage(Number(m[1])); res({ code, err: err.replace(/\n?AFC_OM_CALLS [\d.]+\n?/g, '') }); });
   });
   // Drei Läufe: ohne Lernen, nur das Einfache (Stationsmittel, nur anheben), alles. Behalten wird die beste Stufe,
   // die nicht gefährlicher ist als ohne Lernen.
