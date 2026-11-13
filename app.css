@@ -1300,5 +1300,12 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
     }
   }
 }
+/* dasselbe im Startplatz-Fenster: Blöcke und Klapp-Zeilen tauchen über dem «Schliessen»-Knopf auf */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    #siteDlg .hr-detail > :not(.hr-head), #siteDlg .folds > .fold { animation: scroll-in linear both; animation-timeline: view(); animation-range: entry 0px entry 96px; }
+    @media (max-width: 640px) { #siteDlg .hr-detail > :not(.hr-head), #siteDlg .folds > .fold { animation-timeline: view(block 0px 68px); } }
+  }
+}
 @keyframes scroll-in { from { opacity: 0; translate: 0 16px; scale: .985; } }
 @media (min-width: 760px) { @supports (animation-timeline: view()) { .view .panel, .view .arow, .view .srow, .view .lb-row, .view .grp-post, .view .st-card { animation-timeline: view(); } } }

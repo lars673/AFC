@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.10';
+const APP_VER = '12.10.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3659,15 +3659,19 @@ function locate() {
 }
 
 /* ---------------------------------------------------------------- Aktionen */
+/** Jeder Reiter merkt sich für zehn Minuten, wo man war: zurück im Flugbuch steht man wieder bei demselben Flug statt ganz oben. */
+const TABY = new Map();
 function setTab(t) {
   const was = S.tab;
+  if (was !== t) TABY.set(was, { y: window.scrollY, at: Date.now() });
   S.tab = t; store.set('tab', t);
   render();
   if (was !== t) lively();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
   if (t === 'profile') loadStatus();
   if (t === 'group') groupLoad().catch(() => {});
-  window.scrollTo({ top: 0, behavior: was === t && !noMotion() ? 'smooth' : 'auto' });   // gleicher Reiter nochmals: weich nach oben
+  const back = was !== t && TABY.get(t);
+  window.scrollTo({ top: back && Date.now() - back.at < 600000 ? back.y : 0, behavior: was === t && !noMotion() ? 'smooth' : 'auto' });   // gleicher Reiter nochmals: weich nach oben
 }
 // Der Kopf hebt sich mit einem feinen Schatten ab, sobald Inhalt darunter durchläuft
 { let q = 0; const f = () => { q = 0; $('.top')?.classList.toggle('scrolled', window.scrollY > 6); }; window.addEventListener('scroll', () => { if (!q) q = requestAnimationFrame(f); }, { passive: true }); }
