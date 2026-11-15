@@ -474,13 +474,88 @@ function panoSvg(siteId) {
   const layer = (k, a, dur, dx) => `<path class="pn-${k}" d="${panoPath(a, lo, hi)}" style="--dx:${dx}%;--dur:${dur}s;--del:${(-(now % (2 * dur))).toFixed(1)}s"/>`;
   return `<svg class="pano" viewBox="0 0 400 100" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="pnSnow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="pn-snow"/><stop offset=".3" class="pn-rock"/></linearGradient><linearGradient id="pnMid" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="pn-mt"/><stop offset=".6" class="pn-mb"/></linearGradient></defs>${layer('f', p.f, 46, 1.2)}${layer('m', p.m, 34, 2.2)}${layer('n', p.n, 24, 3.4)}</svg>`;
 }
-function panoHtml(siteId) {
+/** Echtes Gelände statt Silhouette (Lars, 15.11.2026: mehr Realismus, wie im 3D-Modell): der Blick vom Startplatz wird aus dem
+    Geländeraster gerechnet, Spalte für Spalte von vorn nach hinten. Farbe nach Höhe und Steilheit (See, Wiese, Wald, Fels,
+    Schnee nach Jahreszeit), Licht und Schatten nach dem Sonnenstand im besten Fenster, Dunst mit der Entfernung. Zwei Ebenen
+    (nah, weit) als Bilder, damit die sachte Tiefenbewegung bleibt. Bis das Raster geladen ist, steht die Silhouette da. */
+const PANO_R = { cache: new Map(), busy: new Set(), W: 760, H: 280, split: 6500 };
+const panoSnowLine = month => [1250, 1300, 1500, 1900, 2300, 2700, 2950, 3000, 2850, 2500, 2100, 1600][month];
+function panoRender(g, site, p, sun, dark, month) {
+  const { W, H, split } = PANO_R, N = g.nx * g.ny, D2 = Math.PI / 180;
+  // Licht je Rasterzelle einmal rechnen (Hangneigung und Exposition gegen die Sonne)
+  const el = Math.max(14, sun.elev) * D2, saz = sun.az * D2, lx = Math.cos(el) * Math.sin(saz), ly = Math.cos(el) * Math.cos(saz), lz = Math.sin(el);
+  const lit = new Float32Array(N);
+  for (let i = 0; i < N; i++) { const s = g.slope[i] * D2, as = g.aspect[i] * (360 / 256) * D2, ss = Math.sin(s); lit[i] = Math.max(0, ss * Math.sin(as) * lx + ss * Math.cos(as) * ly + Math.cos(s) * lz); }
+  const bil = (arr, fx, fy) => { const x0 = fx | 0, y0 = fy | 0, tx = fx - x0, ty = fy - y0, k = y0 * g.nx + x0; return (arr[k] * (1 - tx) + arr[k + 1] * tx) * (1 - ty) + (arr[k + g.nx] * (1 - tx) + arr[k + g.nx + 1] * tx) * ty; };
+  const eye0 = (() => { const fx = (site.lon - g.lo0) / g.dlo, fy = (site.lat - g.la0) / g.dla; return bil(g.elev, fx, fy); })();
+  const eye = Math.max(eye0, site.alt || 0) + 25, mLat = 111320, mLon = 111320 * Math.cos(site.lat * D2), R = 6371000 / 0.87;
+  const hi = Math.max(...p.f), lo = Math.min(Math.max(Math.min(...p.n), -16), hi - 8);
+  const yOf = ang => H * (0.94 - (ang - lo) / (hi - lo) * 0.58);
+  const snow = panoSnowLine(month), haze = dark ? [34, 52, 72] : [205, 222, 236], gain = dark ? 0.5 : 1;
+  const ss = (e0, e1, v) => { const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const layer = (d0, d1) => {
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'), img = ctx.createImageData(W, H), px = img.data;
+    for (let x = 0; x < W; x++) {
+      const az = (p.az - 60 + 120 * x / (W - 1)) * D2, sx = Math.sin(az), sy = Math.cos(az);
+      let yb = H, last = null;
+      for (let d = d0; d <= d1; d += Math.max(45, d * 0.011)) {
+        const fx = (site.lon + sx * d / mLon - g.lo0) / g.dlo, fy = (site.lat + sy * d / mLat - g.la0) / g.dla;
+        if (!(fx >= 0 && fy >= 0 && fx < g.nx - 1 && fy < g.ny - 1)) break;
+        const h = bil(g.elev, fx, fy), y = Math.max(0, Math.round(yOf(Math.atan2(h - eye - d * d / (2 * R), d) / D2)));
+        if (y >= yb) continue;
+        const sl = bil(g.slope, fx, fy), li = bil(lit, fx, fy), n = (((x * 73856093) ^ (y * 19349663)) >>> 0) % 251 / 251;   // feine Körnung
+        let r = 58, gg = 88, b = 57;                                                               // Wald
+        const mix = (cr, cg, cb, f) => { r += (cr - r) * f; gg += (cg - gg) * f; b += (cb - b) * f; };
+        mix(108, 130, 80, ss(1650, 1950, h));                                                      // Alpweiden
+        mix(136, 134, 108, ss(2100, 2400, h));                                                     // Geröll, alpine Matten
+        mix(126, 152, 88, (1 - ss(6, 14, sl)) * (1 - ss(1300, 1700, h)));                          // Talboden, Wiesen
+        mix(124, 119, 113, ss(34, 46, sl));                                                        // Fels
+        mix(240, 244, 248, ss(snow - 220, snow + 160, h) * (1 - 0.55 * ss(42, 56, sl)));           // Schnee (an steilem Fels weniger)
+        if (h < 572 && sl < 1.2) { r = 84; gg = 124; b = 158; }                                    // Thuner- und Brienzersee
+        const grain = 0.95 + n * 0.1; r *= grain; gg *= grain; b *= grain;
+        const sh = (0.42 + 0.78 * li) * gain, t = (1 - Math.exp(-d / 26000)) * 0.9;
+        r = r * sh * (1 - t) + haze[0] * t; gg = gg * sh * (1 - t) + haze[1] * t; b = b * sh * (1 - t) + haze[2] * t;
+        for (let yy = y; yy < yb; yy++) { const o = (yy * W + x) * 4; px[o] = r; px[o + 1] = gg; px[o + 2] = b; px[o + 3] = 255; }
+        yb = y; last = [r, gg, b];
+      }
+    }
+    // unter der untersten sichtbaren Stelle weiterfüllen, damit beim Verschieben keine Lücke entsteht
+    for (let x = 0; x < W; x++) { let col = null; for (let y = 0; y < H; y++) { const o = (y * W + x) * 4; if (px[o + 3]) col = [px[o], px[o + 1], px[o + 2]]; else if (col) { px[o] = col[0]; px[o + 1] = col[1]; px[o + 2] = col[2]; px[o + 3] = 255; } } }
+    ctx.putImageData(img, 0, 0);
+    return new Promise(res => c.toBlob(bl => res(bl ? URL.createObjectURL(bl) : null), 'image/png'));
+  };
+  return Promise.all([layer(split, 46000), layer(140, split)]);
+}
+function panoReal(siteId, hour) {
+  const p = PANO.data?.sites?.[siteId], s = S.plan && siteById(siteId);
+  if (!p || !s || typeof AFC3D === 'undefined') return null;
+  const dark = (getComputedStyle(document.documentElement).getPropertyValue('--pk1') || '').trim().toLowerCase() === '#17304a';
+  const key = `${siteId}|${hour}|${S.plan.dates[S.day]}|${dark ? 'd' : 'l'}`, hit = PANO_R.cache.get(key);
+  if (hit) return { key, ...hit };
+  if (!PANO_R.busy.has(key)) {
+    PANO_R.busy.add(key);
+    thermalGrid().then(g => new Promise(r => setTimeout(() => r(g), 60))).then(g => {
+      const date = S.plan.dates[S.day], sun = AFC3D.sunAt(Date.parse(filmIso(date, hour)), s.lat, s.lon);
+      return panoRender(g, s, p, sun, dark, Number(date.slice(5, 7)) - 1);
+    }).then(([far, near]) => {
+      if (!far || !near) return;
+      if (PANO_R.cache.size > 10) { const [k0, v0] = PANO_R.cache.entries().next().value; URL.revokeObjectURL(v0.far); URL.revokeObjectURL(v0.near); PANO_R.cache.delete(k0); }
+      PANO_R.cache.set(key, { far, near });
+      if (S.tab === 'decide' && S.plan) renderDecide();
+    }).catch(() => {}).finally(() => PANO_R.busy.delete(key));
+  }
+  return null;
+}
+function panoHtml(siteId, hour = 13) {
   if (!PANO.data) { panoLoad(); return ''; }
-  const svg = panoSvg(siteId), prev = PANO.shown;
-  PANO.shown = svg ? { id: siteId, svg } : null;
-  if (!svg) return '';
-  if (prev?.id === siteId) return svg;
-  return (prev ? `<div class="pano-old" aria-hidden="true">${prev.svg}</div>` : '') + svg.replace('class="pano"', 'class="pano pano-in"');
+  const real = panoReal(siteId, hour), now = Date.now() / 1000;
+  const im = (k, src, dur, dx) => `<img class="pano-r pn-r${k}" src="${src}" alt="" style="--dx:${dx}%;--dur:${dur}s;--del:${(-(now % (2 * dur))).toFixed(1)}s">`;
+  const html = real ? `<div class="pano pano-real">${im('f', real.far, 46, 1.2)}${im('n', real.near, 30, 3)}</div>` : panoSvg(siteId), id = real ? real.key : siteId, prev = PANO.shown;
+  PANO.shown = html ? { id, svg: html } : null;
+  if (!html) return '';
+  if (prev?.id === id) return html;
+  return (prev ? `<div class="pano-old" aria-hidden="true">${prev.svg}</div>` : '') + html.replace('class="pano', 'class="pano-in pano');
 }
 
 /** Tagesaussage: eine Überschrift, der beste Start als antippbare Zeile, darunter höchstens kurze Stichworte. */
@@ -490,7 +565,7 @@ function headlineHtml(h, conf, sky) {
   const keep = (h.notes || []).filter(n => /^(Regional|Der Flugtag)/.test(n));   // nur das Nötigste: Gründe stehen im Startplatz
   const notes = s ? (keep.length ? `<ul class="hl-notes">${keep.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
   const k = typeof sky === 'string' ? sky : sky?.k;
-  const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site)}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
+  const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site, Math.round(((h.win?.[0] ?? 12) + (h.win?.[1] ?? 14)) / 2))}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
   return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
 }
 

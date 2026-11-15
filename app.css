@@ -1432,3 +1432,10 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .kv-mini b .arr { width: 16px; height: 16px; vertical-align: -1px; }
 .kv-mini small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hr-line.warn { color: color-mix(in srgb, var(--wait) 70%, var(--ink)); font-weight: 600; }
+/* Bergpanorama als echtes Gelände (zwei Bilder: weit, nah) */
+.pano-real { overflow: visible; }
+.pano-r { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: fill; animation: pn-drift var(--dur) ease-in-out var(--del) infinite alternate; -webkit-user-drag: none; user-select: none; pointer-events: none; }
+.pano-in.pano-real { animation: pn-real-in 1s var(--ease) backwards; }
+@keyframes pn-real-in { from { opacity: 0; scale: 1.04; } }
+.has-hero .hl-hero { height: 168px; }
+:root[data-theme="sun"] .has-hero .hl-hero { height: auto; }
