@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.11.1';
+const APP_VER = '12.12';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -90,6 +90,7 @@ function applyTheme() {
 let loadTimer = null;
 async function loadPlan(manual) {
   clearTimeout(loadTimer);
+  panoLoad();
   $('.stamp-btn')?.classList.add('spin');
   // Beim Öffnen sofort den letzten Stand zeigen (schlechter Empfang am Startplatz), deutlich als alt markiert
   if (!S.plan) {
@@ -267,7 +268,7 @@ function lively(dir = 0, prev = null, first = false) {
   morphNums(v, prev, 520, first);
   if (first) morphNums(bar, null, 520, true);
   clearTimeout(liveT);
-  liveT = setTimeout(() => { v.classList.remove(...all); bar.classList.remove('live', 'live-day'); }, 1300);
+  liveT = setTimeout(() => { v.classList.remove(...all); bar.classList.remove('live', 'live-day'); }, 1600);
 }
 /** Gleitende Marke unter dem gewählten Reiter. */
 function tabMark() {
@@ -441,16 +442,76 @@ function hlSkyHtml(sky) {
   return `<div class="hl-sky k-${k}" aria-hidden="true">${c[0] ? `<i class="hs-sun" style="--so:${c[0]}"></i>` : ''}${cl}${c[2] ? `<i class="hs-rainw${c[2] === 1 ? ' light' : ''}"><i class="hs-rain"></i></i>` : ''}${k === 'storm' ? '<i class="hs-flash"></i>' : ''}</div>`;
 }
 
+/** Bergpanorama im Startbild: die echte Silhouette vom besten Startplatz in Startrichtung (lib/pano.json, aus dem
+    Geländeraster vorberechnet), drei Ebenen nah/mittel/weit, die sich sachte gegeneinander verschieben. Wechselt der
+    beste Startplatz, blendet die alte Kette weich in die neue über. Reine Zierde, zählt nicht zum Score. */
+const PANO = { data: null, req: null, shown: null };
+function panoLoad() {
+  PANO.req ??= fetch('/pano.json').then(r => (r.ok ? r.json() : null)).then(d => {
+    if (!d?.sites) return;
+    PANO.data = d;
+    if (S.tab === 'decide' && S.plan) renderDecide();
+  }).catch(() => { PANO.req = null; });
+}
+function panoPath(a, lo, hi) {
+  const n = a.length, W = 400, y = v => +(94 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * 58).toFixed(1);
+  const pts = a.map((v, i) => [+(i / (n - 1) * W).toFixed(1), y(v)]);
+  let d = `M0 100L${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < n; i++) {   // weich (Catmull-Rom als Bézier)
+    const p0 = pts[Math.max(0, i - 2)], p1 = pts[i - 1], p2 = pts[i], p3 = pts[Math.min(n - 1, i + 1)];
+    d += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)} ${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)} ${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0]} ${p2[1]}`;
+  }
+  return d + `L${W} 100Z`;
+}
+function panoSvg(siteId) {
+  const p = PANO.data?.sites?.[siteId];
+  if (!p) return '';
+  const hi = Math.max(...p.f), lo = Math.min(Math.max(Math.min(...p.n), -16), hi - 8), now = Date.now() / 1000;
+  const layer = (k, a, dur, dx) => `<path class="pn-${k}" d="${panoPath(a, lo, hi)}" style="--dx:${dx}%;--dur:${dur}s;--del:${(-(now % (2 * dur))).toFixed(1)}s"/>`;
+  return `<svg class="pano" viewBox="0 0 400 100" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="pnSnow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="pn-snow"/><stop offset=".3" class="pn-rock"/></linearGradient><linearGradient id="pnMid" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="pn-mt"/><stop offset=".6" class="pn-mb"/></linearGradient></defs>${layer('f', p.f, 46, 1.2)}${layer('m', p.m, 34, 2.2)}${layer('n', p.n, 24, 3.4)}</svg>`;
+}
+function panoHtml(siteId) {
+  if (!PANO.data) { panoLoad(); return ''; }
+  const svg = panoSvg(siteId), prev = PANO.shown;
+  PANO.shown = svg ? { id: siteId, svg } : null;
+  if (!svg) return '';
+  if (prev?.id === siteId) return svg;
+  return (prev ? `<div class="pano-old" aria-hidden="true">${prev.svg}</div>` : '') + svg.replace('class="pano"', 'class="pano pano-in"');
+}
+
 /** Tagesaussage: eine Überschrift, der beste Start als antippbare Zeile, darunter höchstens kurze Stichworte. */
 function headlineHtml(h, conf, sky) {
   const s = h.site ? siteById(h.site) : null, area = s ? S.plan.areas.find(a => a.sites.includes(s.id)) : null;
   const best = s ? `<button type="button" class="hl-best" data-act="site" data-id="${esc(s.id)}"><span class="mini-pill s-${cls(h.score)}" data-cu="hl">${h.score}</span><span class="hl-bt"><small>${h.score >= 55 ? 'Bester Start' : 'Bester Startplatz, trotzdem zu tief'}</small><b>${esc(s.name)}</b><span>${h.win[0]}–${h.win[1]} Uhr${area && !s.name.startsWith(area.name) ? ' · ' + esc(area.name) : ''}</span></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : '';
   const notes = s ? (h.notes?.length ? `<ul class="hl-notes">${h.notes.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
-  return `<div class="headline ${h.tone}">${h.site ? hlSkyHtml(sky) : ''}<h2>${esc(h.title)}</h2>${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
+  const k = typeof sky === 'string' ? sky : sky?.k;
+  const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site)}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
+  return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
+}
+
+/** Score-Ring für die besten Gebiete: füllt sich beim Öffnen und Tageswechsel (nur dann, siehe lively). */
+function scoreRing(score, cu) {
+  return `<span class="tc-ring" data-s="${cls(score)}" aria-hidden="true"><svg viewBox="0 0 56 56"><circle class="tr-bg" cx="28" cy="28" r="24"/><circle class="tr-fg" cx="28" cy="28" r="24" pathLength="100" style="--v:${Math.max(0, Math.min(100, score))}"/></svg><b data-cu="${esc(cu)}">${score}</b></span>`;
+}
+/** Weiche Tageskurve des Stundenscores (6 bis 21 Uhr), bestes Fenster hervorgehoben. */
+function dayCurve(scores, best, nowH) {
+  const h0 = S.plan.h0, W = 160, H = 34, x = i => +(i / 15 * W).toFixed(1), y = s => +(H - 2 - s / 100 * (H - 6)).toFixed(1);
+  const segs = [];
+  let cur = null;
+  for (let i = 0; i < 16; i++) { if (num(scores[i])) { (cur ??= []).push([x(i), y(scores[i])]); } else if (cur) { segs.push(cur); cur = null; } }
+  if (cur) segs.push(cur);
+  const smooth = pts => pts.length === 1 ? `M${pts[0][0]} ${pts[0][1]}h.1` : pts.reduce((d, p, i) => {
+    if (!i) return `M${p[0]} ${p[1]}`;
+    const p0 = pts[Math.max(0, i - 2)], p1 = pts[i - 1], p3 = pts[Math.min(pts.length - 1, i + 1)];
+    return d + `C${(p1[0] + (p[0] - p0[0]) / 6).toFixed(1)} ${(p1[1] + (p[1] - p0[1]) / 6).toFixed(1)} ${(p[0] - (p3[0] - p1[0]) / 6).toFixed(1)} ${(p[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p[0]} ${p[1]}`;
+  }, '');
+  const line = segs.map(smooth).join(''), area = segs.filter(p => p.length > 1).map(p => smooth(p) + `L${p.at(-1)[0]} ${H}L${p[0][0]} ${H}Z`).join('');
+  const now = nowH != null && nowH >= h0 && nowH < h0 + 16 ? `<line class="dc-now" x1="${x(nowH - h0)}" x2="${x(nowH - h0)}" y1="0" y2="${H}"/>` : '';
+  return `<svg class="dcurve" data-s="${cls(best?.score)}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Tagesverlauf${best ? ', bestes Fenster ' + winText(best) : ''}"><path class="dc-a" d="${area}"/><path class="dc-l" d="${line}" pathLength="1"/>${now}</svg><span class="dc-ax" aria-hidden="true"><span>${h0}</span><span>${h0 + 5}</span><span>${h0 + 10}</span><span>${h0 + 15}</span></span>`;
 }
 
 /** Kompakte Zeile pro Gebiet: Name, bester Start mit Fenster, Score; aufklappbar für alle Startplätze. */
-function areaRow(a) {
+function areaRow(a, top = false) {
   const d = a.days[S.day];
   const sites = a.sites.map(siteById).filter(Boolean);
   const open = S.open.has(a.id), hasFav = sites.some(s => S.fav.has(s.id));
@@ -470,10 +531,11 @@ function areaRow(a) {
       const name = mountainName(g), top = g[0], tb = top.days[S.day].best;
       return `<div class="grp-h"><b>${esc(name)}</b><span>${g.length} Startrichtungen${tb ? ` · am besten ${esc(aspectText(top))} (${tb.score})` : ''}</span></div>${g.map(x => srow(x, name)).join('')}`;
     }).join('');
-  return `<div class="arow${open ? ' open' : ''}">
-    <button type="button" class="arow-main" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
-      <span class="arow-txt"><span class="arow-name">${esc(a.name)}${skyIcon(a.sky?.[S.day], 20)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? ribbon(best.days[S.day].scores, d.best, { now: nowH }) : ''}</span>
-      <span class="mini-pill s-${d ? cls(d.best.score) : 'none'}" data-cu="a:${esc(a.id)}">${d ? d.best.score : '–'}</span></button>
+  return `<div class="arow${top ? ' tc-card' : ''}${open ? ' open' : ''}">
+    <button type="button" class="arow-main${top ? ' tc-main' : ''}" data-act="${d ? 'site' : 'toggle'}" data-id="${d ? esc(d.siteId) : esc(a.id)}" aria-label="${esc(a.name)}${d ? ', Score ' + d.best.score + ', bester Start ' + esc(best.name) + ' öffnen' : ', aufklappen'}">
+      ${top && d ? scoreRing(d.best.score, 'a:' + a.id) : ''}
+      <span class="arow-txt"><span class="arow-name">${esc(a.name)}${skyIcon(a.sky?.[S.day], 20, top)}${hasFav ? ' <span class="arow-fav" aria-label="Favorit">★</span>' : ''}${km !== null ? ` <span class="arow-km">${km} km</span>` : ''}</span><span class="arow-sub">${sub}</span>${d ? (top ? dayCurve(best.days[S.day].scores, d.best, nowH) : ribbon(best.days[S.day].scores, d.best, { now: nowH })) : ''}</span>
+      ${top && d ? '' : `<span class="mini-pill s-${d ? cls(d.best.score) : 'none'}" data-cu="a:${esc(a.id)}">${d ? d.best.score : '–'}</span>`}</button>
     <button type="button" class="arow-exp" data-act="toggle" data-id="${esc(a.id)}" aria-expanded="${open}" aria-label="${sites.length} ${sites.length === 1 ? 'Startplatz' : 'Startplätze'} ${open ? 'zuklappen' : 'zeigen'}"><span>${sites.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     ${open ? `<div class="rows arow-rows${S.justOpen === a.id ? ' new' : ''}">${rows}</div>` : ''}
   </div>`;
@@ -536,6 +598,8 @@ function renderDecide() {
   // Ruhige Liste: zuerst nur, was in Frage kommt (ab 55), mindestens 6 Gebiete; der Rest auf Wunsch
   const okN = areas.filter(a => (a.days[S.day]?.best.score ?? -1) >= 55).length;
   const shown = S.allAreas || near || areas.length <= 8 ? areas : areas.slice(0, Math.max(6, okN));
+  // Die drei besten Gebiete (ab 55) gross mit Ring und Tageskurve, der Rest als ruhige Liste darunter
+  const tops = near ? [] : shown.filter(a => (a.days[S.day]?.best.score ?? -1) >= 55).slice(0, 3), rest = shown.filter(a => !tops.includes(a));
   el.innerHTML = `
     ${watchLineHtml()}
     ${surveyCard()}
@@ -550,7 +614,8 @@ function renderDecide() {
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
       <button type="button" class="ico-btn" data-act="week" aria-label="Wochenblick" title="Wochenblick"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><button type="button" class="ico-btn" data-act="compare" aria-label="Startplätze vergleichen" title="Vergleichen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button></div></div>
-    <div class="card alist">${shown.map(areaRow).join('')}${shown.length < areas.length ? `<button type="button" class="alist-more" data-act="allareas">Alle ${areas.length} Gebiete zeigen</button>` : ''}</div>
+    ${tops.length ? `<div class="tops">${tops.map(x => areaRow(x, true)).join('')}</div>` : ''}
+    ${rest.length || shown.length < areas.length ? `<div class="card alist${tops.length ? ' compact' : ''}">${rest.map(x => areaRow(x)).join('')}${shown.length < areas.length ? `<button type="button" class="alist-more" data-act="allareas">Alle ${areas.length} Gebiete zeigen</button>` : ''}</div>` : ''}
     <p class="fine">Der Score ist eine Entscheidungshilfe, keine Freigabe. K.-o.-Kriterien (Kaltfront, Gewitter, Föhn, zu starker Wind, Regen, Wolke am Start, Rückenwind) deckeln den Score. Die Entscheidung trifft immer die Pilotin oder der Pilot vor Ort.</p>`;
 }
 
@@ -725,6 +790,92 @@ function regionSummary(d) {
 }
 const LVL_SYM = { ok: '✓', warn: '!', danger: '✕' };
 const LVL_TXT = { ok: 'unauffällig', warn: 'Vorsicht', danger: 'K.-o.' };
+/** «Lage» als Tageskurve: Regionsurteil über den Tag (Farbe nach Score), die Sonne läuft mit, mit dem Finger durch
+    die Stunden ziehen. Basis und Thermik darunter gehören zur gewählten Stunde. Die genaue Tabelle bleibt unter «Für Profis». */
+const LC = { h: null, day: null, x: null, raf: 0 };
+const LC_W = 320, LC_H = 120, LC_T = 18, LC_B = 104;
+function lcHours(hours) { return hours.filter(h => h.h >= 7 && h.h <= 20 && num(h.v)); }
+function lcHtml(hours, nowH) {
+  const hs = lcHours(hours);
+  if (hs.length < 3) return '';
+  const n = hs.length, x = i => 14 + i * (LC_W - 28) / (n - 1), y = v => LC_B - v / 100 * (LC_B - LC_T - 14);
+  const pts = hs.map((h, i) => [x(i), y(h.v)]);
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < n; i++) {
+    const p0 = pts[Math.max(0, i - 2)], p1 = pts[i - 1], p2 = pts[i], p3 = pts[Math.min(n - 1, i + 1)];
+    d += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)} ${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)} ${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  const stops = hs.map((h, i) => `<stop offset="${(i / (n - 1)).toFixed(3)}" style="stop-color:var(--${cls(h.v) === 'none' ? 'line' : cls(h.v)})"/>`).join('');
+  const best = hs.reduce((b, h) => (h.v > b.v ? h : b), hs[0]);
+  if (LC.day !== S.day || !hs.some(h => h.h === LC.h)) { LC.day = S.day; LC.h = nowH != null && hs.some(h => h.h === nowH) ? nowH : best.h; LC.x = null; }
+  const ticks = hs.filter(h => h.h % 3 === 1).map(h => `<text x="${x(hs.indexOf(h)).toFixed(1)}" y="${LC_H - 2}">${h.h === nowH ? 'jetzt' : h.h}</text>`).join('');
+  return `<div class="panel lc" data-noswipe>
+    <svg class="lc-svg" viewBox="0 0 ${LC_W} ${LC_H}" role="slider" tabindex="0" aria-label="Stunde wählen" aria-valuemin="${hs[0].h}" aria-valuemax="${hs[n - 1].h}" aria-valuenow="${LC.h}">
+      <defs><linearGradient id="lcG" x1="0" x2="1" y1="0" y2="0">${stops}</linearGradient>
+      <linearGradient id="lcF" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+      <mask id="lcM"><rect width="${LC_W}" height="${LC_H}" fill="url(#lcF)"/></mask></defs>
+      <path class="lc-sky" d="M14 ${LC_T + 4}Q${LC_W / 2} ${LC_T - 20} ${LC_W - 14} ${LC_T + 4}"/>
+      <path class="lc-a" d="${d}L${pts[n - 1][0].toFixed(1)} ${LC_B}L${pts[0][0].toFixed(1)} ${LC_B}Z" fill="url(#lcG)" mask="url(#lcM)"/>
+      <path class="lc-l" d="${d}" stroke="url(#lcG)" pathLength="1"/>
+      <line class="lc-base" x1="14" x2="${LC_W - 14}" y1="${LC_B}" y2="${LC_B}"/>
+      <line class="lc-cur" y1="${LC_T}" y2="${LC_B}"/>
+      <circle class="lc-sun" r="7"/>
+      <circle class="lc-dot" r="5.5"/>
+      <g class="lc-x">${ticks}</g>
+    </svg>
+    <div class="lc-read"><div><small>Uhr</small><b class="lc-rh"></b></div><div><small>Urteil</small><b class="lc-rv"></b></div><div><small>Basis</small><b class="lc-rb"></b></div><div><small>Thermik</small><b class="lc-rt"></b></div></div>
+    <p class="fine lc-hint">Zum Ablesen mit dem Finger durch die Stunden ziehen.</p>
+  </div>`;
+}
+function lcBind() {
+  const box = $('#v-lage .lc'), svg = box?.querySelector('.lc-svg');
+  cancelAnimationFrame(LC.raf);
+  if (!svg) return;
+  const hs = lcHours(S.plan.region.days[S.day]?.hours || []), n = hs.length;
+  const xOf = i => 14 + i * (LC_W - 28) / (n - 1), yOf = v => LC_B - v / 100 * (LC_B - LC_T - 14);
+  const idx = h => Math.max(0, hs.findIndex(x => x.h === h));
+  const q = s => box.querySelector(s), [cur, sun, dot] = ['.lc-cur', '.lc-sun', '.lc-dot'].map(q);
+  const vAt = f => { const lo = Math.floor(f), hi = Math.min(n - 1, lo + 1), t = f - lo; return hs[lo].v + (hs[hi].v - hs[lo].v) * t; };
+  let shownH = null;
+  const draw = f => {
+    const x = xOf(f), v = vAt(f), u = f / (n - 1);
+    cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+    dot.setAttribute('cx', x); dot.setAttribute('cy', yOf(v)); dot.dataset.s = cls(Math.round(v));
+    sun.setAttribute('cx', x); sun.setAttribute('cy', LC_T + 4 - 4 * u * (1 - u) * 12);
+    const h = hs[Math.round(f)];
+    if (h.h === shownH) return;
+    shownH = h.h; LC.h = h.h; svg.setAttribute('aria-valuenow', h.h);
+    q('.lc-rh').textContent = h.h + ' Uhr';
+    const rv = q('.lc-rv'); rv.textContent = h.v; rv.dataset.s = cls(h.v);
+    q('.lc-rb').textContent = num(h.cb) ? (h.cb / 1000).toFixed(1) + ' km' : '–';
+    q('.lc-rt').textContent = num(h.top) ? (h.top / 1000).toFixed(1) + ' km' : (h.therm >= 60 ? 'gut' : h.therm >= 30 ? 'mittel' : h.therm > 8 ? 'schwach' : 'kaum');
+  };
+  let target = idx(LC.h), f = box.closest('.view.live') && !noMotion() ? 0 : LC.x ?? target;
+  const step = () => {
+    f += (target - f) * 0.16;
+    if (Math.abs(target - f) < 0.002) f = target;
+    LC.x = f; draw(f);
+    if (f !== target) LC.raf = requestAnimationFrame(step);
+  };
+  const go = t => { target = Math.max(0, Math.min(n - 1, t)); cancelAnimationFrame(LC.raf); if (noMotion()) { f = target; LC.x = f; draw(f); } else LC.raf = requestAnimationFrame(step); };
+  draw(f); if (f !== target) setTimeout(() => go(target), 350);
+  const fromEv = e => { const r = svg.getBoundingClientRect(); return ((e.clientX - r.left) / r.width * LC_W - 14) / ((LC_W - 28) / (n - 1)); };
+  let drag = null;
+  svg.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') e.preventDefault(); drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, on: e.pointerType === 'mouse' }; if (drag.on) { svg.setPointerCapture(e.pointerId); go(fromEv(e)); } });
+  svg.addEventListener('pointermove', e => {
+    if (!drag || drag.id !== e.pointerId) return;
+    if (!drag.on) {   // Touch: erst seitlich ziehen übernimmt, senkrecht bleibt Scrollen
+      const dx = Math.abs(e.clientX - drag.x0), dy = Math.abs(e.clientY - drag.y0);
+      if (dy > 10 && dy > dx) { drag = null; return; }
+      if (dx > 6) { drag.on = true; svg.setPointerCapture(e.pointerId); }
+    }
+    if (drag.on) go(fromEv(e));
+  });
+  const end = e => { if (drag && !drag.on && e.type === 'pointerup') go(Math.round(fromEv(e))); else if (drag?.on) go(Math.round(fromEv(e))); drag = null; };
+  svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', () => { drag = null; go(Math.round(f)); });
+  svg.addEventListener('keydown', e => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); go(Math.round(target) + (e.key === 'ArrowRight' ? 1 : -1)); } });
+}
+
 function renderLage() {
   const el = $('#v-lage');
   if (!S.plan) { el.innerHTML = stateBox(); return; }
@@ -766,7 +917,8 @@ function renderLage() {
       <p>${esc(regionSummary(S.day))}</p>
     </div>
     <div class="sec-row lage-film"><span class="fine">Sonne, Wolken, Wind und Thermik im Gelände, Stunde für Stunde.</span><button type="button" class="btn sec brief-btn" data-act="region3d">${PLAY_SVG} Tagesfilm in 3D</button></div>
-    ${table(short)}
+    ${lcHtml(day?.hours || [], nowH)}
+    ${short.length > 4 ? table(short.filter(r => !r[3])) : ''}
     ${quiet.length ? `<p class="fine lage-quiet">Unauffällig: ${esc(quiet.join(', '))}.</p>` : ''}
     <div class="folds lage-folds">
     ${fold('lagepro', 'Für Profis', 'alle Werte Stunde für Stunde', `    ${table(rows)}
@@ -783,6 +935,7 @@ function renderLage() {
       ${nowS.reasons?.length ? `<ul class="why">${nowS.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
       ${fogHtml(nowS.fog)}
       <p class="fine">Messwerte zählen nur für die nächsten Stunden. Für spätere Stunden und andere Tage gilt allein die Modellprognose.</p></div>` : ''}`;
+  lcBind();
 }
 
 /** Nebelmeer, gemessen an den Stationen: Schicht, wer drin und wer darüber ist, bis wann es laut Prognose hält. */

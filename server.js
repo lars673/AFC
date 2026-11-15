@@ -1244,6 +1244,7 @@ const STATIC = new Map([
   ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
   ['/igc.js', ['lib/igc.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
+  ['/pano.json', ['lib/pano.json', 'application/json; charset=utf-8']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']],
   // Leaflet liegt im Projekt: Karte lädt vom eigenen Rechner, auch ohne cdnjs (Handy über Tailscale)
   ['/vendor/leaflet/leaflet.js', ['vendor/leaflet/leaflet.js', 'text/javascript; charset=utf-8']],
