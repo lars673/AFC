@@ -33,16 +33,16 @@ test('Hochnebel mit Decke darüber: Start oben, Landung unten heisst durch den N
   assert.equal(fogConflict(f, 700, 565).kind, 'under');
 });
 
-test('Wie lange: so lange die Prognose den Nebel hat plus eine Stunde, sonst 3 Stunden sicher und bis 6 unsicher', () => {
+test('Wie lange: so lange die Prognose den Nebel hat plus eine Stunde, sonst 1½ Stunden sicher und bis 4 unsicher', () => {
   const f = { at: time, top: 1250 }, H = h => at + h * 3600000;
   const seen = fogTimeline(f, { [H(0)]: 1200, [H(1)]: 1150, [H(2)]: 1100, [H(3)]: null, [H(4)]: null });
   assert.equal(seen.lift, H(4));
   assert.equal(fogStateAt(seen, H(3)), 'measured');
   assert.equal(fogStateAt(seen, H(4)), null);
   const blind = fogTimeline(f, { [H(0)]: null, [H(1)]: null });
-  assert.equal(fogStateAt(blind, H(2)), 'measured');
-  assert.equal(fogStateAt(blind, H(5)), 'unsure');
-  assert.equal(fogStateAt(blind, H(7)), null);
+  assert.equal(fogStateAt(blind, H(1)), 'measured');
+  assert.equal(fogStateAt(blind, H(3)), 'unsure');
+  assert.equal(fogStateAt(blind, H(5)), null);
 });
 
 test('Landeplatz im Nebel ist K.-o. mit Begründung, unsicherer Nebel nur Vorsicht', () => {
@@ -53,4 +53,25 @@ test('Landeplatz im Nebel ist K.-o. mit Begründung, unsicherer Nebel nur Vorsic
   assert.ok(explainHour(ko, { ...w, fog: { kind: 'land', top: 1250 } }).some(x => x.k === 'Wolken' && x.lvl === 'danger'));
   const unsure = assessHour(site, { ...w, fog: { kind: 'land', state: 'unsure', top: 1250, base: 500 } });
   assert.ok(unsure.score <= 70 && !unsure.hard.length);
+});
+
+test('Nebel ist Sache des Tals: ferne Stationen im Nebel zählen nicht, Sonne nahe am Landeplatz hebt ihn auf (14.11.2026)', () => {
+  const t = Date.UTC(2026, 10, 14, 9, 30), tm = new Date(t).toISOString();
+  const M = {
+    INT: { name: 'Interlaken', lat: 46.6655, lon: 7.8706, alt: 577 }, BOL: { name: 'Boltigen', lat: 46.6243, lon: 7.392, alt: 820 },
+    ABO: { name: 'Adelboden', lat: 46.4917, lon: 7.5607, alt: 1321 }, ANT: { name: 'Andermatt', lat: 46.6308, lon: 8.5808, alt: 1438 },
+    GRH: { name: 'Grimsel Hospiz', lat: 46.5717, lon: 8.3333, alt: 1980 }, GIH: { name: 'Giswilerstock', lat: 46.8337, lon: 8.0233, alt: 2011 }
+  };
+  const ob = (rh, sun, temp = 6) => ({ time: tm, rh, sun, temp, dew: temp - (100 - rh) / 5 });
+  const amis = { lat: 46.7138, lon: 7.8241 }, hoehe = { lat: 46.6862, lon: 7.8582 };
+  // Boltigen (Simmental) noch im Nebel, Interlaken schon in der Sonne
+  const f = fogFromObs({ INT: ob(86, 380), BOL: ob(99, 40), ABO: ob(60, 420, 8), ANT: ob(55, 420, 7), GRH: ob(50, 430, 4) }, M, t + 60000);
+  assert.ok(f?.top, 'Schicht aus Boltigen erkannt');
+  assert.ok(fogConflict(f, 1572, 569), 'ohne Ort: wie bisher');
+  assert.equal(fogConflict(f, 1572, 569, { launch: amis, land: hoehe }), null, 'Amisbühl: Boltigen ist 35 km weg');
+  // Interlaken selbst im Nebel: K.-o. bleibt, aber Wolken am Grimsel/Giswilerstock heben die Schicht vor Ort nicht über den Start
+  const g = fogFromObs({ INT: ob(99, 20), BOL: ob(99, 40), GRH: ob(99, 40, 1), GIH: ob(99, 30, 1), ABO: ob(60, 420, 8), ANT: ob(55, 420, 7) }, M, t + 60000);
+  const c = fogConflict(g, 1572, 569, { launch: amis, land: hoehe });
+  assert.equal(c.kind, 'land');
+  assert.ok(c.top < 1572, String(c.top));
 });
