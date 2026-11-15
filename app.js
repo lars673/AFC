@@ -534,6 +534,7 @@ function areaRow(a, top = false) {
     .map(g => {
       if (g.length === 1) return srow(g[0]);
       const name = mountainName(g), top = g[0], tb = top.days[S.day].best;
+      if (!name || g.length === sites.length) return g.map(x => srow(x)).join('');   // ganzes Gebiet ein Berg: keine Zwischenzeile
       return `<div class="grp-h"><b>${esc(name)}</b><span>${g.length} Startrichtungen${tb ? ` · am besten ${esc(aspectText(top))} (${tb.score})` : ''}</span></div>${g.map(x => srow(x, name)).join('')}`;
     }).join('');
   return `<div class="arow${top ? ' tc-card' : ''}${open ? ' open' : ''}">
@@ -561,7 +562,7 @@ function mountainName(g) {
   const out = [];
   for (let i = 0; i < w[0].length; i++) { if (w.every(x => x[i] === w[0][i])) out.push(w[0][i]); else break; }
   const n = out.join(' ').replace(/\s+(Start|Startplatz)$/i, '').trim();
-  return n.length >= 3 ? n : g[0].name;
+  return n.length >= 3 ? n : null;
 }
 const shortName = (name, group) => { const r = name.startsWith(group) ? name.slice(group.length).trim() : name; return r.length >= 2 ? r : name; };
 /** Standort für «In der Nähe» (nur im Browser, wird nirgends gespeichert). */
