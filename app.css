@@ -1383,3 +1383,45 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .lc-hint { margin: 6px 0 0; text-align: center; }
 .view.live .lc-l { animation: curve-draw 1.1s var(--ease) both; animation-delay: .25s; }
 .view.live .lc-a { animation: curve-fade .8s ease both; animation-delay: .6s; }
+/* Lebende Windpfeile bei «Messwerte jetzt» */
+.stc-d .wa { display: inline-block; vertical-align: -6px; }
+.stc-d .arr { width: 24px; height: 24px; vertical-align: 0; color: var(--accent); }
+.wa.live { animation: wa-sway var(--sd) ease-in-out var(--del) infinite alternate; }
+.wa.live .wa-k { display: inline-block; animation: wa-kick var(--kd) var(--ease) var(--kdel) infinite; }
+.wa .arr { transition: none; }
+@keyframes wa-sway { from { rotate: calc(var(--amp) * -1); } to { rotate: var(--amp); } }
+@keyframes wa-kick { 0%, 78%, 100% { rotate: 0deg; scale: 1; } 82% { rotate: var(--kick); scale: 1.12; } 88% { rotate: calc(var(--kick) * -.45); scale: 1.04; } 94% { rotate: calc(var(--kick) * .15); } }
+.stc-bad .stc-d .arr { color: var(--no); } .stc-warn .stc-d .arr { color: color-mix(in srgb, var(--check) 65%, var(--ink)); }
+/* Auftakt beim Öffnen (siehe opener() in app.js) */
+.opener { position: fixed; inset: 0; z-index: 10000; background: #0f1a14; display: grid; place-items: center; overflow: hidden; animation: op-auto .5s ease 6s forwards; transition: opacity .55s var(--ease), scale .6s var(--ease); }
+.opener.op-out { opacity: 0; scale: 1.04; pointer-events: none; }
+.op-ridge { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 42%; opacity: 0; animation: op-fade .7s ease .25s forwards; }
+.op-r1 { fill: #1f3326; } .op-r2 { fill: #16261c; }
+.op-glider { position: absolute; left: 0; top: 0; width: 46px; height: 23px; opacity: 0; offset-path: path('M -40 470 C 60 380 150 430 230 330 S 320 200 180 224'); offset-rotate: 0deg; animation: op-fly 1.6s cubic-bezier(.3,.1,.3,1) .3s forwards; }
+.op-word { font: 700 56px/1 var(--f-num); color: #eef4ee; letter-spacing: .08em; opacity: 0; translate: 0 10px; animation: op-rise .6s var(--ease) 1.55s forwards; }
+.op-sub { position: absolute; bottom: calc(28px + env(safe-area-inset-bottom)); color: #a2b3a7; font: 500 14px var(--f-body); opacity: 0; animation: op-fade .6s ease 1.9s forwards; }
+@keyframes op-fly { 0% { opacity: 0; offset-distance: 0%; } 12% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; offset-distance: 100%; } }
+@keyframes op-rise { to { opacity: 1; translate: 0 0; } }
+@keyframes op-fade { to { opacity: 1; } }
+@keyframes op-auto { to { opacity: 0; visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .opener { display: none; } }
+.op-stage { position: absolute; left: 50%; top: 50%; width: 360px; height: 520px; translate: -50% -50%; pointer-events: none; }
+/* Leere Seiten: kleine Szene, ein Satz, klare Knöpfe */
+.empty-scene { display: grid; justify-items: center; text-align: center; gap: 8px; padding-block: 18px; }
+.empty-scene > p { max-width: 42ch; color: var(--muted); }
+.empty-scene h3 { font: 700 24px/1.1 var(--f-num); margin: 0; }
+.es-svg { width: 100%; max-width: 300px; height: auto; margin-bottom: 2px; }
+.es-sun { fill: color-mix(in srgb, var(--sky-sun) 80%, var(--panel)); }
+.es-m1 { fill: color-mix(in srgb, var(--pn-f) 70%, var(--panel)); } .es-m2 { fill: color-mix(in srgb, var(--pn-m) 55%, var(--panel)); } .es-snow { fill: var(--pn-snow); opacity: .9; }
+.es-w { fill: none; stroke: var(--accent); stroke-width: 4.5; stroke-linecap: round; } .es-l { fill: none; stroke: var(--muted); stroke-width: 1; } .es-p { fill: var(--muted); }
+.es-c { animation: es-orbit 8s linear infinite; }
+.es-b { animation: es-bob 2.6s ease-in-out infinite alternate; }
+@keyframes es-orbit { 0% { translate: 0 0; scale: .86; } 12.5% { translate: 11px 1.5px; scale: .9; } 25% { translate: 16px 5px; scale: 1; } 37.5% { translate: 11px 8.5px; scale: 1.1; } 50% { translate: 0 10px; scale: 1.14; } 62.5% { translate: -11px 8.5px; scale: 1.1; } 75% { translate: -16px 5px; scale: 1; } 87.5% { translate: -11px 1.5px; scale: .9; } 100% { translate: 0 0; scale: .86; } }
+@keyframes es-bob { to { translate: 0 4px; } }
+.es-btns { justify-content: center; margin-top: 4px; }
+.es-folds { width: 100%; text-align: left; margin-top: 6px; }
+/* Ruhigere Score-Farben in Listen: zart getönt mit farbiger Zahl; volle Farbe nur, wo entschieden wird (bester Start, Ring, Startplatz) */
+:root:not([data-theme="sun"]) .alist .mini-pill, :root:not([data-theme="sun"]) .cards .mini-pill { --pc: var(--none); background: color-mix(in srgb, var(--pc) 15%, var(--panel)); color: color-mix(in srgb, var(--pc) 78%, var(--ink)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc) 28%, transparent); }
+:root:not([data-theme="sun"]) .alist .mini-pill.s-go, :root:not([data-theme="sun"]) .cards .mini-pill.s-go { --pc: var(--go); } :root:not([data-theme="sun"]) .alist .mini-pill.s-ready, :root:not([data-theme="sun"]) .cards .mini-pill.s-ready { --pc: var(--ready); }
+:root:not([data-theme="sun"]) .alist .mini-pill.s-check, :root:not([data-theme="sun"]) .cards .mini-pill.s-check { --pc: var(--check); color: color-mix(in srgb, var(--check) 55%, var(--ink)); } :root:not([data-theme="sun"]) .alist .mini-pill.s-wait, :root:not([data-theme="sun"]) .cards .mini-pill.s-wait { --pc: var(--wait); }
+:root:not([data-theme="sun"]) .alist .mini-pill.s-no, :root:not([data-theme="sun"]) .cards .mini-pill.s-no { --pc: var(--no); } :root:not([data-theme="sun"]) .alist .mini-pill.s-none, :root:not([data-theme="sun"]) .cards .mini-pill.s-none { color: var(--muted); }

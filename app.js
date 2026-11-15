@@ -960,6 +960,16 @@ const CHECKS = [
 ];
 /** Messwerte als Karten: nahe deinen Favoriten (sonst bei dir, sonst die hohen Stationen) zuerst, starker Wind farbig. */
 const WIND_LIM = { careful: [22, 30], normal: [25, 35], expert: [30, 40] };
+/** Lebender Windpfeil: zeigt die gemessene Richtung, pendelt sanft (stärker bei mehr Wind) und zuckt kurz bei Böen
+    (je grösser der Unterschied Wind/Böen, desto öfter und stärker). Die Stellung hängt an der Uhrzeit, damit beim Neuzeichnen nichts springt. */
+function windArrow(dir, w, g) {
+  const v = w ?? 0, spread = Math.max(0, (g ?? v) - v), now = Date.now() / 1000;
+  if (v < 3 && spread < 4) return `<span class="wa">${arrow(dir)}</span>`;
+  const amp = Math.min(9, 2 + v * 0.18 + spread * 0.25).toFixed(1), sd = Math.max(1.4, 3.4 - v * 0.05).toFixed(2);
+  const kick = Math.min(26, 6 + spread * 1.1).toFixed(0), kd = Math.max(3.5, 11 - spread * 0.4).toFixed(1);
+  return `<span class="wa live" style="--amp:${amp}deg;--sd:${sd}s;--del:${(-(now % (2 * sd))).toFixed(2)}s;--kick:${kick}deg;--kd:${kd}s;--kdel:${(-((now + dir) % kd)).toFixed(2)}s"><span class="wa-k">${arrow(dir)}</span></span>`;
+}
+
 function stationCards(list) {
   if (!list.length) return '<div class="empty">Keine aktuellen Messwerte. Wetterstationen liefern derzeit keine Daten.</div>';
   const favs = [...S.fav].map(siteById).filter(Boolean);
@@ -978,7 +988,7 @@ function stationCards(list) {
       const g = num(x.gust) ? Math.round(x.gust) : null, w = num(x.wind) ? Math.round(x.wind) : null, top = Math.max(g ?? 0, w ?? 0);
       const age = ageMin(x.time, x.age), lvl = top >= bad ? 'bad' : top >= warn ? 'warn' : 'ok', old = age > 40;
       return `<div class="stc stc-${lvl}${old ? ' old' : ''}"><div class="stc-h"><b>${esc(x.name)}</b><span>${x.alt ?? '–'} m${n && n.r.name !== 'dir' ? ` · ${Math.round(n.d)} km zu ${esc(n.r.name.split(' ')[0])}` : n ? ` · ${Math.round(n.d)} km` : ''}</span></div>
-        <div class="stc-v"><span class="stc-w"><b>${w ?? '–'}</b><small>Wind</small></span><span class="stc-w"><b>${g ?? '–'}</b><small>Böen</small></span><span class="stc-d">${num(x.dir) ? arrow(x.dir) + ' ' + dirLabel(x.dir) : '–'}</span></div>
+        <div class="stc-v"><span class="stc-w"><b>${w ?? '–'}</b><small>Wind</small></span><span class="stc-w"><b>${g ?? '–'}</b><small>Böen</small></span><span class="stc-d">${num(x.dir) ? windArrow(x.dir, w, g) + ' ' + dirLabel(x.dir) : '–'}</span></div>
         <div class="stc-f">${num(x.temp) ? x.temp.toFixed(1) + '° · ' : ''}${old ? '<b>' + ageTxt(age) + '</b>' : ageTxt(age)}</div></div>`;
   };
   const first = rows.slice(0, 6), rest = rows.slice(6);
@@ -1415,6 +1425,12 @@ function gearAlertHtml(list = gearAlerts()) {
   return `<div class="lb-alert ${due ? 'due' : 'warn'}" role="status">${list.map(x => `<div><b>${esc(x.gear)}:</b> ${esc(x.text)}</div>`).join('')}</div>`;
 }
 
+/** Kleine Szene für leere Seiten: Tal mit Bergen, ein bis drei Schirme kreisen ruhig (Zierde, ohne Bewegung bei «weniger Bewegung»). */
+function sceneSvg(n = 1) {
+  const g = [[170, 58, 7, 0], [112, 44, 9, -3], [214, 76, 11, -6]].slice(0, n).map(([x, y, d, dl], i) => `<g class="es-c" style="transform-origin:${x}px ${y}px;animation-duration:${d}s;animation-delay:${dl}s"><g class="es-b" style="animation-delay:${-i * .7}s"><path class="es-w" d="M${x - 14} ${y}Q${x} ${y - 11} ${x + 14} ${y}"/><path class="es-l" d="M${x - 6} ${y}L${x} ${y + 11}L${x + 6} ${y}"/><circle class="es-p" cx="${x}" cy="${y + 12.5}" r="2"/></g></g>`).join('');
+  return `<svg class="es-svg" viewBox="0 0 280 140" aria-hidden="true"><circle class="es-sun" cx="236" cy="30" r="14"/><path class="es-m1" d="M0 140L0 96L46 70L84 90L132 46L178 82L226 62L280 86L280 140Z"/><path class="es-snow" d="M120 57L132 46L144 57L137 55L131 60Z"/><path class="es-m2" d="M0 140L0 118L90 106L170 118L280 104L280 140Z"/>${g}</svg>`;
+}
+
 function renderBook() {
   const el = $('#v-book');
   if (!LB.data) {
@@ -1438,16 +1454,12 @@ function renderBook() {
   const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
   const empty = !d.flights.length && !d.settings.flightsBefore && !d.gear.length;
   el.innerHTML = empty ? `
-    <div class="panel lb-start">
-      <h3>Dein Flugbuch ist noch leer</h3>
-      <p>So kommen deine Flüge hinein, in ein paar Sekunden:</p>
-      <ol class="lb-steps">
-        <li><b>Flüge von früher:</b> nur die Anzahl eintragen, damit dein Total stimmt.
-          <form id="lbSettings" class="lb-inline"><label class="fld"><span>Flüge</span><input type="number" inputmode="numeric" min="0" name="flightsBefore" placeholder="z.B. 120"></label><label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" placeholder="z.B. 80"></label><button class="btn sec" type="submit">Speichern</button></form></li>
-        <li><b>IGC-Dateien laden:</b> aus FlySkyHy, XCTrack oder dem Vario. Start, Landung, Dauer und Thermik füllt AFC selbst aus.
-          <div class="btn-row" style="justify-content:flex-start;margin-top:6px"><label class="btn lb-file">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label></div></li>
-        <li><b>Oder von Hand:</b> <button class="linkbtn" type="button" data-act="lbflight">Flug eintragen</button>, und unter <button class="linkbtn" type="button" data-act="lbgear">Ausrüstung</button> Schirm, Gurtzeug und Retter erfassen.</li>
-      </ol>
+    <div class="panel lb-start empty-scene">
+      ${sceneSvg(1)}
+      <h3>Noch keine Flüge</h3>
+      <p>Lade einen Flug aus deinem Vario oder Handy. Start, Landung, Dauer und Thermik füllt AFC selbst aus.</p>
+      <div class="btn-row es-btns"><label class="btn lb-file">IGC-Datei laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label><button class="btn sec" type="button" data-act="lbflight">Von Hand eintragen</button></div>
+      <div class="folds es-folds">${fold('lbbefore', 'Flüge von früher', 'nur die Anzahl, damit dein Total stimmt', `<form id="lbSettings" class="lb-inline"><label class="fld"><span>Flüge</span><input type="number" inputmode="numeric" min="0" name="flightsBefore" placeholder="z.B. 120"></label><label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" placeholder="z.B. 80"></label><button class="btn sec" type="submit">Speichern</button></form><p class="fine" style="margin:8px 0 0">Schirm, Gurtzeug und Retter erfasst du unter <button class="linkbtn" type="button" data-act="lbgear">Ausrüstung</button>.</p>`)}</div>
       <p class="fine">Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. Genau diese Rückmeldungen machen AFC besser.</p>
     </div>` : `
     ${feedbackHtml()}
@@ -5799,7 +5811,7 @@ function groupLineFor(siteId) {
 }
 function renderGroup() {
   const el = $('#v-group');
-  if (!ME.user) { el.innerHTML = '<div class="panel"><h3>Austausch</h3><p>Der Austausch braucht ein Konto. Lars kann dich mit einem Einladungslink dazunehmen.</p></div>'; return; }
+  if (!ME.user) { el.innerHTML = `<div class="panel empty-scene">${sceneSvg(3)}<h3>Fliegt ihr zusammen?</h3><p>Hier siehst du, wer wo fliegen will und wie es am Startplatz war. Dafür braucht es ein Konto: Lars nimmt dich mit einem Einladungslink dazu.</p></div>`; return; }
   if (!G.data) {
     el.innerHTML = '<div class="warm"><div class="spinner"></div>Austausch wird geladen …</div>';
     if (!G.req) G.req = groupLoad().catch(err => { el.innerHTML = `<div class="empty">${esc(errTxt(err))}</div>`; }).finally(() => { G.req = null; });
@@ -6009,7 +6021,21 @@ async function inviteCreate() {
 }
 
 /* ---------------------------------------------------------------- Start */
+/** Auftakt beim Öffnen: ein Schirm gleitet über den Grat ins AFC-Logo, während die Prognose lädt. Einmal pro Tag in voller
+    Länge, sonst blendet der Vorhang sofort weich aus (wie der Startbildschirm einer App). Läuft in CSS, damit er schon vor
+    dem Skript zu sehen ist; ohne Skript blendet er nach 6 s von selbst aus. */
+let openerUntil = 0;
+function opener() {
+  const o = $('#opener');
+  if (!o) return;
+  const day = todayKey(), seen = store.get('openDay') === day;
+  store.set('openDay', day);
+  const out = wait => { openerUntil = performance.now() + wait + 600; setTimeout(() => { o.classList.add('op-out'); setTimeout(() => o.remove(), 650); }, wait); };
+  if (seen || noMotion()) out(0); else out(Math.max(0, 2700 - performance.now()));
+}
+
 (async function init() {
+  opener();
   const t = store.get('tab');
   if (['decide', 'map', 'lage', 'day', 'book', 'group', 'profile'].includes(t)) S.tab = t;
   applyTheme();
@@ -6029,7 +6055,7 @@ async function inviteCreate() {
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   myLoad();
-  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, 600);
+  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, Math.max(600, openerUntil - performance.now() + 150));
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
   if ('serviceWorker' in navigator) {
