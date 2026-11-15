@@ -314,7 +314,7 @@
     },
     "demAlt": 1889
    },
-   "short": "Start 1"
+   "short": "Niederhorn 1"
   },
   {
    "id": "niederhorn-2",
@@ -365,7 +365,7 @@
     },
     "demAlt": 1925
    },
-   "short": "Start 2"
+   "short": "Niederhorn 2"
   },
   {
    "id": "niederhorn-3",
@@ -416,7 +416,7 @@
     },
     "demAlt": 1927
    },
-   "short": "Start 3"
+   "short": "Niederhorn 3"
   },
   {
    "id": "niederhorn-land-1",
@@ -510,7 +510,7 @@
     },
     "demAlt": 1075
    },
-   "short": "Start 1"
+   "short": "Luegibrüggli 1"
   },
   {
    "id": "luegibrueggli-2",
@@ -561,7 +561,7 @@
     },
     "demAlt": 1089
    },
-   "short": "Start 2"
+   "short": "Luegibrüggli 2"
   },
   {
    "id": "schynige-1",
@@ -612,7 +612,7 @@
     },
     "demAlt": 1743
    },
-   "short": "Start 1"
+   "short": "Schynige Platte 1"
   },
   {
    "id": "schynige-2",
@@ -664,7 +664,7 @@
     },
     "demAlt": 1553
    },
-   "short": "Start 2"
+   "short": "Schynige Platte 2"
   },
   {
    "id": "first",
@@ -1216,7 +1216,7 @@
     },
     "demAlt": 2085
    },
-   "short": "Start 1"
+   "short": "Stockhorn 1"
   },
   {
    "id": "stockhorn-2",
@@ -1271,7 +1271,7 @@
     },
     "demAlt": 2122
    },
-   "short": "Start 2"
+   "short": "Stockhorn 2"
   },
   {
    "id": "stockhorn-land-1",
