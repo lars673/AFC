@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.12';
+const APP_VER = '12.13';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -184,6 +184,10 @@ async function prefetchDetails() {
 
 /* ---------------------------------------------------------------- Bausteine */
 const siteById = id => S.plan.sites.find(s => s.id === id);
+/** Startplatznamen wie in der Pilotenszene: im Gebiet nur der Name («First»), ausserhalb mit Gebiet («Grindelwald First»). */
+const siteArea = s => S.plan?.areas.find(a => a.id === s?.area || a.sites.includes(s?.id));
+const nm = s => s?.short || s?.name || '';
+const nmFull = s => { const a = siteArea(s)?.name, n = nm(s); return a && s?.short && a !== n && !n.startsWith(a) ? a + ' ' + n : n; };
 const areaById = id => S.plan.areas.find(a => a.id === id);
 function dayName(i) {
   // nach dem Datum, nicht nach der Position: ein gespeicherter Plan von gestern beginnt mit «Gestern»
@@ -482,8 +486,9 @@ function panoHtml(siteId) {
 /** Tagesaussage: eine Überschrift, der beste Start als antippbare Zeile, darunter höchstens kurze Stichworte. */
 function headlineHtml(h, conf, sky) {
   const s = h.site ? siteById(h.site) : null, area = s ? S.plan.areas.find(a => a.sites.includes(s.id)) : null;
-  const best = s ? `<button type="button" class="hl-best" data-act="site" data-id="${esc(s.id)}"><span class="mini-pill s-${cls(h.score)}" data-cu="hl">${h.score}</span><span class="hl-bt"><small>${h.score >= 55 ? 'Bester Start' : 'Bester Startplatz, trotzdem zu tief'}</small><b>${esc(s.name)}</b><span>${h.win[0]}–${h.win[1]} Uhr${area && !s.name.startsWith(area.name) ? ' · ' + esc(area.name) : ''}</span></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : '';
-  const notes = s ? (h.notes?.length ? `<ul class="hl-notes">${h.notes.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
+  const best = s ? `<button type="button" class="hl-best" data-act="site" data-id="${esc(s.id)}"><span class="mini-pill s-${cls(h.score)}" data-cu="hl">${h.score}</span><span class="hl-bt"><small>${h.score >= 55 ? 'Bester Start' : 'Bester Startplatz, trotzdem zu tief'}</small><b>${esc(nm(s))}</b><span>${h.win[0]}–${h.win[1]} Uhr${area && area.name !== nm(s) ? ' · ' + esc(area.name) : ''}</span></span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : '';
+  const keep = (h.notes || []).filter(n => /^(Regional|Der Flugtag)/.test(n));   // nur das Nötigste: Gründe stehen im Startplatz
+  const notes = s ? (keep.length ? `<ul class="hl-notes">${keep.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
   const k = typeof sky === 'string' ? sky : sky?.k;
   const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site)}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
   return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
@@ -517,11 +522,11 @@ function areaRow(a, top = false) {
   const open = S.open.has(a.id), hasFav = sites.some(s => S.fav.has(s.id));
   const best = d && siteById(d.siteId), nowH = nowHourToday();
   const km = S.pos ? Math.round(Math.min(...sites.map(s => haversineKm(S.pos[0], S.pos[1], s.lat, s.lon)))) : null;
-  const sub = d ? `${esc(best.name)} · ${winText(d.best)}` : (isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster');
+  const sub = d ? `${esc(nm(best))} · ${winText(d.best)}` : (isToday() ? 'Heute kein Flugfenster mehr' : 'Kein auswertbares Fenster');
   const score = x => (x.blocked ? -1 : x.days[S.day].best?.score ?? -1);
   const srow = (s, inGroup) => {
     const b = s.days[S.day].best;
-    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(s.name)} öffnen"><span class="srow-name">${esc(inGroup ? shortName(s.name, inGroup) : s.name)}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}" data-cu="s:${esc(s.id)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
+    return `<div class="srow${inGroup ? ' in-grp' : ''}"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}" aria-label="${esc(nmFull(s))} öffnen"><span class="srow-name">${esc(inGroup ? shortName(nm(s), inGroup) : nm(s))}${skyIcon(s.days[S.day].sky, 18)}</span><span class="srow-sub">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}${s.blocked ? ' · gesperrt' : ''}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${s.blocked ? 'none' : cls(b?.score)}" data-cu="s:${esc(s.id)}">${s.blocked ? '✕' : b ? b.score : '–'}</div></div></div>`;
   };
   // Startplätze am selben Berg (höchstens 1.5 km auseinander) zusammen, beste Richtung zuerst
   const rows = mountainGroups(sites).map(g => g.sites.sort((x, y) => score(y) - score(x)))
@@ -577,7 +582,7 @@ const CONF_WORD = { gut: 'sicher', mittel: 'eher unsicher', unsicher: 'unsicher'
 /** Wie sicher die Prognose für den gewählten Tag ist, mit Gründen (Vorlauf, ICON gegen ECMWF). */
 function confHtml(c) {
   if (!c) return '';
-  return `<p class="conf c-${c.level}"><span class="conf-bar" aria-hidden="true"><i style="width:${c.score}%"></i></span><span><b>Prognose ${CONF_WORD[c.level]}</b> · ${esc(c.why.join(', '))}</span></p>`;
+  return `<p class="conf c-${c.level}" title="${esc(c.why.join(', '))}"><span class="conf-bar" aria-hidden="true"><i style="width:${c.score}%"></i></span><span><b>Prognose ${CONF_WORD[c.level]}</b>${c.level !== 'gut' && c.why[0] ? ' · ' + esc(c.why[0]) : ''}</span></p>`;
 }
 function renderDecide() {
   const el = $('#v-decide');
@@ -609,7 +614,7 @@ function renderDecide() {
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
     ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
-      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(s.name)}${skyIcon(s.days[S.day].sky, 18, true)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}" data-cu="f:${esc(s.id)}">${b ? b.score : '–'}</div></div></div>`;
+      return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(nmFull(s))}${skyIcon(s.days[S.day].sky, 18, true)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}" data-cu="f:${esc(s.id)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
@@ -2196,7 +2201,7 @@ async function openSite(id) {
   S.site = id; S.hour = null; S.panel = null;
   for (const k of [...FOLD.keys()]) if (!/^(lb|lage)/.test(k)) FOLD.delete(k);   // jedes Öffnen beginnt ruhig: nur das Wichtige ist aufgeklappt
   const flow = flowStart(id);
-  const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${miniHtml(base)}<div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
+  const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(nm(base))}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${miniHtml(base)}<div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
   if (flow) flowGrow(dl, flow);
   miniMount();
   try {
@@ -2208,7 +2213,7 @@ async function openSite(id) {
     renderSite(true);
   } catch (e) {
     flowEnd(); miniEnd();
-    dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(base.name)}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${siteFallbackHtml(base, e)}</div>`);
+    dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(nm(base))}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${siteFallbackHtml(base, e)}</div>`);
   }
 }
 /** Ohne Verbindung und ohne gespeicherte Details: das Wichtigste aus dem Plan zeigen statt einer Fehlermeldung. */
@@ -2543,21 +2548,31 @@ function renderSite(fresh = false) {
       ${ME.user && isToday() ? `<p class="nofly-l"><button class="linkbtn" type="button" data-act="nofly" data-id="${esc(s.id)}">Heute hier nicht gestartet?</button> <button class="linkbtn" type="button" data-act="feedback" data-v="forecast">Prognose stimmte nicht?</button></p>` : ''}
       ${webcamHtml(s)}
     </div>`;
+  // Nur das Nötigste zuerst (Lars, 15.11.2026): Ring, Entscheid, eine Zeile, die wichtigsten Zahlen; Gründe und Details in Falten
+  const whyList = hr?.why?.length ? [...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map((f, i) => [f, i]).sort((a, b) => (WHY_ORDER[a[0].lvl] ?? 3) - (WHY_ORDER[b[0].lvl] ?? 3) || a[1] - b[1]).map(([f]) => f) : [];
+  const worst = whyList.find(f => f.lvl !== 'ok'), nWarn = whyList.filter(f => f.lvl !== 'ok').length;
+  const headLine = hr ? (hr.cap != null ? `Gedeckelt auf ${hr.cap}: ${worst ? esc(worst.k) : 'K.-o.-Kriterium'}` : worst ? `Beachten: ${esc(worst.k)}${nWarn > 1 ? ` und ${nWarn - 1} weitere${nWarn > 2 ? '' : 's'}` : ''}` : 'Alles im grünen Bereich') : '';
   const detailHtml = hr ? `
     <div class="hr-detail">
-      <div class="hr-head">${ringHtml(hr.score, ringFrom)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine" style="margin:0">${hr.cap != null ? 'Gedeckelt auf ' + hr.cap + ' wegen K.-o.-Kriterium' : 'Kein K.-o.-Kriterium aktiv'}</p></div></div>
-      ${hr.why?.length ? `<h3 class="why-h">Kurz erklärt</h3><ul class="why">${[...hr.why, P()?.pilotHint({ ...store.get('pilot', {}), maxWind: ME.profile?.maxWind, maxGust: ME.profile?.maxGust }, hr)].filter(Boolean).map((f, i) => [f, i]).sort((a, b) => (WHY_ORDER[a[0].lvl] ?? 3) - (WHY_ORDER[b[0].lvl] ?? 3) || a[1] - b[1]).map(([f]) => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : ''}
-      <div class="kv">
-        <div class="kv-wind"><b><span data-cu="k:speed">${hr.speed ?? '–'}</span> ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span>${sockHtml(hr.speed, hr.gust)}</div>
-        <div><b data-cu="k:gust">${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
-        <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
-        <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
-        ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30, true)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
+      <div class="hr-head">${ringHtml(hr.score, ringFrom)}<div><h3>${hr.h}–${hr.h + 1} Uhr: ${DECISION[c]}</h3><p class="fine hr-line${worst ? ' warn' : ''}" style="margin:0">${headLine}</p></div></div>
+      <div class="kv-mini">
+        <span><b><span data-cu="k:speed">${hr.speed ?? '–'}</span> ${arrow(hr.dir)}</b><small>Wind ${dirLabel(hr.dir)}</small></span>
+        <span><b data-cu="k:gust">${hr.gust ?? '–'}</b><small>Böen</small></span>
+        <span><b>${hr.cloudMargin != null ? (hr.cloudMargin >= 0 ? '+' : '') + hr.cloudMargin : '–'}</b><small>Basis m</small></span>
+        <span><b>${hr.pop ?? '–'}%</b><small>Regen</small></span>
       </div>
       ${actionsHtml}
     </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
-  const reasonsFold = hr ? fold('reasons', 'Alle Gründe für den Score', hr.hard.length ? `${hr.hard.length} K.-o.-${hr.hard.length === 1 ? 'Kriterium' : 'Kriterien'}${hr.reasons.length ? ', ' + hr.reasons.length + ' weitere Punkte' : ''}` : hr.reasons.length ? `${hr.reasons.length} ${hr.reasons.length === 1 ? 'Punkt' : 'Punkte'}` : 'keine Auffälligkeiten',
-    `${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="fine" style="margin:0">Keine Auffälligkeiten.</p>'}`) : '';
+  const whyHtml = whyList.length ? `<ul class="why">${whyList.map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : '';
+  const reasonsFold = hr ? fold('reasons', 'Warum dieser Score', hr.hard.length ? `${hr.hard.length} K.-o.-${hr.hard.length === 1 ? 'Kriterium' : 'Kriterien'}` : nWarn ? `${nWarn} ${nWarn === 1 ? 'Punkt' : 'Punkte'} beachten` : `${whyList.length || 'alle'} Punkte geprüft, alles gut`,
+    `${whyHtml}${hr.hard.length ? `<ul class="ko">${hr.hard.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${hr.reasons.length ? `<ul class="rs">${hr.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}`) : '';
+  const windFold = hr ? fold('windkv', 'Wind und Wolken', `${hr.speed ?? '–'} km/h aus ${dirLabel(hr.dir)}, Böen ${hr.gust ?? '–'}${hr.sky ? ', ' + SKY_T[hr.sky].toLowerCase() : ''}`, `<div class="kv">
+        <div class="kv-wind"><b>${hr.speed ?? '–'} ${arrow(hr.dir)}</b><span>Wind km/h aus ${dirLabel(hr.dir)} (${hr.dir ?? '–'}°)</span>${sockHtml(hr.speed, hr.gust)}</div>
+        <div><b>${hr.gust ?? '–'}</b><span>Böen km/h</span></div>
+        <div><b>${hr.cloudMargin ?? '–'} m</b><span>Wolkenbasis über Start${hr.cloudBase ? ' (Basis ' + hr.cloudBase + ' m)' : ''}</span></div>
+        <div><b>${hr.pop ?? '–'} %</b><span>Regenrisiko</span></div>
+        ${hr.sky ? `<div class="kv-sky"><b>${skyIcon({ k: hr.sky, cloud: hr.cloud }, 30, true)}</b><span>${SKY_T[hr.sky]}${hr.cloud != null ? ', Bewölkung ' + hr.cloud + ' %' : ''}. Nur zur Info, zählt nicht zum Score</span></div>` : ''}
+      </div>`) : '';
   const proFold = hr ? fold('pro', 'Für Profis', 'Windprofil, Thermik, Scherung, Modelle', `
       <div class="kv">
         <div><b>${hr.head ?? '–'} / ${hr.tail ?? '–'}</b><span>Gegenwind / Rückenwind${hr.wd != null ? ', ' + hr.wd + '° neben dem Hang' : ''}</span></div>
@@ -2573,18 +2588,19 @@ function renderSite(fresh = false) {
       ${profileHtml(hr.prof)}`, { open: !!store.get('proOpen') }) : '';
   const table = hrs.length ? `<div class="hours-tbl"><table><thead><tr><th>Uhr</th><th><span class="sr">Wetter</span></th><th>Score</th><th>Wind</th><th>Böen</th><th>Dir.</th><th>Basis</th><th>Regen</th></tr></thead><tbody>${hrs.map(h => `<tr class="${h.h === hr?.h ? 'sel' : ''}" data-act="hour" data-h="${h.h}" tabindex="0"><td>${h.h}</td><td>${skyIcon(h.sky ? { k: h.sky, cloud: h.cloud } : null, 22)}</td><td><b class="mini-pill s-${cls(h.score)}" style="display:inline-block">${h.score}</b></td><td>${h.speed ?? '–'}</td><td>${h.gust ?? '–'}</td><td>${arrow(h.dir)} ${dirLabel(h.dir)}</td><td>${h.cloudBase ?? '–'}</td><td>${h.pop ?? '–'} %</td></tr>`).join('')}</tbody></table></div>` : '';
   dlg('#siteDlg', `<div class="dlg-in">
-    <div class="dlg-h"><div><h2 id="siteDlgT">${esc(s.name)}</h2><p class="fine" style="margin:2px 0 0">${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
+    <div class="dlg-h"><div><h2 id="siteDlgT">${esc(nm(s))}</h2><p class="fine" style="margin:2px 0 0">${siteArea(s) && siteArea(s).name !== nm(s) ? esc(siteArea(s).name) + ' · ' : ''}${s.alt} m · Ausrichtung ${esc(aspectText(s))}${s.status ? ' · ' + esc(s.status) : ''}</p></div><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     ${d._savedAt ? `<div class="saved-note" role="status"><b>Kein Empfang: gespeicherter Stand von ${esc(whenTxt(d._savedAt))}.</b> Nicht für den Startentscheid verwenden, Wind vor Ort prüfen.</div>` : ''}
     ${miniHtml(s)}
-    <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20, true)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · bestes Fenster <strong>${winText(day?.best)}</strong>${day?.best ? ` · Score ${day.best.score}` : ''}</div>
+    <div><strong>${dayName(S.day)}</strong>${(() => { const sk = siteById(s.id)?.days?.[S.day]?.sky; return sk ? ` ${skyIcon(sk, 20, true)} <span class="fine-i">${esc(sk.t)}</span>` : ''; })()} · <strong>${winText(day?.best)}</strong></div>
     ${ribbon(scores, day?.best, { big: true, btn: true, sel: hr?.h, axis: true, now: nowHourToday() })}
     ${detailHtml}
     <div class="folds">
+    ${reasonsFold}
+    ${windFold}
     ${landingHtml(s, hr)}
     ${fold('obst', 'Kabel und Hindernisse', 'wird geprüft …', '<div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div>', { sumId: 'obstSum' })}
     ${S.day === 0 && !d._savedAt ? fold('radar', 'Regen jetzt', 'wird geprüft …', '<div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div>', { sumId: 'radarSum' }) : ''}
     ${table ? fold('hours', 'Alle Stunden', `${hrs[0].h} bis ${hrs.at(-1).h + 1} Uhr: Score, Wind, Böen, Basis, Regen`, table) : ''}
-    ${reasonsFold}
     ${fold('nowcast', 'Messung gegen Prognose', nc ? `${esc(nc.name)}: ${nc.obs} km/h gemessen, ${nc.fc} vorhergesagt` : 'keine passende Station in der Nähe', nc ? `<p style="margin:0">${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>')}
     ${proFold}
     </div>
@@ -3793,7 +3809,7 @@ function mapSheet(kind, id) {
     h = obstSheetHtml(id);
   } else if (kind === 'site') {
     const s = siteById(id), b = s.days[S.day]?.best;
-    h = `<div class="sheet-top"><div><h3>${esc(s.name)}</h3><p class="fine" style="margin:0">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}</p></div>${pill(s.blocked ? null : b?.score)}</div><div class="sheet-act"><button class="btn" type="button" data-act="site" data-id="${esc(id)}">Details</button>${starBtn(id)}<button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+    h = `<div class="sheet-top"><div><h3>${esc(nmFull(s))}</h3><p class="fine" style="margin:0">${s.alt} m · ${esc(aspectText(s))} · ${b ? winText(b) : 'kein Fenster'}</p></div>${pill(s.blocked ? null : b?.score)}</div><div class="sheet-act"><button class="btn" type="button" data-act="site" data-id="${esc(id)}">Details</button>${starBtn(id)}<button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else if (kind === 'group') {
     const ss = id.map(siteById).filter(Boolean);
     const pts = ss.map(x => [x.lat, x.lon]);

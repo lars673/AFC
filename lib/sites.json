@@ -56,7 +56,8 @@
      "345": 10.8
     },
     "demAlt": 1314
-   }
+   },
+   "short": "Chalet"
   },
   {
    "id": "amis-bergbo",
@@ -107,7 +108,8 @@
      "345": 27.9
     },
     "demAlt": 1288
-   }
+   },
+   "short": "Bergbo"
   },
   {
    "id": "amis-3",
@@ -157,7 +159,8 @@
      "345": 9.8
     },
     "demAlt": 1328
-   }
+   },
+   "short": "Start 3"
   },
   {
    "id": "amis-4",
@@ -207,7 +210,8 @@
      "345": 30.2
     },
     "demAlt": 1317
-   }
+   },
+   "short": "Start 4"
   },
   {
    "id": "amis-hohwald",
@@ -258,7 +262,8 @@
      "345": 14.5
     },
     "demAlt": 1577
-   }
+   },
+   "short": "Hohwald"
   },
   {
    "id": "niederhorn-1",
@@ -308,7 +313,8 @@
      "345": 0
     },
     "demAlt": 1889
-   }
+   },
+   "short": "Start 1"
   },
   {
    "id": "niederhorn-2",
@@ -358,7 +364,8 @@
      "345": 0
     },
     "demAlt": 1925
-   }
+   },
+   "short": "Start 2"
   },
   {
    "id": "niederhorn-3",
@@ -408,7 +415,8 @@
      "345": 0.1
     },
     "demAlt": 1927
-   }
+   },
+   "short": "Start 3"
   },
   {
    "id": "niederhorn-land-1",
@@ -501,7 +509,8 @@
      "345": 28
     },
     "demAlt": 1075
-   }
+   },
+   "short": "Start 1"
   },
   {
    "id": "luegibrueggli-2",
@@ -551,7 +560,8 @@
      "345": 42.2
     },
     "demAlt": 1089
-   }
+   },
+   "short": "Start 2"
   },
   {
    "id": "schynige-1",
@@ -601,7 +611,8 @@
      "345": 0.5
     },
     "demAlt": 1743
-   }
+   },
+   "short": "Start 1"
   },
   {
    "id": "schynige-2",
@@ -652,14 +663,15 @@
      "345": 0.7
     },
     "demAlt": 1553
-   }
+   },
+   "short": "Start 2"
   },
   {
    "id": "first",
    "name": "First Startplatz",
    "type": "start",
-   "area": "grindelwald-first",
-   "group": "Grindelwald First",
+   "area": "grindelwald",
+   "group": "Grindelwald",
    "lat": 46.65745,
    "lon": 8.0551333,
    "alt": 2123,
@@ -706,15 +718,16 @@
      "345": 12.1
     },
     "demAlt": 2099
-   }
+   },
+   "short": "First"
   },
   {
    "id": "first-grund",
    "name": "First Landeplatz Grund",
    "type": "landing",
    "main": true,
-   "area": "grindelwald-first",
-   "group": "Grindelwald First",
+   "area": "grindelwald",
+   "group": "Grindelwald",
    "lat": 46.6202917,
    "lon": 8.0290556,
    "alt": 950,
@@ -728,8 +741,8 @@
    "id": "first-bodmi",
    "name": "First Landeplatz Bodmi",
    "type": "landing",
-   "area": "grindelwald-first",
-   "group": "Grindelwald First",
+   "area": "grindelwald",
+   "group": "Grindelwald",
    "lat": 46.6287583,
    "lon": 8.0433194,
    "alt": 1129,
@@ -789,7 +802,8 @@
      "345": 23.9
     },
     "demAlt": 2000
-   }
+   },
+   "short": "Waldspitz"
   },
   {
    "id": "pfingstegg",
@@ -840,7 +854,8 @@
      "345": 9.3
     },
     "demAlt": 1386
-   }
+   },
+   "short": "Pfingstegg"
   },
   {
    "id": "maennlichen",
@@ -892,7 +907,8 @@
      "345": 0
     },
     "demAlt": 2255
-   }
+   },
+   "short": "Männlichen"
   },
   {
    "id": "schilthorn",
@@ -943,7 +959,8 @@
      "345": 0
     },
     "demAlt": 2904
-   }
+   },
+   "short": "Schilthorn"
   },
   {
    "id": "schilthorn-land",
@@ -1009,7 +1026,8 @@
      "345": 14.8
     },
     "demAlt": 2094
-   }
+   },
+   "short": "Schiltgrat"
   },
   {
    "id": "wurmegg",
@@ -1059,7 +1077,8 @@
      "345": 15
     },
     "demAlt": 1709
-   }
+   },
+   "short": "Wurmegg"
   },
   {
    "id": "niesen",
@@ -1111,7 +1130,8 @@
      "345": 0
     },
     "demAlt": 2270
-   }
+   },
+   "short": "Niesen"
   },
   {
    "id": "niesen-land-1",
@@ -1195,7 +1215,8 @@
      "345": 28.5
     },
     "demAlt": 2085
-   }
+   },
+   "short": "Start 1"
   },
   {
    "id": "stockhorn-2",
@@ -1249,7 +1270,8 @@
      "345": 10.4
     },
     "demAlt": 2122
-   }
+   },
+   "short": "Start 2"
   },
   {
    "id": "stockhorn-land-1",
@@ -1333,7 +1355,8 @@
      "345": 32.7
     },
     "demAlt": 1559
-   }
+   },
+   "short": "Hus"
   },
   {
    "id": "mentschelen",
@@ -1387,7 +1410,8 @@
      "345": 0
     },
     "demAlt": 1374
-   }
+   },
+   "short": "Mentschelenalp"
   },
   {
    "id": "mentschelen-land",
@@ -1452,7 +1476,8 @@
      "345": 17.8
     },
     "demAlt": 1489
-   }
+   },
+   "short": "Ramslauen"
   },
   {
    "id": "ramslauen-land",
@@ -1517,7 +1542,8 @@
      "345": 23.7
     },
     "demAlt": 1746
-   }
+   },
+   "short": "Oeschinen 1"
   },
   {
    "id": "oeschinen-2",
@@ -1567,7 +1593,8 @@
      "345": 24
     },
     "demAlt": 1690
-   }
+   },
+   "short": "Oeschinen 2"
   },
   {
    "id": "oeschinen-land",
@@ -1632,7 +1659,8 @@
      "345": 32.4
     },
     "demAlt": 1820
-   }
+   },
+   "short": "Allmenalp"
   },
   {
    "id": "allmenalp-land",
@@ -1697,7 +1725,8 @@
      "345": 0
     },
     "demAlt": 2666
-   }
+   },
+   "short": "Blümlisalp"
   },
   {
    "id": "tschenten-1",
@@ -1748,7 +1777,8 @@
      "345": 5.1
     },
     "demAlt": 2006
-   }
+   },
+   "short": "Tschentenalp 1"
   },
   {
    "id": "tschenten-2",
@@ -1800,7 +1830,8 @@
      "345": 6.9
     },
     "demAlt": 1882
-   }
+   },
+   "short": "Tschentenalp 2"
   },
   {
    "id": "tschenten-land-1",
@@ -1896,7 +1927,8 @@
      "345": 6.5
     },
     "demAlt": 1707
-   }
+   },
+   "short": "Kuonisbergli"
   },
   {
    "id": "maeggisseren",
@@ -1948,7 +1980,8 @@
      "345": 18.2
     },
     "demAlt": 1737
-   }
+   },
+   "short": "Mäggisseren"
   },
   {
    "id": "maeggisseren-land",
@@ -2016,7 +2049,8 @@
     },
     "demAlt": 1597
    },
-   "altSource": "Höhenmodell"
+   "altSource": "Höhenmodell",
+   "short": "Grimer"
   },
   {
    "id": "engstligen-1",
@@ -2066,7 +2100,8 @@
      "345": 1.5
     },
     "demAlt": 1931
-   }
+   },
+   "short": "Engstligenalp 1"
   },
   {
    "id": "engstligen-2",
@@ -2116,7 +2151,8 @@
      "345": 0.3
     },
     "demAlt": 2167
-   }
+   },
+   "short": "Engstligenalp 2"
   },
   {
    "id": "planplatten-1",
@@ -2168,7 +2204,8 @@
      "345": 0.8
     },
     "demAlt": 2215
-   }
+   },
+   "short": "Planplatten 1"
   },
   {
    "id": "planplatten-2",
@@ -2222,7 +2259,8 @@
      "345": 0.8
     },
     "demAlt": 2217
-   }
+   },
+   "short": "Planplatten 2"
   },
   {
    "id": "planplatten-land-1",
@@ -2317,7 +2355,8 @@
      "345": 0
     },
     "demAlt": 1917
-   }
+   },
+   "short": "Wispile 1"
   },
   {
    "id": "wispile-2",
@@ -2367,7 +2406,8 @@
      "345": 0.1
     },
     "demAlt": 1883
-   }
+   },
+   "short": "Wispile 2"
   },
   {
    "id": "wispile-3",
@@ -2418,7 +2458,8 @@
     },
     "demAlt": 1889
    },
-   "altSource": "Höhenmodell"
+   "altSource": "Höhenmodell",
+   "short": "Wispile 3"
   },
   {
    "id": "wispile-land-1",
@@ -2490,7 +2531,8 @@
      "345": 0
     },
     "demAlt": 1906
-   }
+   },
+   "short": "Windegg"
   },
   {
    "id": "axalp-schyberg",
@@ -2546,7 +2588,8 @@
      "345": 2.7
     },
     "demAlt": 1572
-   }
+   },
+   "short": "Schyberg"
   },
   {
    "id": "axalp-land-aaregg",

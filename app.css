@@ -1425,3 +1425,10 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 :root:not([data-theme="sun"]) .alist .mini-pill.s-go, :root:not([data-theme="sun"]) .cards .mini-pill.s-go { --pc: var(--go); } :root:not([data-theme="sun"]) .alist .mini-pill.s-ready, :root:not([data-theme="sun"]) .cards .mini-pill.s-ready { --pc: var(--ready); }
 :root:not([data-theme="sun"]) .alist .mini-pill.s-check, :root:not([data-theme="sun"]) .cards .mini-pill.s-check { --pc: var(--check); color: color-mix(in srgb, var(--check) 55%, var(--ink)); } :root:not([data-theme="sun"]) .alist .mini-pill.s-wait, :root:not([data-theme="sun"]) .cards .mini-pill.s-wait { --pc: var(--wait); }
 :root:not([data-theme="sun"]) .alist .mini-pill.s-no, :root:not([data-theme="sun"]) .cards .mini-pill.s-no { --pc: var(--no); } :root:not([data-theme="sun"]) .alist .mini-pill.s-none, :root:not([data-theme="sun"]) .cards .mini-pill.s-none { color: var(--muted); }
+/* Startplatz: die wichtigsten Zahlen in einer Zeile, Details in den Falten */
+.kv-mini { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 2px; }
+.kv-mini > span { display: grid; gap: 1px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); min-width: 0; }
+.kv-mini b { font: 700 21px/1.1 var(--f-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kv-mini b .arr { width: 16px; height: 16px; vertical-align: -1px; }
+.kv-mini small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hr-line.warn { color: color-mix(in srgb, var(--wait) 70%, var(--ink)); font-weight: 600; }
