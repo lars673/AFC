@@ -26,6 +26,8 @@ import { cleanFlight, cleanGear, cleanSettings, cleanBackup, flightsCsv, siteFee
 import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs, groupNotice } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
+import { parseLive, makeTracker } from './lib/live.js';
+import { readGrid, elevAt } from './lib/pano.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from './lib/learn.js';
 import { fetchRegionalHistory, eventDays } from './lib/backfill.js';
@@ -839,6 +841,30 @@ async function mediaRoute(req, res, p, u) {
   }
 }
 
+/* ------------------------------------------------------------------ Live-Piloten (OGN): wer fliegt, wie es steigt (lib/live.js) */
+// Geholt wird nur, wenn jemand die App offen hat, höchstens alle 20 Sekunden und nur für den Ausschnitt des Geländerasters.
+const OGN_URL = () => process.env.AFC_OGN_URL ?? 'https://live.glidernet.org/lxml.php';
+let liveGrid; const liveElev = (lat, lon) => { try { liveGrid ??= readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin'))); return elevAt(liveGrid, lat, lon); } catch { liveGrid = { nx: 0, ny: 0 }; return null; } };
+const liveTrack = makeTracker(liveElev);
+let liveAt = 0, liveOkAt = 0, liveReq = null, liveErr = null;
+async function liveData() {
+  if (!OGN_URL()) return { ok: false, off: true };
+  if (Date.now() - liveAt >= 20000) {
+    liveReq ??= (async () => {
+      liveAt = Date.now();
+      try {
+        const r = await fetch(`${OGN_URL()}?a=0&b=47.05&c=46.1&d=8.7&e=6.8&z=2`, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'AFC Flugwetter' } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        liveTrack.update(parseLive(await r.text()));
+        liveOkAt = Date.now(); liveErr = null;
+      } catch (e) { liveErr = String(e.message || e).slice(0, 80); }
+    })().finally(() => { liveReq = null; });
+    await liveReq;
+  }
+  if (!liveOkAt || Date.now() - liveOkAt > 5 * 60000) return { ok: false, error: 'Live-Daten nicht erreichbar' };
+  return { ok: true, at: new Date(liveOkAt).toISOString(), source: 'Open Glider Network (glidernet.org)', ...liveTrack.snapshot(SITES) };
+}
+
 function sendJson(req, res, code, obj) {
   const b = Buffer.from(JSON.stringify(obj));
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...SEC, ...corsHeaders(req) });
@@ -1455,6 +1481,7 @@ const server = http.createServer(async (req, res) => {
       }
       // MyAFC: Fragen an die KI in AFC (lib/myafc.js). Der Schlüssel liegt nur in der Umgebung (ANTHROPIC_API_KEY).
       if (p === '/api/myafc') return myafcRoute(req, res);
+      if (req.method === 'GET' && p === '/api/live') return sendJson(req, res, 200, await liveData());
       // Webcam-Check: eine Webcam-Adresse je Startplatz, die alle sehen. Ändern darf, wer sie hinterlegt hat, oder der Admin.
       if (p === '/api/cams') {
         const me = userOf(req), all = sharedCams();

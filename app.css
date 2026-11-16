@@ -1473,3 +1473,20 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 :root:not([data-theme="sun"]) .arow.tc-card { background: var(--glass2); border-color: var(--glass-line); border-radius: 22px; }
 :root:not([data-theme="sun"]) .mapbox { border-radius: 24px; border-color: var(--glass-line); }
 :root:not([data-theme="sun"]) .day { box-shadow: none; }
+
+/* ---- 12.16 Live-Piloten: Schirm in Flugrichtung mit Steigen, Steigpunkte als ruhig pulsierender Ring */
+.live-line { display: block; margin: 0; font-size: 14.5px; color: var(--ink); }
+.live-line[hidden] { display: none; }
+.live-all { width: 100%; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel2); text-align: left; min-height: 40px; }
+.live-dot { display: inline-block; margin-right: 7px; vertical-align: 1px; width: 9px; height: 9px; border-radius: 50%; background: var(--go); box-shadow: 0 0 0 0 color-mix(in srgb, var(--go) 60%, transparent); animation: live-pulse 2.2s ease-out infinite; }
+.live-dot.old { background: var(--muted); animation: none; }
+@keyframes live-pulse { 70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.lv { display: inline-flex; align-items: center; gap: 2px; height: 30px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); --c: #5b6b78; }
+.lv svg { width: 30px; height: 30px; flex: none; fill: var(--c); stroke: #fff; stroke-width: 1.6; stroke-linejoin: round; }
+.lv b { font: 700 13px/1 var(--f-num); color: #fff; background: var(--c); border-radius: 99px; padding: 3px 6px; white-space: nowrap; }
+.lv-up { --c: #128a45; } .lv-down { --c: #2f6fb5; }
+.lv-spot { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; opacity: var(--o, 1); background: radial-gradient(circle, rgba(18,138,69,.5) 0 38%, rgba(18,138,69,.16) 40% 100%); border: 2px solid rgba(18,138,69,.85); animation: lv-spot 2.6s ease-in-out infinite; }
+.lv-spot b { font: 700 14px/1 var(--f-num); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.lv-spot.old { animation: none; border-style: dashed; }
+@keyframes lv-spot { 50% { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .live-dot, .lv-spot { animation: none; } }

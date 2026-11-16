@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.15';
+const APP_VER = '12.16';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -91,6 +91,7 @@ let loadTimer = null;
 async function loadPlan(manual) {
   clearTimeout(loadTimer);
   panoLoad();
+  if (!LIVE.timer) liveLoad();
   $('.stamp-btn')?.classList.add('spin');
   // Beim Öffnen sofort den letzten Stand zeigen (schlechter Empfang am Startplatz), deutlich als alt markiert
   if (!S.plan) {
@@ -491,7 +492,7 @@ function headlineHtml(h, conf, sky) {
   const notes = s ? (keep.length ? `<ul class="hl-notes">${keep.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
   const k = typeof sky === 'string' ? sky : sky?.k;
   const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site)}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
-  return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
+  return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${isToday() ? liveAllHtml() : ''}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
 }
 
 /** Score-Ring für die besten Gebiete: füllt sich beim Öffnen und Tageswechsel (nur dann, siehe lively). */
@@ -2487,6 +2488,61 @@ const WEBCAMS = {
   },
   site: { 'engstligen-1': ['Engstligenalp', 'engstligenalp'], 'engstligen-2': ['Engstligenalp', 'engstligenalp'], kuonisbergli: ['Adelboden', 'adelboden_boden'] }
 };
+/* ---- Live-Piloten (12.16): wer jetzt fliegt und wie es dort steigt (Server: lib/live.js, Quelle OGN).
+   Geholt wird alle 30 s und nur, solange die App sichtbar ist und der Entscheid, die Karte oder ein Startplatz offen ist. */
+const LIVE = { data: null, timer: null, layer: null, mk: new Map(), attr: false };
+const liveOn = () => store.get('ov', {}).live !== false;
+const liveWanted = () => !document.hidden && liveOn() && (S.tab === 'map' || S.tab === 'decide' || !!$('#siteDlg')?.open);
+async function liveLoad() {
+  clearTimeout(LIVE.timer);
+  if (!liveWanted()) { liveDraw(); return; }
+  try { const r = await fetch('/api/live', { headers: { 'X-AFC-Client': clientId } }); const j = r.ok ? await r.json() : null; LIVE.data = j?.ok ? j : null; } catch { LIVE.data = null; }
+  liveDraw(); liveText();
+  LIVE.timer = setTimeout(liveLoad, 30000);
+}
+const liveNum = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1).replace('.', ',');
+const liveCls = c => (c == null ? 'flat' : c >= 0.5 ? 'up' : c <= -1.5 ? 'down' : 'flat');
+const livePl = n => `${n} ${n === 1 ? 'Pilot' : 'Piloten'}`;
+/** Eine Zeile zum Startplatz: wer in 5 km Umkreis fliegt und wie es zuletzt gestiegen ist. Leer, wenn niemand da ist. */
+function liveSiteTxt(id) {
+  const d = LIVE.data?.sites?.[id];
+  if (!d) return '';
+  const cl = d.climb != null ? `Steigen bis ${liveNum(d.climb)} m/s${d.climbMin > 3 ? ` (vor ${d.climbMin} min)` : ''}` : '';
+  return d.n ? `<i class="live-dot"></i><b>Jetzt in der Luft:</b> ${livePl(d.n)} bis ${d.top} m${cl ? ' · ' + cl : ''}` : cl ? `<i class="live-dot old"></i>Vor ${d.climbMin} min stieg es hier mit ${liveNum(d.climb)} m/s` : '';
+}
+function liveAllTxt() {
+  const d = LIVE.data, n = d?.pilots?.length || 0;
+  if (!n) return '';
+  const best = d.spots.filter(q => q.min <= 15).reduce((a, q) => (!a || q.climb > a.climb ? q : a), null);
+  return `<i class="live-dot"></i><b>${livePl(n)}</b> jetzt in der Luft${best ? ` · bestes Steigen ${liveNum(best.climb)} m/s` : ''}`;
+}
+const liveSiteHtml = id => `<p class="live-line" data-live="${esc(id)}"${liveSiteTxt(id) ? '' : ' hidden'}>${liveSiteTxt(id)}</p>`;
+const liveAllHtml = () => `<button type="button" class="live-line live-all" data-act="tab" data-tab="map" data-live="*"${liveAllTxt() ? '' : ' hidden'}>${liveAllTxt()}</button>`;
+function liveText() {
+  $$('[data-live]').forEach(el => { const t = el.dataset.live === '*' ? (isToday() ? liveAllTxt() : '') : liveSiteTxt(el.dataset.live); el.innerHTML = t; el.hidden = !t; });
+}
+/** Karte: jeder Pilot als kleiner Schirm in Flugrichtung mit seinem Steigen, dazu die Steigpunkte der letzten 40 Minuten. */
+function liveDraw() {
+  if (!M.map || typeof L === 'undefined') return;
+  const d = liveOn() && S.tab === 'map' ? LIVE.data : null;
+  if (!d) { if (LIVE.layer) M.map.removeLayer(LIVE.layer); LIVE.layer = null; LIVE.mk.clear(); return; }
+  if (!LIVE.layer) { LIVE.layer = L.layerGroup().addTo(M.map); LIVE.mk.clear(); }
+  if (!LIVE.attr) { M.map.attributionControl?.addAttribution('Live-Piloten: <a href="https://www.glidernet.org" target="_blank" rel="noopener">OGN</a>'); LIVE.attr = true; }
+  const seen = new Set();
+  const put = (key, ll, icon, z, tip) => {
+    seen.add(key);
+    let m = LIVE.mk.get(key);
+    if (m) { m.setLatLng(ll); m.setIcon(icon); } else { m = L.marker(ll, { icon, zIndexOffset: z, keyboard: false }).addTo(LIVE.layer); LIVE.mk.set(key, m); }
+    m.off('click').on('click', () => { mapMsg(tip); clearTimeout(LIVE.msgT); LIVE.msgT = setTimeout(() => mapMsg(''), 6000); });
+  };
+  for (const q of d.spots) put('s' + q.lat + q.lon, [q.lat, q.lon], L.divIcon({ className: '', iconSize: [46, 46], iconAnchor: [23, 23], html: `<div class="lv-spot${q.min > 15 ? ' old' : ''}" style="--o:${Math.max(.3, 1 - q.min / 45).toFixed(2)}"><b>${liveNum(q.climb).replace('+', '')}</b></div>` }), 300,
+    `Hier stieg es ${q.min <= 1 ? 'gerade' : 'vor ' + q.min + ' min'} mit ${liveNum(q.climb)} m/s bis ${q.top} m${q.n > 1 ? ` (${q.n} Piloten)` : ''}.`);
+  for (const p of d.pilots) put('p' + p.k, [p.lat, p.lon], L.divIcon({ className: '', iconSize: [54, 30], iconAnchor: [15, 15], html: `<div class="lv lv-${liveCls(p.climb)}"><svg viewBox="0 0 24 24" style="transform:rotate(${Math.round(p.track ?? 0)}deg)" aria-hidden="true"><path d="M12 3l7 17-7-4-7 4z"/></svg>${p.climb != null ? `<b>${liveNum(p.climb)}</b>` : ''}</div>` }), 900,
+    `${p.kind === 'hg' ? 'Delta' : 'Gleitschirm'} auf ${p.alt} m${p.agl != null ? ` (${p.agl} m über Grund)` : ''}${p.climb != null ? `, ${p.climb >= 0.3 ? 'steigt' : p.climb <= -0.3 ? 'sinkt' : 'hält die Höhe'} ${liveNum(p.climb)} m/s` : ''}, gemeldet vor ${p.age} s.`);
+  for (const [k, m] of LIVE.mk) if (!seen.has(k)) { LIVE.layer.removeLayer(m); LIVE.mk.delete(k); }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) liveLoad(); });
+
 /* Webcam-Check (12.14): eine Webcam je Startplatz für alle. Das Bild steht direkt unter den Zahlen, antippen vergrössert es. */
 const CAMS = { map: {}, at: 0 };
 async function camsLoad(force) {
@@ -2585,6 +2641,7 @@ function renderSite(fresh = false) {
         <span><b>${hr.cloudMargin != null ? (hr.cloudMargin >= 0 ? '+' : '') + hr.cloudMargin : '–'}</b><small>Basis m</small></span>
         <span><b>${hr.pop ?? '–'}%</b><small>Regen</small></span>
       </div>
+      ${S.day === 0 ? liveSiteHtml(s.id) : ''}
       ${camFigHtml(s)}
       ${actionsHtml}
     </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
@@ -2637,6 +2694,7 @@ function renderSite(fresh = false) {
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
   fillCam(s);
+  if (fresh) liveLoad();
 }
 function reportForm(id) {
   const s = siteById(id);
@@ -2981,6 +3039,7 @@ function renderMap() {
   if (!S.plan) { mapMsg('Wetterdaten werden geladen …'); return; }
   if ($('#mapMsg').textContent.startsWith('Wetterdaten werden')) mapMsg('');
   M.group.clearLayers();
+  liveDraw();
   const showOv = k => { const i = $(`#layerPanel input[value="${k}"]`); return i ? i.checked : true; };
   drawSites();
   if (showOv('landings')) for (const l of S.plan.landings || []) {
@@ -3880,6 +3939,7 @@ function setTab(t) {
   render();
   if (was !== t) lively();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
+  liveLoad();
   if (t === 'profile') loadStatus();
   if (t === 'group') groupLoad().catch(() => {});
   const back = was !== t && TABY.get(t);
