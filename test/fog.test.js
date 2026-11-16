@@ -75,3 +75,31 @@ test('Nebel ist Sache des Tals: ferne Stationen im Nebel zählen nicht, Sonne na
   assert.equal(c.kind, 'land');
   assert.ok(c.top < 1572, String(c.top));
 });
+
+test('Föhn nur am Kamm, im Bödeli ruhig: tiefe geschützte Plätze höchstens 69 statt K.-o. (15.11.2026)', async () => {
+  const { regionalFromObs } = await import('../lib/regional.js');
+  const now = Date.UTC(2026, 10, 15, 11, 0), tm = new Date(now).toISOString();
+  const q = dp => ({ LUG: { qff: 1000 + dp, time: tm }, KLO: { qff: 1000, time: tm }, GVE: { qff: 1000, time: tm } });
+  const crest = { GUE: { dir: 147, wind: 40, gust: 51 }, GRH: { dir: 154, wind: 36, gust: 47 } };
+  const calm = { INT: { dir: 53, wind: 6, gust: 10 }, BRZ: { dir: 110, wind: 4, gust: 8 }, MER: { dir: 248, wind: 4, gust: 7 }, THU: { dir: 20, wind: 2, gust: 4 } };
+  const r = regionalFromObs({ ...crest, ...calm }, {}, q(6), now);
+  assert.equal(r.foehn, 'danger');
+  assert.equal(r.foehnCrestOnly, true);
+  // Meiringen mit Südwind, Interlaken böig, starker Druck oder Föhnindex: keine Ausnahme
+  assert.equal(regionalFromObs({ ...crest, ...calm, MER: { dir: 170, wind: 16, gust: 28 } }, {}, q(6), now).foehnCrestOnly, false);
+  assert.equal(regionalFromObs({ ...crest, ...calm, INT: { dir: 200, wind: 12, gust: 34 } }, {}, q(6), now).foehnCrestOnly, false);
+  assert.equal(regionalFromObs({ ...crest, ...calm }, {}, q(8.5), now).foehnCrestOnly, false);
+  assert.equal(regionalFromObs({ ...crest, ...calm }, { INT: { value: 1 } }, q(6), now).foehnCrestOnly, false);
+  assert.equal(regionalFromObs({ ...crest, BRZ: calm.BRZ }, {}, q(6), now).foehnCrestOnly, false, 'ohne Interlaken keine Ausnahme');
+
+  const site = { id: 't', alt: 1300, lat: 46.71, lon: 7.82, aspects: [180], terrain: {} };
+  const w = { ms: now, speed: 8, gust: 12, dir: 180, cloudBase: 3200, cloudCover: 10, cloudCoverLow: 0, pop: 0, precip: 0, cape: 0, sun: 300, valley: { speed: 4, gust: 6 }, foehn: 'danger', foehnDp: 6, local: r };
+  const ko = assessHour(site, w);
+  assert.ok(ko.hard.some(h => /Föhn/.test(h)) && ko.score <= 45, 'ohne Schutz bleibt K.-o.');
+  const sh = assessHour(site, { ...w, foehnShelter: true });
+  assert.ok(!sh.hard.length && sh.score <= 69 && sh.score >= 55, String(sh.score));
+  assert.ok(sh.reasons.some(x => /nur tief/.test(x)));
+  assert.ok(explainHour(sh, { ...w, foehnShelter: true }).some(x => x.k === 'Wetterlage' && x.lvl === 'warn' && /tief/.test(x.t)));
+  assert.ok(assessHour(site, { ...w, foehnShelter: true, foehnDp: 8.4 }).hard.length, 'ab 8 hPa K.-o.');
+  assert.ok(assessHour(site, { ...w, foehnShelter: true, local: null }).hard.length, 'ohne Messung (morgen) K.-o.');
+});
