@@ -521,3 +521,16 @@ test('Bise im Oberland gemessen setzt biseOberland', () => {
   assert.equal(r.biseOberland, true);
   assert.equal(regionalFromObs({ BER: { dir: 45, wind: 20, gust: 30 } }, {}, {}).biseOberland, false);
 });
+
+test('Winterfront ohne Gewitterenergie ist Warnung statt K.-o.; mit CAPE oder ausserhalb des Winters bleibt K.-o.', () => {
+  const n = 12, lh = Array.from({ length: n }, (_, i) => 8 + i);
+  const base = { P: Array.from({ length: n }, (_, i) => 1015 - i * 1.0), T: Array(n).fill(2), D800: Array.from({ length: n }, (_, i) => (i < 6 ? 200 : 290)), S800: Array(n).fill(30), POP: Array(n).fill(0), lh };
+  const run = (month, cape) => frontRiskSeries({ ...base, CAPE: Array(n).fill(cape), month: Array(n).fill(month) });
+  assert.ok(run(11, 0).some(x => x.level === 'danger'), 'November: K.-o.');
+  assert.ok(run(3, 0).some(x => x.level === 'danger'), 'März: K.-o.');
+  for (const m of [12, 1, 2]) {
+    const w = run(m, 0);
+    assert.ok(w.every(x => x.level !== 'danger') && w.some(x => x.level === 'warn' && x.why.some(t => /Winterfront/.test(t))), 'Monat ' + m);
+  }
+  assert.ok(run(1, 250).some(x => x.level === 'danger'), 'Winter mit Gewitterenergie: K.-o.');
+});
