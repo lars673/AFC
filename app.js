@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.13';
+const APP_VER = '12.14';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -2487,40 +2487,63 @@ const WEBCAMS = {
   },
   site: { 'engstligen-1': ['Engstligenalp', 'engstligenalp'], 'engstligen-2': ['Engstligenalp', 'engstligenalp'], kuonisbergli: ['Adelboden', 'adelboden_boden'] }
 };
-function webcamHtml(s) {
-  const w = WEBCAMS.site[s.id] || WEBCAMS.area[s.area], mine = LB.data?.settings?.cams?.[s.id];
-  const links = [mine && `<a href="${esc(mine)}" target="_blank" rel="noopener">Meine Webcam</a>`, w && `<a href="${WF(w[1])}" target="_blank" rel="noopener">Webcams ${esc(w[0])}</a>`].filter(Boolean);
-  return `${mine ? `<figure class="cam-img" id="camImg" data-u="${esc(mine)}" hidden><img alt="Webcam ${esc(s.name)}"><figcaption class="fine"></figcaption></figure>` : ''}<p class="cam-row"><b>Webcam:</b> ${links.length ? links.join(' · ') : '<span class="fine">noch keine hinterlegt</span>'} <button type="button" class="linkbtn fine" data-act="camset" data-id="${esc(s.id)}">${mine ? 'ändern' : 'eigene festlegen'}</button></p>`;
+/* Webcam-Check (12.14): eine Webcam je Startplatz für alle. Das Bild steht direkt unter den Zahlen, antippen vergrössert es. */
+const CAMS = { map: {}, at: 0 };
+async function camsLoad(force) {
+  if (!force && Date.now() - CAMS.at < 10 * 60000) return;
+  CAMS.at = Date.now();
+  try { const r = await fetch('/api/cams', { headers: { 'X-AFC-Client': clientId } }); if (r.ok) { CAMS.map = (await r.json()).cams || {}; if ($('#siteDlg')?.open && S.detailData && !$('#camImg')) renderSite(); } } catch { /* ohne Empfang bleibt der letzte Stand */ }
 }
-/** Eigene Webcam als Bild zeigen, wenn die Adresse ein Bild liefert (über den eigenen Mac, mit Uhrzeit). */
+const camOf = id => { const mine = LB.data?.settings?.cams?.[id], sh = CAMS.map[id]; return mine ? { u: mine, mine: true } : sh ? sh : null; };
+function camFigHtml(s) {
+  const c = camOf(s.id);
+  return c ? `<figure class="cam-img${store.get('camBig') ? ' big' : ''}" id="camImg" data-u="${esc(c.u)}" data-by="${esc(c.mine ? '' : c.by || '')}" hidden><button type="button" data-act="cambig" aria-label="Webcam-Bild grösser oder kleiner"><img alt="Webcam ${esc(nmFull(s))}"></button><figcaption class="fine"></figcaption></figure>` : '';
+}
+function webcamHtml(s) {
+  const w = WEBCAMS.site[s.id] || WEBCAMS.area[s.area], c = camOf(s.id), can = !c || c.mine || c.own;
+  const links = [c && `<a href="${esc(c.u)}" target="_blank" rel="noopener">Webcam öffnen</a>`, w && `<a href="${WF(w[1])}" target="_blank" rel="noopener">Webcams ${esc(w[0])}</a>`].filter(Boolean);
+  return `<p class="cam-row"><b>Webcam:</b> ${links.length ? links.join(' · ') : '<span class="fine">noch keine hinterlegt</span>'} ${can ? `<button type="button" class="linkbtn fine" data-act="camset" data-id="${esc(s.id)}">${c ? 'ändern' : 'für alle hinterlegen'}</button>` : ''}</p>`;
+}
+/** Webcam als Bild zeigen, wenn die Adresse ein Bild liefert (über den eigenen Server, mit Uhrzeit). Zwei Minuten gemerkt, damit das Bild beim Stundenwechsel nicht flackert. */
 const CAMURL = new Map();
+function camShow(fig, hit) {
+  fig.querySelector('img').src = hit.obj;
+  const age = hit.at ? ageMin(hit.at) : null, by = fig.dataset.by;
+  fig.querySelector('figcaption').innerHTML = [hit.at ? `Webcam ${esc(whenTxt(hit.at))}${age > 30 ? ' · <b>' + ageTxt(age) + ', eventuell veraltet</b>' : ''}` : 'Webcam', by ? 'von ' + esc(by) : ''].filter(Boolean).join(' · ');
+  fig.hidden = false;
+}
 async function fillCam(s) {
+  camsLoad();
   const fig = $('#camImg');
   if (!fig) return;
-  const u = fig.dataset.u;
+  const u = fig.dataset.u, hit = CAMURL.get(u);
+  if (hit) camShow(fig, hit);
+  if (hit && Date.now() - hit.t < 2 * 60000) return;
   try {
     const r = await fetch('/api/camimg?u=' + encodeURIComponent(u), { cache: 'no-store' });
     if (!r.ok) return;   // keine Bildadresse: es bleibt beim Link
     const blob = await r.blob(), at = r.headers.get('X-AFC-Image-Time');
-    if ($('#camImg') !== fig) return;
-    if (CAMURL.get(u)) URL.revokeObjectURL(CAMURL.get(u));
-    const obj = URL.createObjectURL(blob); CAMURL.set(u, obj);
-    fig.querySelector('img').src = obj;
-    const age = at ? ageMin(at) : null;
-    fig.querySelector('figcaption').innerHTML = at ? `Bild ${esc(whenTxt(at))}${age > 30 ? ' · <b>' + ageTxt(age) + ', eventuell veraltet</b>' : ''}` : '';
-    fig.hidden = false;
+    if (hit) URL.revokeObjectURL(hit.obj);
+    const now = { obj: URL.createObjectURL(blob), at, t: Date.now() }; CAMURL.set(u, now);
+    const f2 = $('#camImg');
+    if (f2 && f2.dataset.u === u) camShow(f2, now);
   } catch { /* Link bleibt */ }
 }
 async function camSet(id) {
-  const d = await lbLoad().catch(err => { toast(errTxt(err)); return null; });
-  if (!d) return;
-  const cur = d.settings.cams?.[id] || '';
-  const v = prompt('Adresse deiner Webcam (beginnt mit https://). Am besten die Adresse des Bildes: im Browser lange auf das Webcam-Bild drücken und «Bildadresse kopieren» wählen. Dann zeigt AFC das Bild direkt an. Leer lassen zum Entfernen.', cur);
+  const c = camOf(id);
+  const v = prompt('Adresse der Webcam für diesen Startplatz (beginnt mit https://). Alle in der Gruppe sehen sie dann. Am besten die Adresse des Bildes: im Browser lange auf das Webcam-Bild drücken und «Bildadresse kopieren» wählen. Dann zeigt AFC das Bild direkt an. Leer lassen zum Entfernen.', c?.u || '');
   if (v === null) return;
-  const cams = { ...(d.settings.cams || {}) };
-  if (v.trim()) { const u = LG().httpsUrl(v); if (!u) { toast('Bitte eine Adresse mit https:// eingeben.'); return; } cams[id] = u; } else delete cams[id];
-  try { await lbSave('settings', { ...d.settings, cams }); toast(v.trim() ? 'Webcam gespeichert' : 'Webcam entfernt'); if (S.detailData?.site?.id === id) renderSite(); }
-  catch (err) { toast('Nicht gespeichert: ' + errTxt(err)); }
+  const u = v.trim() ? LG().httpsUrl(v) : '';
+  if (v.trim() && !u) { toast('Bitte eine Adresse mit https:// eingeben.'); return; }
+  try {
+    const j = await jsonPost('/api/cams', { id, u }, 'PUT');
+    CAMS.map = j.cams || {}; CAMS.at = Date.now();
+    // eine früher nur für sich gespeicherte Adresse würde die gemeinsame verdecken
+    const d = LB.data;
+    if (d?.settings?.cams?.[id]) { const cams = { ...d.settings.cams }; delete cams[id]; await lbSave('settings', { ...d.settings, cams }).catch(() => {}); }
+    toast(u ? 'Webcam für alle gespeichert' : 'Webcam entfernt');
+    if (S.detailData?.site?.id === id) renderSite();
+  } catch (err) { toast('Nicht gespeichert: ' + errTxt(err)); }
 }
 function renderSite(fresh = false) {
   const d = S.detailData, day = d.days[S.day];
@@ -2562,6 +2585,7 @@ function renderSite(fresh = false) {
         <span><b>${hr.cloudMargin != null ? (hr.cloudMargin >= 0 ? '+' : '') + hr.cloudMargin : '–'}</b><small>Basis m</small></span>
         <span><b>${hr.pop ?? '–'}%</b><small>Regen</small></span>
       </div>
+      ${camFigHtml(s)}
       ${actionsHtml}
     </div>` : `<div class="empty">Für diesen Tag gibt es keine Bewertung.</div>${actionsHtml}`;
   const whyHtml = whyList.length ? `<ul class="why">${whyList.map(f => `<li class="why-${f.lvl}"><span class="why-i" aria-label="${f.lvl === 'ok' ? 'in Ordnung' : f.lvl === 'warn' ? 'beachten' : 'nicht fliegbar'}">${f.lvl === 'ok' ? '✓' : f.lvl === 'warn' ? '!' : '✕'}</span><b>${esc(f.k)}</b><span>${esc(f.t)}</span></li>`).join('')}</ul>` : '';
@@ -4019,6 +4043,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'camset': camSet(id); break;
+    case 'cambig': { const f = $('#camImg'); if (f) store.set('camBig', f.classList.toggle('big')); break; }
     case 'volteset': volteSet(id, b); break;
     case 'landpick': { const m = { ...store.get('landPick', {}) }; m[id] = b.dataset.v; store.set('landPick', m); FOLD.set('land', true); if (S.detailData?.site) renderSite(); break; }
     case 'sort': if (b.dataset.v === 'near') { if (S.pos) { S.sort = 'near'; store.set('sort', 'near'); renderDecide(); } else locateNear(); } else { S.sort = 'best'; store.set('sort', 'best'); renderDecide(); } break;

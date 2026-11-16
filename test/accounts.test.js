@@ -212,6 +212,17 @@ test('Austausch: Beiträge, Antworten, Bin dabei, Tagesbild je Startplatz', asyn
       // Austausch: Beiträge, Antwort, «Bin dabei», Tagesbild je Startplatz, Namen nur mit Freigabe
         const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' });
         assert.equal((await call('GET', '/api/community')).status, 401);
+        // Webcam-Check: eine Adresse je Startplatz für alle; ändern darf nur, wer sie hinterlegt hat, oder der Admin
+        assert.equal((await call('GET', '/api/cams')).status, 401);
+        assert.equal((await call('PUT', '/api/cams', { id: 'gibt-es-nicht', u: 'https://cam.example.ch/a.jpg' }, B)).status, 400);
+        assert.equal((await call('PUT', '/api/cams', { id: 'niesen', u: 'http://192.168.1.5/a.jpg' }, B)).status, 400);
+        assert.equal((await call('PUT', '/api/cams', { id: 'niesen', u: 'https://cam.example.ch/a.jpg' }, B)).status, 200);
+        const camA = (await call('GET', '/api/cams', null, A)).json.cams.niesen;
+        assert.equal(camA.u, 'https://cam.example.ch/a.jpg'); assert.equal(camA.by, 'Beat'); assert.equal(camA.own, true);   // Admin darf ändern
+        assert.equal((await call('PUT', '/api/cams', { id: 'niesen', u: 'https://cam.example.ch/b.jpg' }, A)).status, 200);
+        assert.equal((await call('PUT', '/api/cams', { id: 'niesen', u: 'https://cam.example.ch/c.jpg' }, B)).status, 403);
+        assert.equal((await call('GET', '/api/cams', null, B)).json.cams.niesen.own, false);
+        assert.equal((await call('PUT', '/api/cams', { id: 'niesen', u: '' }, A)).json.cams.niesen, undefined);
         assert.equal((await call('PUT', '/api/logbook/flight/cf1', { date: today, siteId: 'niesen-x', siteName: 'Niesen', durMin: 75, rating: 5, km: 12 }, B)).status, 200);
         let c = await call('GET', '/api/community', null, A);
         assert.equal(c.status, 200);

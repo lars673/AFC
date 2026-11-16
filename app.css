@@ -825,8 +825,10 @@ button.st-site .st-sn { color: var(--accent); text-decoration: underline; }
 .obst-list li.ob-pt { border-left: 4px dotted #c62828; }
 .rad-near { border-left: 5px solid var(--go); padding: 6px 10px; border-radius: 6px; background: var(--panel2); }
 .rad-near.warn { border-left-color: var(--wait); background: color-mix(in srgb, var(--wait) 14%, var(--panel)); }
-.cam-img { margin: 8px 0 0; }
-.cam-img img { display: block; width: 100%; max-height: 300px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); }
+.cam-img { margin: 0; }
+.cam-img > button { display: block; width: 100%; padding: 0; border: 0; background: none; border-radius: 12px; overflow: hidden; }
+.cam-img img { display: block; width: 100%; height: 132px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); background: var(--panel2); transition: height var(--t2) var(--ease); }
+.cam-img.big img { height: auto; max-height: 62dvh; object-fit: contain; }
 .cam-img figcaption { margin-top: 4px; }
 
 .kv > div.kv-warn { border-left: 5px solid var(--wait); } .kv > div.kv-bad { border-left: 5px solid var(--no); }

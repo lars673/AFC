@@ -945,6 +945,7 @@ function pilotGroups(users) {
 }
 const kvGet = k => dbGet('SELECT v FROM app_kv WHERE k=?', [k])?.v ?? null;
 const kvSet = (k, v) => (v == null ? dbRun('DELETE FROM app_kv WHERE k=?', [k]) : dbRun('INSERT INTO app_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', [k, String(v)]));
+const sharedCams = () => { try { const o = JSON.parse(kvGet('cams') || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } };
 function meResponse(u) {
   // Abschluss-Umfrage: sobald der Admin sie freischaltet, bis der Pilot sie beantwortet hat
   const survey = !!kvGet('survey') && !dbGet("SELECT 1 x FROM feedback WHERE uid=? AND kind='survey'", [u.id]);
@@ -1454,6 +1455,26 @@ const server = http.createServer(async (req, res) => {
       }
       // MyAFC: Fragen an die KI in AFC (lib/myafc.js). Der Schlüssel liegt nur in der Umgebung (ANTHROPIC_API_KEY).
       if (p === '/api/myafc') return myafcRoute(req, res);
+      // Webcam-Check: eine Webcam-Adresse je Startplatz, die alle sehen. Ändern darf, wer sie hinterlegt hat, oder der Admin.
+      if (p === '/api/cams') {
+        const me = userOf(req), all = sharedCams();
+        const out = () => Object.fromEntries(Object.entries(all).map(([k, c]) => [k, { u: c.u, by: c.by, at: c.at, own: !authOn() || c.uid === me?.id || isAdmin(req) }]));
+        if (req.method === 'GET') return sendJson(req, res, 200, { ok: true, cams: out() });
+        if (req.method === 'PUT') {
+          if (limited(req, 'post', 60)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
+          const b = await readBody(req, 2048), id = String(b?.id || ''), cur = all[id];
+          if (!SITES.some(x => x.id === id)) return sendJson(req, res, 400, { error: 'Startplatz unbekannt' });
+          if (cur && authOn() && cur.uid !== me?.id && !isAdmin(req)) return sendJson(req, res, 403, { error: `Diese Webcam hat ${cur.by || 'jemand anderes'} hinterlegt. Bitte dort oder beim Admin melden.` });
+          if (b.u) {
+            const url = camUrlOk(b.u);
+            if (!url) return sendJson(req, res, 400, { error: 'Adresse ungültig (nur https, kein lokales Netz)' });
+            all[id] = { u: url, by: String(me?.name || '').slice(0, 40), uid: me?.id || '', at: nowIso() };
+          } else delete all[id];
+          kvSet('cams', JSON.stringify(all));
+          return sendJson(req, res, 200, { ok: true, cams: out() });
+        }
+        return sendJson(req, res, 405, { error: 'nicht erlaubt' });
+      }
       // Flugtag-Wächter: «Heute fliege ich hier»
       if (p === '/api/watch') {
         if (!clientId(req)) return sendJson(req, res, 400, { error: 'X-AFC-Client fehlt' });
