@@ -1490,3 +1490,12 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .lv-spot.old { animation: none; border-style: dashed; }
 @keyframes lv-spot { 50% { transform: scale(1.12); } }
 @media (prefers-reduced-motion: reduce) { .live-dot, .lv-spot { animation: none; } }
+
+/* ---- 12.17 Wind jetzt: Karte an die Messwerte angepasst */
+.now-btn { flex: none; min-height: 36px; padding: 0 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); font-weight: 600; }
+.now-btn[aria-pressed="true"] { background: var(--go); border-color: var(--go); color: var(--on-go); }
+.now-btn[aria-pressed="true"]::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: currentColor; animation: live-pulse 2.2s ease-out infinite; }
+.wind-now-t { margin: 0; flex-basis: 100%; max-width: 30ch; }
+.wind-bar.folded .wind-now { display: none; }
+.mk-s.meas { box-shadow: 0 0 0 3px rgba(18,138,69,.55), 0 1px 4px rgba(0,0,0,.45); }
+.mk-s.meas.off { box-shadow: 0 0 0 3px rgba(220,132,38,.9), 0 1px 4px rgba(0,0,0,.45); }

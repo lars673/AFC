@@ -27,6 +27,7 @@ import { loadVapid, sendPush, cleanSubscription } from './lib/webpush.js';
 import { buildNotices, cleanPrefs, groupNotice } from './lib/notify.js';
 import { radarFrames, tileOk, camUrlOk, makeCache } from './lib/media.js';
 import { parseLive, makeTracker } from './lib/live.js';
+import { measuredWind } from './lib/windnow.js';
 import { readGrid, elevAt } from './lib/pano.js';
 import { watchCheck, WATCH_FROM, WATCH_TO, WATCH_MAX } from './lib/watch.js';
 import { chooseLearnMode, thermalLearn, stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS, PRESSURE_DAYS } from './lib/learn.js';
@@ -489,6 +490,22 @@ async function collectWindGrid() {
   } catch (e) {
     ingest.windgrid = { ...ingest.windgrid, ok: !!state.windgrid, at: e.limit ? ingest.windgrid.at : nowIso(), error: e.limit ? OM_PAUSE : errMsg(e) };
   }
+}
+/** «Wind jetzt»: Windkarte der laufenden Stunde, an die Messwerte der Stationen angepasst (lib/windnow.js). Fünf Minuten gemerkt. */
+let windNowHit = null;
+function windNow() {
+  const wg = state.windgrid;
+  if (!wg) return null;
+  const bucket = Math.floor(Date.now() / 300000);
+  if (windNowHit && windNowHit.bucket === bucket && windNowHit.fetchedAt === wg.fetchedAt) return windNowHit;
+  let h = 0, bd = Infinity;
+  for (let i = 0; i < wg.t.length; i++) { const d = Math.abs(wg.t[i] - Date.now()); if (d < bd) { bd = d; h = i; } }
+  if (bd > 90 * 60000) return null;
+  const g = wg.grid;
+  wg.nodeElev ??= Array.from({ length: g.nx * g.ny }, (_, i) => { const x = i % g.nx, y = (i - x) / g.nx; return liveElev(g.la0 + y * g.dla, g.lo0 + x * g.dlo); });
+  const levels = Object.fromEntries(Object.entries(wg.levels).map(([k, l]) => [k, { u: l.u[h], v: l.v[h] }]));
+  windNowHit = { bucket, fetchedAt: wg.fetchedAt, at: nowIso(), ...measuredWind(levels, g, wg.nodeElev, stationsPayload()) };
+  return windNowHit;
 }
 function windResponse(ms, level) {
   const hourMs = Math.round(ms / 3600000) * 3600000;
@@ -1374,6 +1391,11 @@ const server = http.createServer(async (req, res) => {
         const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
         if (!WIND_LEVELS[level]) return sendJson(req, res, 400, { error: 'level muss 10m, 800 oder 700 sein' });
         if (!state.windgrid) return sendJson(req, res, 202, { warming: true });
+        if (u.searchParams.get('now')) {
+          const wn = windNow(), sl = wn && windSlice(state.windgrid, Date.now(), level);
+          if (!sl) return sendJson(req, res, 404, { error: 'keine Winddaten für jetzt' });
+          return sendPacked(req, res, packJson({ ...sl, u: wn.levels[level].u, v: wn.levels[level].v, measured: { at: wn.at, stations: wn.stations } }));
+        }
         const pk = windResponse(t, level);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Winddaten für diese Zeit' });
         return sendPacked(req, res, pk);
@@ -1389,6 +1411,11 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/thermal') {
         const t = Date.parse(u.searchParams.get('t') || '') || Date.now();
         if (!state.windgrid?.thermal) return sendJson(req, res, 202, { warming: true });
+        if (u.searchParams.get('now')) {
+          const wn = windNow(), sl = wn && thermalSlice(state.windgrid, Date.now());
+          if (!sl) return sendJson(req, res, 404, { error: 'keine Daten für jetzt' });
+          return sendPacked(req, res, packJson({ ...sl, wind: wn.levels, measured: { at: wn.at, stations: wn.stations } }));
+        }
         const pk = thermalResponse(t);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);

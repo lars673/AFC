@@ -71,6 +71,12 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     // Wind aus Süden (ca. 205°) strömt nach Norden: v > 0
     assert.ok(wg.v[0] > 0, 'v ' + wg.v[0]);
     assert.equal((await fetch(s.base + '/api/wind?level=500')).status, 400);
+    // «Wind jetzt»: gleiche Karte, an die Messwerte angepasst, mit den verwendeten Stationen
+    const wn = await (await fetch(s.base + '/api/wind?level=10m&now=1')).json();
+    assert.equal(wn.u.length, wn.grid.nx * wn.grid.ny);
+    assert.ok(wn.measured.stations.length > 0 && wn.measured.stations.every(x => Number.isFinite(x.wind) && Number.isFinite(x.fcWind)));
+    const tn = await (await fetch(s.base + '/api/thermal?now=1')).json();
+    assert.ok(tn.wind['10m'].u.length === wn.u.length && tn.measured.at);
     // Thermikkarte: Wetterwerte je Rasterpunkt und Geländeraster
     const noon = new Date(); noon.setUTCHours(11, 0, 0, 0);
     const tr = await fetch(s.base + '/api/thermal?t=' + noon.toISOString());

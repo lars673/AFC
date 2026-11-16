@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.16';
+const APP_VER = '12.17';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3025,10 +3025,14 @@ function arrowIcon(dir, label, cls = '') {
   return L.divIcon({ className: '', iconSize: [44, 34], iconAnchor: [22, 17], html: `<div class="mk-s ${cls}">${arrow(dir)}<span>${esc(label)}</span></div>` });
 }
 /** Live-Wind einer Station: «Wind/Böen», Farbe nach den Böen, blass wenn die Messung älter als 40 Minuten ist. */
+/** Im Modus «Wind jetzt» bekommen Stationen, an denen die Prognose deutlich daneben liegt, einen Ring; Antippen zeigt beide Werte. */
+function stationNow(st) { return W.meas?.stations.find(x => x.name === st.name) || null; }
+function drawStationsNow() { if (M.map && S.plan && S.tab === 'map') renderMap(); }
 function stationIcon(st) {
   const g = num(st.gust) ? Math.round(st.gust) : null, age = ageMin(st.time, st.age);
   const c = g == null ? '' : g >= 35 ? 'g-hi' : g >= 25 ? 'g-mid' : 'g-ok';
-  return arrowIcon(st.dir, g != null ? `${Math.round(st.wind)}/${g}` : String(Math.round(st.wind)), c + (age > 40 ? ' old' : ''));
+  const m = stationNow(st), off = m && (Math.abs(m.wind - m.fcWind) >= 10 || (Math.max(m.wind, m.fcWind) >= 12 && Math.abs(((m.dir - m.fcDir + 540) % 360) - 180) >= 60));
+  return arrowIcon(st.dir, g != null ? `${Math.round(st.wind)}/${g}` : String(Math.round(st.wind)), c + (age > 40 ? ' old' : '') + (m ? ' meas' : '') + (off ? ' off' : ''));
 }
 function renderMap() {
   syncWindBar();
@@ -3079,7 +3083,12 @@ function drawSites() {
 const WIND_COLORS = [[10, '#2a7fd4'], [20, '#2fa84f'], [30, '#d9b300'], [40, '#ef8a1f'], [Infinity, '#d93a32']];
 const windColor = kmh => WIND_COLORS.find(c => kmh < c[0])[1];
 const WIND_WIDTH = { '#2a7fd4': 1.5, '#2fa84f': 1.8, '#d9b300': 2.1, '#ef8a1f': 2.4, '#d93a32': 2.7 };   // stärkerer Wind, kräftigere Spur
-const W = { level: 'off', hour: 12, data: null, cache: new Map(), layer: null, req: 0 };
+const W = { level: 'off', hour: 12, data: null, cache: new Map(), layer: null, req: 0, now: false, meas: null };
+/* «Wind jetzt» (12.17): die Karte der laufenden Stunde, vom Server an die Messwerte der Stationen angepasst (lib/windnow.js).
+   Gilt nur für heute und nicht im Tagesfilm; alle fünf Minuten neu. */
+const nowMode = () => W.now && S.day === 0 && isToday() && !FILM.playing;
+const nowKey = () => 'now|' + Math.floor(Date.now() / 300000);
+const mapIso = () => (nowMode() ? 'now' : windTimeIso());
 
 /** Bodenwind dem Gelände entlang: an Hängen steiler als 8° strömt die Luft dem Hang entlang statt durch den Berg (Schätzung). */
 function terrainFlow(w, g, lat, lon) {
@@ -3229,7 +3238,13 @@ function syncWindBar() {
   $('#windBar .wind-legend .fine').hidden = W.level !== '10m';
   $('#windBar .thermal-legend.sun-legend').hidden = !T.modes.has('sun');
   $('#windBar .thermal-legend.th-legend').hidden = !T.modes.has('thermal'); $('#windBar .soar-legend').hidden = !T.modes.has('soar'); $('#windBar .lee-legend').hidden = !T.modes.has('lee');
-  if (!FILM.playing) { $('#windHour').step = '1'; $('#windHour').value = W.hour; $('#windHourT').textContent = `${W.hour} Uhr`; sunArc(T.data?.sunPos); }
+  const nw = nowMode();
+  if (nw && nowHourToday() != null) W.hour = Math.min(20, Math.max(6, nowHourToday()));
+  if (!FILM.playing) { $('#windHour').step = '1'; $('#windHour').value = W.hour; $('#windHourT').textContent = nw ? 'Jetzt' : `${W.hour} Uhr`; sunArc(T.data?.sunPos); }
+  const nb = $('#windNowBtn'); nb.setAttribute('aria-pressed', String(nw)); nb.hidden = !(S.day === 0 && isToday());
+  $('#windHour').disabled = nw;
+  const nt = $('#windNowT'), ms = nw ? W.meas || T.data?.measured : null;
+  nt.hidden = !nw; if (nw) nt.textContent = ms ? `Gemessen an ${ms.stations.length} Stationen, Stand ${whenTxt(ms.at)}. Zwischen den Stationen geschätzt.` : 'Messwerte werden geladen …';
   const fb = $('#filmBtn');
   fb.setAttribute('aria-pressed', String(FILM.playing)); fb.classList.toggle('busy', FILM.busy);
   fb.setAttribute('aria-label', FILM.playing ? 'Tagesfilm anhalten' : 'Tagesfilm abspielen: Wind, Sonne und Thermik von 6 bis 20 Uhr');
@@ -3239,7 +3254,7 @@ function syncWindBar() {
   $('#windBar').classList.toggle('folded', folded);
   $('#windBar').classList.toggle('multi', T.modes.size > 1);
   $('#windBar .bar-fold').setAttribute('aria-expanded', String(!folded));
-  const parts = [W.level === 'off' ? null : 'Wind ' + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T_MODES.filter(m => T.modes.has(m)).map(m => T_NAMES[m]).join(', ')].filter(Boolean);
+  const parts = [W.level === 'off' ? null : (nw ? 'Wind jetzt ' : 'Wind ') + ({ '10m': 'Boden', 800: '2000 m', 700: '3000 m' })[W.level], T_MODES.filter(m => T.modes.has(m)).map(m => T_NAMES[m]).join(', ')].filter(Boolean);
   $('#barSum').textContent = parts.length ? parts.join(' · ') : 'Wind und Aufwind: aus';
 }
 async function updateWind() {
@@ -3247,11 +3262,11 @@ async function updateWind() {
   if (!M.map || !WindLayer) return;
   if (W.level === 'off') { if (W.layer) { M.map.removeLayer(W.layer); W.layer = null; } return; }
   if (FILM.playing) { if (!W.layer) W.layer = new WindLayer().addTo(M.map); windTerrain(); return filmDraw(); }
-  const key = `${W.level}|${windTimeIso()}`, req = ++W.req;
+  const now = nowMode(), key = now ? `${W.level}|${nowKey()}` : `${W.level}|${windTimeIso()}`, req = ++W.req;
   let d = W.cache.get(key);
   if (!d) {
     try {
-      const r = await fetch(`/api/wind?level=${W.level}&t=${encodeURIComponent(windTimeIso())}`);
+      const r = await fetch(now ? `/api/wind?level=${W.level}&now=1` : `/api/wind?level=${W.level}&t=${encodeURIComponent(windTimeIso())}`);
       if (r.status === 202) { mapMsg('Windkarte wird noch geladen, bitte in einer Minute nochmals versuchen.'); setTimeout(() => mapMsg(''), 6000); return; }
       if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
       d = await r.json();
@@ -3263,6 +3278,10 @@ async function updateWind() {
   if (!W.layer) W.layer = new WindLayer().addTo(M.map);
   windTerrain();
   W.layer.setData(d);
+  W.meas = now ? d.measured || null : null;
+  syncWindBar();
+  const stamp = W.meas?.at || null;
+  if (stamp !== W.measAt) { W.measAt = stamp; drawStationsNow(); }   // Ringe an den Stationen nur neu zeichnen, wenn sich der Stand ändert
 }
 /** Am Boden folgt die Strömung dem Gelände; in der Höhe strömt sie frei darüber. */
 function windTerrain() {
@@ -3581,14 +3600,15 @@ function soarWhy(c) {
 
 /** Thermik- und Winddaten einer Stunde (zwischengespeichert); null, solange der Server noch lädt. */
 async function thermalData(iso) {
-  let d = T.cache.get(iso);
+  const key = iso === 'now' ? nowKey() : iso;
+  let d = T.cache.get(key);
   if (d) return d;
-  const r = await fetch(`/api/thermal?t=${encodeURIComponent(iso)}`);
+  const r = await fetch(iso === 'now' ? '/api/thermal?now=1' : `/api/thermal?t=${encodeURIComponent(iso)}`);
   if (r.status === 202) return null;
   if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
   d = await r.json();
   d.img = {};
-  T.cache.set(iso, d);
+  T.cache.set(key, d);
   if (T.cache.size > 40) T.cache.delete(T.cache.keys().next().value);
   return d;
 }
@@ -3730,7 +3750,7 @@ async function updateThermal() {
     catch (err) { mapMsg('Thermikkarte: ' + errTxt(err)); setTimeout(() => mapMsg(''), 6000); }
     return;
   }
-  const iso = windTimeIso(), req = ++T.req;
+  const iso = mapIso(), req = ++T.req;
   try {
     const g = await thermalGrid();
     const d = await thermalData(iso);
@@ -3914,7 +3934,7 @@ function mapSheet(kind, id) {
     h = `<div class="sheet-top"><div><h3>${esc(t.title)}</h3><p class="fine" style="margin:0">${t.elev} m · ${T.data?.t ? new Date(T.data.t).getHours() : W.hour} Uhr · Schätzung</p></div></div><ul class="why-list">${t.why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${airHere(id.lat, id.lng)}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   } else {
     const st = S.plan.stations.find(x => x.code === id);
-    h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · ${ageTxt(ageMin(st.time, st.age))}</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div><div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
+    h = `<div class="sheet-top"><div><h3>${esc(st.name)}</h3><p class="fine" style="margin:0">${st.alt ?? '–'} m · ${ageTxt(ageMin(st.time, st.age))}</p></div></div><div class="kv"><div><b>${Math.round(st.wind)} ${arrow(st.dir)}</b><span>Wind km/h aus ${dirLabel(st.dir)}</span></div><div><b>${num(st.gust) ? Math.round(st.gust) : '–'}</b><span>Böen km/h</span></div><div><b>${num(st.temp) ? st.temp.toFixed(1) + '°' : '–'}</b><span>Temperatur</span></div></div>${(m => m ? `<p class="fine" style="margin:8px 0 0">Prognose für jetzt: ${m.fcWind} km/h aus ${dirLabel(m.fcDir)}. Gemessen: ${m.wind} km/h aus ${dirLabel(m.dir)}${Math.abs(m.wind - m.fcWind) >= 10 ? `, also ${m.wind > m.fcWind ? 'deutlich mehr' : 'deutlich weniger'} als vorhergesagt` : ''}.</p>` : '')(stationNow(st))}<div class="sheet-act"><button class="btn sec" type="button" data-act="closesheet">Schliessen</button></div>`;
   }
   el.innerHTML = h; el.hidden = false;
 }
@@ -4043,6 +4063,7 @@ document.addEventListener('click', async e => {
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
     case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'windnow': W.now = !nowMode(); store.set('windNow', W.now); if (W.now && FILM.playing) filmStop(); if (W.now && W.level === 'off') { W.level = '10m'; store.set('wind', W.level); } if (!W.now) { W.meas = null; W.measAt = null; drawStationsNow(); } updateWind(); updateThermal(); break;
     case 'brief': briefOpen([id]); break;
     case 'briefall': briefOpen([...S.fav]); break;
     case 'briefpost': { const i = S.plan?.dates.indexOf(b.dataset.d) ?? -1; if (i < 0) { toast('Dieser Tag ist nicht mehr in der Prognose.'); break; } if (i !== S.day) { S.day = i; render(); } briefOpen([id]); break; }
@@ -4802,13 +4823,13 @@ function v3dSiteHud(err = '') {
   const cab = V3.cables && V3.obstN != null ? (V3.obstN ? `${V3.obstN} Kabel und Seilbahnen im Ausschnitt (BAZL, nur meldepflichtige). ` : 'Keine erfassten Kabel im Ausschnitt (BAZL, nur meldepflichtige). ') : '';
   const cw = V3.clouds ? V3.scene?.clouds : null;
   const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. ` : '';
-  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? 'Wind am Boden folgt dem Gelände (Schätzung). ' : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
+  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? (V3.d?.measured ? `Wind jetzt: an ${V3.d.measured.stations.length} Messstationen angepasst, dazwischen geschätzt. ` : 'Wind am Boden folgt dem Gelände (Schätzung). ') : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
   const m = V3.scene?.markers.find(x => x.id === 'start');
   if (m) V3.scene.moveMarker('start', V3.site.lat, V3.site.lon, null, `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(V3.site.name)}</span>`);
 }
 /** Sonne, Ebene und Wind für die gewählte Stunde. */
 async function v3dApply() {
-  const sc = V3.scene, tok = V3.tok, reg = V3.mode === 'region', s = reg ? V3.reg : V3.site, iso = filmIso(S.plan.dates[S.day], V3.hour);
+  const sc = V3.scene, tok = V3.tok, reg = V3.mode === 'region', s = reg ? V3.reg : V3.site, iso = nowMode() && V3.hour === nowHourToday() ? 'now' : filmIso(S.plan.dates[S.day], V3.hour);
   if (!sc || (V3.mode !== 'site' && !reg)) return;
   let d = null, err = '';
   try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + errTxt(e) + ').'; }
@@ -6148,6 +6169,7 @@ function opener() {
     return;
   }
   W.level = ['off', '10m', '800', '700'].includes(store.get('wind')) ? store.get('wind') : 'off';
+  W.now = !!store.get('windNow');
   W.hour = Math.min(20, Math.max(6, new Date().getHours()));
   const pl = window.AFCPilot?.pilotLevel(store.get('pilot', {}));
   if (pl && !store.get('levelManual')) { S.level = pl.level; store.set('level', S.level); }
