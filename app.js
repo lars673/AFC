@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.14';
+const APP_VER = '12.15';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -82,7 +82,7 @@ const LEVEL_INFO = {
 function applyTheme() {
   document.documentElement.dataset.theme = S.theme;
   const dark = S.theme === 'dark' || (S.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-  $('#metaTheme').content = S.theme === 'sun' ? '#000000' : dark ? '#08100b' : '#0f1a14';
+  $('#metaTheme').content = S.theme === 'sun' ? '#000000' : dark ? '#050d1a' : '#6aa6da';
   $('#sunBtn')?.setAttribute('aria-pressed', String(S.theme === 'sun'));
 }
 

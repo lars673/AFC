@@ -1434,3 +1434,42 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .kv-mini b .arr { width: 16px; height: 16px; vertical-align: -1px; }
 .kv-mini small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hr-line.warn { color: color-mix(in srgb, var(--wait) 70%, var(--ink)); font-weight: 600; }
+
+/* ---- 12.15 Look «Himmel» (Lars, 16.11.2026): der Himmel füllt den Hintergrund, Flächen wie Milchglas, weich und rund.
+   Geschwindigkeit: der Verlauf liegt auf einer eigenen festen Ebene, Unschärfe haben nur Kopf und Tableiste (zwei Flächen).
+   Die Karten sind nur durchscheinend: über einem weichen Verlauf sieht das gleich aus wie Unschärfe und kostet nichts.
+   Das Sonnen-Design (starker Kontrast) bleibt wie es war. */
+:root { --sky-bg: linear-gradient(180deg, #5f9fd6 0%, #9cc7ea 36%, #dbeaf3 66%, #f1ece2 100%); --glass: rgba(255,255,255,.62); --glass2: rgba(255,255,255,.8); --glass-line: rgba(255,255,255,.8); --glass-bar: rgba(255,255,255,.66); --glass-top: rgba(255,255,255,.3); --glass-shadow: 0 8px 28px rgba(20,50,80,.13); --dlg-bg: #eef5fa; }
+:root:not([data-theme="sun"]) { --bg: #cfe3f1; --panel2: #f1f6fa; --line: #cfdbe4; --ink: #0f2233; --muted: #40586a; --accent: #0b5a86; --focus: #0b5a86; --top-ink: #0f2233; --none: #d5e0e8; --pk1: transparent; --pk2: transparent; --pn-f: #8fa9c2; --pn-m: #5f7f8f; --pn-n: #33505a; }
+:root[data-theme="dark"] { --sky-bg: linear-gradient(180deg, #050d1a 0%, #0c1e33 40%, #17304a 78%, #21384c 100%); --glass: rgba(255,255,255,.075); --glass2: rgba(255,255,255,.12); --glass-line: rgba(255,255,255,.14); --glass-bar: rgba(14,28,44,.72); --glass-top: rgba(5,13,26,.55); --glass-shadow: none; --dlg-bg: #0f2033;
+  --bg: #0c1e33; --panel: #16283c; --panel2: #1c3046; --line: #2c4259; --ink: #eaf1f6; --muted: #a3b6c6; --accent: #7cc8ee; --focus: #7cc8ee; --top-ink: #eaf1f6; --none: #263b50; --pn-f: #3d5876; --pn-m: #263f50; --pn-n: #142532; }
+@media (prefers-color-scheme: dark) { :root[data-theme="auto"] { --sky-bg: linear-gradient(180deg, #050d1a 0%, #0c1e33 40%, #17304a 78%, #21384c 100%); --glass: rgba(255,255,255,.075); --glass2: rgba(255,255,255,.12); --glass-line: rgba(255,255,255,.14); --glass-bar: rgba(14,28,44,.72); --glass-top: rgba(5,13,26,.55); --glass-shadow: none; --dlg-bg: #0f2033;
+  --bg: #0c1e33; --panel: #16283c; --panel2: #1c3046; --line: #2c4259; --ink: #eaf1f6; --muted: #a3b6c6; --accent: #7cc8ee; --focus: #7cc8ee; --top-ink: #eaf1f6; --none: #263b50; --pn-f: #3d5876; --pn-m: #263f50; --pn-n: #142532; } }
+:root:not([data-theme="sun"]) { --shadow: var(--glass-shadow); }
+@media (max-width: 759px) { :root:not([data-theme="sun"]) { --tabs-h: 74px; } }
+:root:not([data-theme="sun"]) body { background: var(--bg); }
+:root:not([data-theme="sun"]) body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--sky-bg); pointer-events: none; }
+:root:not([data-theme="sun"]) .top { background: var(--glass-top); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); }
+:root:not([data-theme="sun"]) .top .av { border-color: currentColor; background: var(--glass2); color: var(--ink); }
+:root:not([data-theme="sun"]) .icon-btn:hover, :root:not([data-theme="sun"]) .src-dot:hover { background: var(--glass2); }
+:root:not([data-theme="sun"]) main .card, :root:not([data-theme="sun"]) main .panel, :root:not([data-theme="sun"]) .headline, :root:not([data-theme="sun"]) .day { background: var(--glass); border-color: var(--glass-line); }
+:root:not([data-theme="sun"]) .card, :root:not([data-theme="sun"]) .panel, :root:not([data-theme="sun"]) .headline { border-radius: 24px; }
+:root:not([data-theme="sun"]) .day, :root:not([data-theme="sun"]) .hl-best, :root:not([data-theme="sun"]) .act-tile, :root:not([data-theme="sun"]) .stc, :root:not([data-theme="sun"]) .kv-mini > * { border-radius: 18px; }
+:root:not([data-theme="sun"]) .seg, :root:not([data-theme="sun"]) .btn, :root:not([data-theme="sun"]) .mini-pill, :root:not([data-theme="sun"]) .x-btn { border-radius: 999px; }
+:root:not([data-theme="sun"]) .headline { border-left-width: 1px; border-left-color: var(--glass-line); overflow: hidden; }
+:root:not([data-theme="sun"]) .has-hero .hl-hero { height: 200px; border-radius: 0; background: none; }
+:root:not([data-theme="sun"]) .hl-hero h2 { font-size: 36px; color: #fff; text-shadow: 0 2px 14px rgba(10,40,70,.5); }
+:root:not([data-theme="sun"]) .hl-best { background: var(--glass2); border-color: var(--glass-line); }
+@media (max-width: 759px) {
+:root:not([data-theme="sun"]) .tabs { left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); padding-bottom: 0; border-radius: 26px; border: 1px solid var(--glass-line); background: var(--glass-bar); -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5); box-shadow: 0 10px 30px rgba(10,30,55,.22); overflow: hidden; }
+:root:not([data-theme="sun"]) .tabs.ind::before { display: none; }
+:root:not([data-theme="sun"]) .tabs button { border-top: 0; }
+}
+@media (min-width: 760px) { :root:not([data-theme="sun"]) .tabs { background: var(--glass-bar); border-color: var(--glass-line); border-radius: 18px; -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5); } }
+:root:not([data-theme="sun"]) .dlg { background: var(--dlg-bg); border-radius: 26px; }
+:root:not([data-theme="sun"]) #siteDlg .dlg-foot { background: var(--dlg-bg); }
+:root:not([data-theme="sun"]) .ring circle { stroke-width: 8; }
+:root:not([data-theme="sun"]) #siteDlg .dlg-h { background: var(--dlg-bg); }
+:root:not([data-theme="sun"]) .arow.tc-card { background: var(--glass2); border-color: var(--glass-line); border-radius: 22px; }
+:root:not([data-theme="sun"]) .mapbox { border-radius: 24px; border-color: var(--glass-line); }
+:root:not([data-theme="sun"]) .day { box-shadow: none; }
