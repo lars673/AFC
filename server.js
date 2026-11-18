@@ -85,6 +85,10 @@ catch (e) {
 const backupsDir = path.join(dataDir, 'backups');
 // Im Internet gehostet (Railway o. ä., AFC_HOSTED=1): Updates kommen per GitHub von selbst, nicht über den Knopf.
 const HOSTED = process.env.AFC_HOSTED === '1';
+// Bezahlte Version (App Store): Quellen, die nur nicht-kommerziell erlaubt sind, abschalten (kk7, RainViewer, Webcam-Bilder über den Server).
+// Während der Testphase bleibt alles an. Einschalten mit AFC_KOMMERZIELL=1 (siehe /quellen).
+const COMMERCIAL = process.env.AFC_KOMMERZIELL === '1';
+const SRC = Object.freeze({ kk7: !COMMERCIAL, radar: !COMMERCIAL, camImg: !COMMERCIAL, commercial: COMMERCIAL });
 // Wartet ein Umzug vom Mac? Dann vor dem Öffnen der Datenbank auspacken.
 const umzug = applyPendingImport(dataDir);
 // Open-Meteo-Verbrauch über einen Neustart hinweg mitzählen
@@ -790,7 +794,7 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org https://thermal.kk7.ch",
+  "img-src 'self' data: blob: https://wmts.geo.admin.ch https://*.tile.openstreetmap.org" + (SRC.kk7 ? " https://thermal.kk7.ch" : ""),
   "connect-src 'self' https://s3.amazonaws.com/elevation-tiles-prod/", "worker-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"
 ].join('; ');
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN', 'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()' };
@@ -828,6 +832,8 @@ async function fetchImage(url, maxBytes, { cam = false } = {}) {
 async function mediaRoute(req, res, p, u) {
   const img = (code, o, maxAge) => { res.writeHead(code, { 'Content-Type': o.type, 'Content-Length': o.buf.length, 'Cache-Control': `private, max-age=${maxAge}`, 'X-Content-Type-Options': 'nosniff', ...(o.at ? { 'X-AFC-Image-Time': o.at } : {}) }); res.end(o.buf); };
   try {
+    if (p.startsWith('/api/radar') && !SRC.radar) return sendJson(req, res, 410, { error: 'Regenradar in dieser Version ausgeschaltet', off: true });
+    if (p === '/api/camimg' && !SRC.camImg) return sendJson(req, res, 410, { error: 'Webcam-Bilder in dieser Version nur als Link', off: true });
     if (p === '/api/radar') {
       const ri = await radarInfo();
       return sendJson(req, res, 200, { ok: !!ri.frames.length, frames: ri.frames.map(f => f.time), source: 'RainViewer' });
@@ -1002,7 +1008,7 @@ const sharedCams = () => { try { const o = JSON.parse(kvGet('cams') || '{}'); re
 function meResponse(u) {
   // Abschluss-Umfrage: sobald der Admin sie freischaltet, bis der Pilot sie beantwortet hat
   const survey = !!kvGet('survey') && !dbGet("SELECT 1 x FROM feedback WHERE uid=? AND kind='survey'", [u.id]);
-  return { ok: true, auth: true, user: publicUser(u), profile: cleanProfile(JSON.parse(u.profile || '{}')), prefs: cleanUserPrefs(JSON.parse(u.prefs || '{}')), prefsSet: u.prefs !== '{}', stats: userStats(u.id), survey, test: testState(u.id).progress };
+  return { ok: true, auth: true, user: publicUser(u), profile: cleanProfile(JSON.parse(u.profile || '{}')), prefs: cleanUserPrefs(JSON.parse(u.prefs || '{}')), prefsSet: u.prefs !== '{}', stats: userStats(u.id), survey, test: testState(u.id).progress, src: SRC };
 }
 function deleteUserData(uid) {
   db.exec('BEGIN');
@@ -1050,7 +1056,7 @@ async function accountRoute(req, res, p, u) {
 
   if (p === '/api/auth/state' && req.method === 'GET') {
     const inv = u.searchParams.get('invite') ? inviteRow(u.searchParams.get('invite')) : null;
-    return sendJson(req, res, 200, { ok: true, auth: authOn(), setup: !authOn(), user: publicUser(me), invite: inv ? { ok: true, kind: inv.kind, name: inv.kind === 'reset' || inv.kind === 'ref' ? dbGet('SELECT name FROM users WHERE id=?', [inv.uid])?.name : null } : u.searchParams.get('invite') ? { ok: false } : null });
+    return sendJson(req, res, 200, { ok: true, src: SRC, auth: authOn(), setup: !authOn(), user: publicUser(me), invite: inv ? { ok: true, kind: inv.kind, name: inv.kind === 'reset' || inv.kind === 'ref' ? dbGet('SELECT name FROM users WHERE id=?', [inv.uid])?.name : null } : u.searchParams.get('invite') ? { ok: false } : null });
   }
   if (p === '/api/auth/setup' && req.method === 'POST') {
     if (authOn()) return sendJson(req, res, 409, { error: 'Es gibt schon ein Admin-Konto. Bitte anmelden.' });
@@ -1313,7 +1319,7 @@ const STATIC = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8', true]], ['/sw_7.2.js', ['sw.js', 'text/javascript; charset=utf-8', true]],
   ['/manifest.json', ['manifest.json', 'application/manifest+json; charset=utf-8']],
   ['/seite.css', ['seite.css', 'text/css; charset=utf-8']],
-  ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
+  ['/privacy', ['privacy.html', 'text/html; charset=utf-8']], ['/quellen', ['quellen.html', 'text/html; charset=utf-8']], ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
   ['/pilot.js', ['lib/pilot.js', 'text/javascript; charset=utf-8']],
   ['/route.js', ['lib/route.js', 'text/javascript; charset=utf-8']],
   ['/airspace.js', ['lib/airspace.js', 'text/javascript; charset=utf-8']],
@@ -1686,6 +1692,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/kk7-grid.bin' && (req.method === 'GET' || req.method === 'HEAD')) {
+      if (!SRC.kk7) return sendJson(req, res, 404, { error: 'kk7 in dieser Version ausgeschaltet' });
       // Thermik aus Flügen (kk7, CC BY-NC-SA): wird lokal von tools/calibrate-kk7.js erzeugt, nicht im Repository
       if (!fsc.existsSync(path.join(dataDir, 'kk7-grid.bin'))) return sendJson(req, res, 404, { error: 'kein kk7-Abgleich vorhanden' });
       return serveStatic(req, res, [path.join(dataDir, 'kk7-grid.bin'), 'application/octet-stream']);

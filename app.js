@@ -1294,7 +1294,7 @@ function renderProfile() {
     <div class="panel"><h3>Datenschutz</h3>
       <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="export">Meine Daten exportieren</button><button class="btn sec" type="button" data-act="wipe">Meine Daten löschen</button><a class="btn sec" href="/privacy">Datenschutzerklärung</a></div></div>
     </details>
-    <p class="fine">AFC ${esc(S.plan?.version || APP_VER)} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten. <a href="/genau" target="_blank" rel="noopener">So genau war AFC</a></p>`;
+    <p class="fine">AFC ${esc(S.plan?.version || APP_VER)} · ${S.plan?.siteCount ?? ''} Startplätze (DHV-Geländedatenbank) · Prognose: MeteoSchweiz, DWD, ECMWF über Open-Meteo · Messwerte: MeteoSchweiz · Karte: swisstopo. Keine Gewähr. Der Startentscheid liegt immer bei der Pilotin oder beim Piloten. <a href="/genau" target="_blank" rel="noopener">So genau war AFC</a> · <a href="/quellen" target="_blank" rel="noopener">Alle Datenquellen</a></p>`;
   el.querySelector('.prof-tech')?.addEventListener('toggle', e => { S.techOpen = e.target.open; });
   if (isAdminMe() && !ADM.data && !ADM.req) ADM.req = adminLoad().then(() => { if (S.tab === 'profile') renderProfile(); }).catch(() => {}).finally(() => { ADM.req = null; });
 }
@@ -2685,7 +2685,7 @@ function renderSite(fresh = false) {
     ${windFold}
     ${landingHtml(s, hr)}
     ${fold('obst', 'Kabel und Hindernisse', 'wird geprüft …', '<div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div>', { sumId: 'obstSum' })}
-    ${S.day === 0 && !d._savedAt ? fold('radar', 'Regen jetzt', 'wird geprüft …', '<div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div>', { sumId: 'radarSum' }) : ''}
+    ${S.day === 0 && !d._savedAt && ME.src?.radar !== false ? fold('radar', 'Regen jetzt', 'wird geprüft …', '<div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div>', { sumId: 'radarSum' }) : ''}
     ${table ? fold('hours', 'Alle Stunden', `${hrs[0].h} bis ${hrs.at(-1).h + 1} Uhr: Score, Wind, Böen, Basis, Regen`, table) : ''}
     ${fold('nowcast', 'Messung gegen Prognose', nc ? `${esc(nc.name)}: ${nc.obs} km/h gemessen, ${nc.fc} vorhergesagt` : 'keine passende Station in der Nähe', nc ? `<p style="margin:0">${esc(nc.name)} (${nc.dist} km, ${nc.altDiff >= 0 ? '+' : ''}${nc.altDiff} m Höhe) misst <b>${nc.obs} km/h</b> aus ${dirLabel(nc.obsDir)}; die Prognose sagte <b>${nc.fc} km/h</b> aus ${dirLabel(nc.fcDir)}. Abweichung ${nc.bias >= 0 ? '+' : ''}${nc.bias} km/h, in den nächsten 2 bis 3 Stunden eingerechnet. Messung ${ageTxt(ageMin(nc.at, nc.ageMin)).replace('vor ', '')} alt.</p>` : '<p class="fine" style="margin:0">Keine passende Station in der Nähe (höchstens 15 km und 600 m Höhenunterschied). Es gilt die reine Prognose.</p>')}
     ${proFold}
@@ -2742,6 +2742,13 @@ const OVERLAYS = {
 };
 const M = { map: null, base: null, baseKey: null, ov: {}, group: null, me: null, errs: {}, loaded: 0 };
 
+/** Quellen, die nur nicht-kommerziell erlaubt sind, blendet die bezahlte Version aus (Server: AFC_KOMMERZIELL=1). */
+function applySrc(src) {
+  if (!src) return;
+  ME.src = src;
+  if (!src.kk7) { delete OVERLAYS.kk7thermal; delete OVERLAYS.kk7sky; }
+  for (const [k, on] of [['kk7thermal', src.kk7], ['kk7sky', src.kk7], ['radar', src.radar]]) { if (!on) $(`#layerPanel input[value="${k}"]`)?.closest('label')?.remove(); }
+}
 /* ---- Regenradar (RainViewer über den eigenen Mac, /api/radar). Gratis für persönliche Nutzung. */
 const RAD = { frames: [], at: 0, layer: null, timer: null, near: new Map() };
 async function radarFrames(force) {
@@ -2754,6 +2761,7 @@ async function radarFrames(force) {
 }
 const radarUrl = ts => `/api/radar/${ts}/{z}/{x}/{y}.png`;
 async function setRadar(on) {
+  if (on && ME.src?.radar === false) return;
   const keep = store.get('ov', {}); keep.radar = on; store.set('ov', keep);
   clearInterval(RAD.timer); RAD.timer = null;
   if (RAD.layer) { M.map?.removeLayer(RAD.layer); RAD.layer = null; }
@@ -4294,7 +4302,7 @@ function renderMe() {
   const f = $('#fbBtn'); if (f) f.hidden = !ME.user;
 }
 function setMe(j) {
-  ME.user = j.user; ME.profile = j.profile || {}; ME.prefs = j.prefs || {}; ME.stats = j.stats || null; ME.survey = !!j.survey; ME.test = j.test || null;
+  ME.user = j.user; ME.profile = j.profile || {}; ME.prefs = j.prefs || {}; ME.stats = j.stats || null; ME.survey = !!j.survey; ME.test = j.test || null; applySrc(j.src);
   store.set('me', { user: ME.user, profile: ME.profile, stats: ME.stats });
   renderMe();
 }
@@ -4326,6 +4334,7 @@ async function authInit() {
     const st = await r.json();
     ME.state = st;
     if (code) {
+      applySrc(st.src);
       if (st.invite?.ok) { showGate(st.invite.kind === 'reset' ? 'reset' : 'register', { code, name: st.invite.name }); return false; }
       history.replaceState(null, '', '/');
       if (st.auth && !st.user) { showGate('login', { msg: 'Dieser Link ist nicht mehr gültig oder wurde schon benutzt. Hast du schon ein Konto? Dann hier anmelden. Sonst bitte Lars um einen neuen Link.' }); return false; }
@@ -4362,7 +4371,7 @@ function gateHtml(mode, o) {
       <p class="gate-err" role="alert"></p>
       <button class="btn gate-go" type="submit">${T[3]}</button></form>
     ${T[4]}
-    <p class="fine gate-links"><a href="/genau">So genau war AFC</a> · <a href="/privacy">Datenschutz</a></p></div>`;
+    <p class="fine gate-links"><a href="/genau">So genau war AFC</a> · <a href="/privacy">Datenschutz</a> · <a href="/quellen">Datenquellen</a></p></div>`;
 }
 function showGate(mode, o = {}) {
   let g = $('#gate');

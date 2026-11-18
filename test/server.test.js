@@ -481,3 +481,18 @@ test('Nachlernen aus den letzten Tagen füllt Föhn- und Bise-Daten', async () =
     assert.ok(st.pressure.bise.n > 0, JSON.stringify(st.pressure));
   } finally { await s.stop(); }
 });
+
+test('Bezahlte Version: nicht-kommerzielle Quellen aus, Quellenseite öffentlich', async () => {
+  const s = await boot('good', 18841, { AFC_KOMMERZIELL: '1' });
+  try {
+    const q = await fetch(s.base + '/quellen');
+    assert.equal(q.status, 200);
+    assert.match(await q.text(), /Open-Meteo/);
+    const st = await (await fetch(s.base + '/api/auth/state')).json();
+    assert.equal(st.src.commercial, true);
+    assert.equal(st.src.kk7, false);
+    assert.equal((await fetch(s.base + '/api/radar')).status, 410);
+    assert.equal((await fetch(s.base + '/api/camimg?u=' + encodeURIComponent('https://example.com/cam.jpg'))).status, 410);
+    assert.doesNotMatch((await fetch(s.base + '/')).headers.get('content-security-policy') || '', /kk7/);
+  } finally { await s.stop(); }
+});
