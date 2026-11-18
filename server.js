@@ -41,6 +41,7 @@ import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
 import { accuracyData, accuracyHtml } from './lib/genau.js';
 import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, toolStations, toolProfile, toolSites, MYAFC_MODEL, MYAFC_DAILY } from './lib/myafc.js';
 import { testProgress, testBreakdown } from './lib/testphase.js';
+import { fetchMsForecast, patchSeries } from './lib/msfc.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -213,6 +214,7 @@ const ingest = {
   stations: { ok: false, at: null, error: null, note: null },
   windgrid: { ok: false, at: null, error: null },
   airspace: { ok: false, at: null, error: null, count: 0 },
+  msfc: { ok: false, at: null, error: null, run: null, points: 0, active: false },
   obstacles: { ok: false, at: null, error: null, count: 0, dataAt: null }
 };
 const state = {
@@ -302,7 +304,8 @@ async function collectForecast() {
   }
   const raw = { fetchedAt: Date.now(), model: areaR.used?.model, sites: sitesR.byId, areas: {}, ref: { sea: areaR.byId.REF, pl: plR.byId.REF || null }, stations: stR.byId, grad: gradR.byId };
   for (const a of AREAS) raw.areas[a.id] = { sea: areaR.byId[a.id] || null, pl: plR.byId[a.id] || null, ecmwf: ecR.byId[a.id] || null };
-  state.raw = raw;
+  state.raw = raw; state.rawOm = null;
+  if (ingest.msfc.active) ingest.msfc = { ...ingest.msfc, active: false };
   const partial = Object.keys(sitesR.byId).length < RANKED.length;
   ingest.forecast = { ok: true, at, error: partial ? `nur ${Object.keys(sitesR.byId).length}/${RANKED.length} Startplätze direkt, Rest über Gebietsmittel` : null, model: sitesR.used?.model || raw.model, points: Object.keys(sitesR.byId).length };
   ingest.pressure = { ok: Object.keys(plR.byId).length > 0, at, error: plR.errors[0] || null };
@@ -310,6 +313,47 @@ async function collectForecast() {
   storePredictions(raw);
   invalidate();
   fs.writeFile(path.join(dataDir, 'raw.json.tmp'), JSON.stringify(raw)).then(() => fs.rename(path.join(dataDir, 'raw.json.tmp'), path.join(dataDir, 'raw.json'))).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ Zweite Wetterquelle (MeteoSchweiz) */
+// Fällt Open-Meteo aus (Sperre, Störung) und ist die letzte Prognose älter als 2 Stunden, ersetzt AFC
+// für die kommenden Stunden Bodenwind, Böen, Regen, Wolken und Strahlung durch die Lokalprognose
+// von MeteoSchweiz. Höhenwind und Thermik bleiben aus der letzten Open-Meteo-Prognose. Höchstens stündlich.
+const MSFC_ON = process.env.AFC_MSFC !== '0';
+const MSFC_AFTER = 2 * 3600000;
+let msfcTry = 0;
+async function maybeBackup(now = Date.now()) {
+  if (!MSFC_ON || !state.raw) return false;
+  const base = state.rawOm || state.raw;
+  const stale = now - (base.fetchedAt || 0) > MSFC_AFTER;
+  const failing = !!openMeteoBlocked(now) || !ingest.forecast.ok || !!ingest.forecast.error;
+  if (!stale || !failing || now - msfcTry < 55 * 60000) return false;
+  msfcTry = now;
+  const targets = [];
+  for (const [id, x] of Object.entries(base.sites || {})) if (x?.t) { const s = SITES.find(q => q.id === id); targets.push({ key: 's:' + id, lat: s?.lat, lon: s?.lon, alt: x.elevation ?? s?.alt }); }
+  for (const a of AREAS) { const x = base.areas?.[a.id]?.sea; if (x?.t) targets.push({ key: 'a:' + a.id, lat: a.lat, lon: a.lon, alt: x.elevation ?? null }); }
+  try {
+    const r = await fetchMsForecast(targets.filter(t => Number.isFinite(t.lat) && Number.isFinite(t.lon)));
+    const raw = structuredClone(base), from = Math.floor(now / 3600000) * 3600000;
+    let hours = 0, points = 0;
+    for (const [key, v] of Object.entries(r.byKey)) {
+      const [kind, id] = [key.slice(0, 1), key.slice(2)];
+      const series = kind === 's' ? raw.sites[id] : raw.areas[id]?.sea;
+      const n = patchSeries(series, v.vals, from);
+      if (n) { hours += n; points++; }
+    }
+    if (!points) throw new Error('keine passenden MeteoSchweiz-Punkte');
+    raw.backup = { source: 'MeteoSchweiz', run: r.run, at: now, points };
+    state.rawOm = base; state.raw = raw;
+    ingest.msfc = { ok: true, at: new Date(now).toISOString(), error: null, run: r.run, points, missing: r.missing.length, active: true };
+    ingest.forecast = { ...ingest.forecast, error: `Open-Meteo gestört: Bodenwind, Böen, Regen und Wolken kommen von MeteoSchweiz (Höhenwind und Thermik vom ${new Date(base.fetchedAt).toLocaleString('de-CH', { timeZone: 'Europe/Zurich', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })})` };
+    invalidate();
+    console.log(`MeteoSchweiz-Ersatz: Lauf ${r.run}, ${points} Punkte, ${hours} Stunden ersetzt`);
+    return true;
+  } catch (e) {
+    ingest.msfc = { ...ingest.msfc, ok: false, at: new Date(now).toISOString(), error: errMsg(e) };
+    return false;
+  }
 }
 
 /* ------------------------------------------------------------------ Wettervarianten (Ensemble) */
@@ -1742,7 +1786,7 @@ async function loadSnapshot() {
   } catch { /* kein Zwischenspeicher */ }
 }
 
-let busy = { obs: false, fc: false, wind: false };
+let busy = { obs: false, fc: false, wind: false, ms: false };
 
 /* ------------------------------------------------------------------ Tagesplan Open-Meteo */
 // Alle 5 Minuten: Ist etwas fällig? Gemessen wird, was jeder Abruf wirklich kostet; damit rechnet der Plan weiter.
@@ -1773,6 +1817,8 @@ async function planTick(now = Date.now()) {
     // nur vollständige Abrufe messen (nicht nach Tageswechsel, nicht bei einem Abbruch mittendrin)
     if (spent > 0 && omJobs[j.id].lastAt() >= omSched[j.id].lastTry) omSched[j.id].cost = omSched[j.id].cost ? Math.round((omSched[j.id].cost * 2 + spent) / 3) : spent;
   }
+  // erst nach dem normalen Abruf: nur wenn Open-Meteo wirklich nicht geliefert hat
+  await tick('ms', () => maybeBackup());
 }
 async function tick(kind, fn) {
   if (busy[kind]) return;
@@ -1905,7 +1951,7 @@ function healthProblems(now = Date.now()) {
   const out = [];
   if (process.uptime() < Number(process.env.AFC_HEALTH_GRACE_MIN ?? 30) * 60) return out;   // nach dem Start erst Daten holen lassen
   const fcAge = state.raw ? (now - state.raw.fetchedAt) / 3600000 : Infinity;
-  if (fcAge > 4) out.push({ id: 'forecast', title: 'AFC: Prognose veraltet', body: `Die Wetterprognose ist ${Number.isFinite(fcAge) ? Math.round(fcAge) + ' Stunden alt' : 'nicht geladen'}${ingest.forecast?.error ? ` (${String(ingest.forecast.error).slice(0, 80)})` : ''}. Die Bewertungen sind nicht aktuell, bitte nicht darauf verlassen.` });
+  if (fcAge > 4) out.push({ id: 'forecast', title: 'AFC: Prognose veraltet', body: `Die Wetterprognose ist ${Number.isFinite(fcAge) ? Math.round(fcAge) + ' Stunden alt' : 'nicht geladen'}${ingest.forecast?.error ? ` (${String(ingest.forecast.error).slice(0, 80)})` : ''}. ${state.raw?.backup ? 'Bodenwind, Böen und Regen sind von MeteoSchweiz aktuell, Höhenwind und Thermik nicht.' : 'Die Bewertungen sind nicht aktuell, bitte nicht darauf verlassen.'}` });
   const t = dbGet('SELECT MAX(time) t FROM observations')?.t;
   const obsAge = t ? (now - Date.parse(t)) / 3600000 : Infinity;
   if (obsAge > 3) out.push({ id: 'obs', title: 'AFC: Messwerte fehlen', body: `Die letzten Messwerte der Stationen sind ${Number.isFinite(obsAge) ? Math.round(obsAge) + ' Stunden alt' : 'nicht vorhanden'}. Föhn und Wind am Berg werden nicht live geprüft.` });
