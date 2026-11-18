@@ -1269,6 +1269,8 @@ function renderProfile() {
   el.innerHTML = `
     ${pilotCard()}
     ${surveyCard()}
+    ${testCard()}
+    ${refCard()}
     ${testPanel()}
     <h2 class="prof-h">Mein Fliegen</h2>
     ${pilotPanel()}
@@ -1461,6 +1463,7 @@ function renderBook() {
   const gear = d.gear.slice().sort((a, b) => a.retired - b.retired || Object.keys(L.GEAR_TYPES).indexOf(a.type) - Object.keys(L.GEAR_TYPES).indexOf(b.type));
   const empty = !d.flights.length && !d.settings.flightsBefore && !d.gear.length;
   el.innerHTML = empty ? `
+    ${testCard()}
     <div class="panel lb-start empty-scene">
       ${sceneSvg(1)}
       <h3>Noch keine Flüge</h3>
@@ -1470,6 +1473,7 @@ function renderBook() {
       <p class="fine">Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. Genau diese Rückmeldungen machen AFC besser.</p>
     </div>` : `
     ${feedbackHtml()}
+    ${testCard()}
     ${gearAlertHtml()}
     <div class="panel">
       <div class="lb-head"><h3>Flugbuch</h3><span class="btn-row"><label class="btn sec lb-file" title="IGC-Dateien vom Vario oder Handy (auch mehrere, oder hierher ziehen)">IGC laden<input type="file" id="lbIgc" accept=".igc,.IGC,application/octet-stream,text/plain" multiple></label><button class="btn" type="button" data-act="lbflight">+ Flug</button></span></div>
@@ -1500,7 +1504,7 @@ function renderBook() {
         <label class="fld"><span>Stunden</span><input type="number" inputmode="decimal" min="0" step="0.5" name="hoursBefore" value="${d.settings.hoursBefore || ''}"></label>
         <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="submit">Speichern</button></div>
       </form>
-      <p class="fine">Das Flugbuch liegt auf deinem Mac und füllt dein Pilotenprofil automatisch.</p>`)}
+      <p class="fine">Das Flugbuch liegt in deinem Konto und füllt dein Pilotenprofil automatisch.</p>`)}
       ${fold('lbsave', 'Sichern und exportieren', d.backup?.cloudError ? 'Kopie in iCloud hat nicht geklappt' : d.backup?.at ? `letzte Sicherung ${dayKey(d.backup.at) === todayKey() ? 'heute' : 'am ' + ddmm(dayKey(d.backup.at))} ${timeOf(d.backup.at)} Uhr` : 'Tabelle, PDF, Sicherungsdatei', `
       ${lbBackupHtml(d.backup)}
       <div class="btn-row lb-exp">
@@ -1573,7 +1577,7 @@ async function pushSync(force = false) {
   try { const r = await pushPost('/api/push/subscribe', { subscription: PU.sub.toJSON(), prefs }); if (r.ok) store.set('pushSig', sig); } catch { /* nächstes Mal */ }
 }
 async function pushEnable() {
-  if (!PU.reg || !PU.key) { toast(PU.serverOff ? 'Benachrichtigungen sind auf dem Mac ausgeschaltet.' : 'AFC auf dem Mac ist gerade nicht erreichbar.'); return; }
+  if (!PU.reg || !PU.key) { toast(PU.serverOff ? 'Benachrichtigungen sind auf dem AFC-Server ausgeschaltet.' : 'Der AFC-Server ist gerade nicht erreichbar.'); return; }
   PU.busy = true;
   try {
     // direkt im Tipp, sonst lässt iOS die Abfrage nicht zu
@@ -3990,6 +3994,7 @@ document.addEventListener('click', async e => {
     case 'feedback': closeDlg($('#siteDlg')); feedbackForm(b.dataset.v || 'idea'); break;
     case 'nofly': closeDlg($('#siteDlg')); noflyForm(id || [...S.fav][0]); break;
     case 'survey': surveyForm(); break;
+    case 'refshare': refShare(); break;
     case 'invite': inviteCreate(); break;
     case 'invgroup': groupInviteCreate(); break;
     case 'admin': openAdmin(); break;
@@ -4120,6 +4125,7 @@ document.addEventListener('click', async e => {
         const fb = LG().siteFeedback(LB.data.flights)[f.siteId];
         toast(b.dataset.v === 'richtig' ? 'Danke! Gut zu wissen.' : fb?.adj ? `Danke! AFC passt die Bewertung für ${f.siteName} an (${fb.adj > 0 ? '+' : ''}${fb.adj}).` : `Danke! Ab ${LG().FEEDBACK_MIN_N} Rückmeldungen passt AFC die Bewertung für ${f.siteName} an.`);
         rerender(); if (b.dataset.v !== 'richtig') loadPlan();
+        rawFetch('/api/me', { cache: 'no-store' }).then(x => x.json()).then(j => { if (j.test) { ME.test = j.test; rerender(); } }).catch(() => {});
       } catch (err) { toast('Nicht gespeichert: ' + errTxt(err)); }
       break;
     }
@@ -4288,7 +4294,7 @@ function renderMe() {
   const f = $('#fbBtn'); if (f) f.hidden = !ME.user;
 }
 function setMe(j) {
-  ME.user = j.user; ME.profile = j.profile || {}; ME.prefs = j.prefs || {}; ME.stats = j.stats || null; ME.survey = !!j.survey;
+  ME.user = j.user; ME.profile = j.profile || {}; ME.prefs = j.prefs || {}; ME.stats = j.stats || null; ME.survey = !!j.survey; ME.test = j.test || null;
   store.set('me', { user: ME.user, profile: ME.profile, stats: ME.stats });
   renderMe();
 }
@@ -4341,7 +4347,7 @@ function gateHtml(mode, o) {
   const T = {
     login: ['Anmelden', 'Willkommen zurück. Melde dich mit deiner E-Mail und deinem Passwort an.', `${email}${pw('password', 'current-password')}`, 'Anmelden',
       '<p class="fine">Passwort vergessen? Schreib Lars kurz, er schickt dir einen Link für ein neues Passwort.</p>'],
-    register: ['Willkommen bei AFC', 'Lars hat dich zur Testphase eingeladen. Erstelle dein Konto, das dauert eine Minute.', `${name}${email}${pw('password', 'new-password', 'Passwort (mindestens 8 Zeichen)')}
+    register: ['Willkommen bei AFC', `${esc(o?.name || 'Lars')} hat dich zur Testphase eingeladen. Erstelle dein Konto, das dauert eine Minute.`, `${name}${email}${pw('password', 'new-password', 'Passwort (mindestens 8 Zeichen)')}
       <label class="chk gate-chk"><input type="checkbox" name="privacy" required><span>Ich habe die <a href="/privacy" target="_blank" rel="noopener">Datenschutzerklärung</a> gelesen. Meine Daten bleiben auf dem Mac von Lars.</span></label>`, 'Konto erstellen',
       '<p class="fine">Schon ein Konto? <button type="button" class="linkbtn" data-act="gate" data-v="login">Hier anmelden</button></p>'],
     reset: ['Neues Passwort', `${o.name ? esc(o.name) + ', w' : 'W'}ähle ein neues Passwort. Danach bist du gleich angemeldet.`, pw('password', 'new-password', 'Neues Passwort (mindestens 8 Zeichen)'), 'Passwort speichern', ''],
@@ -4382,7 +4388,7 @@ async function gateSubmit(form) {
   } catch (e) { err.textContent = errTxt(e); btn.disabled = false; btn.textContent = { login: 'Anmelden', register: 'Konto erstellen', reset: 'Passwort speichern', setup: 'Konto erstellen' }[mode]; }
 }
 async function logout() {
-  if (!(await ask({ title: 'Abmelden?', text: 'Auf diesem Gerät abmelden. Dein Flugbuch und dein Profil bleiben auf dem Mac gespeichert.', ok: 'Abmelden' }))) return;
+  if (!(await ask({ title: 'Abmelden?', text: 'Auf diesem Gerät abmelden. Dein Flugbuch und dein Profil bleiben in deinem Konto gespeichert.', ok: 'Abmelden' }))) return;
   if (PU.sub) await pushDisable().catch(() => {});
   await jsonPost('/api/auth/logout').catch(() => {});
   for (const k of PERSONAL) store.del(k);
@@ -4565,7 +4571,7 @@ function accountPanel() {
     <p style="margin:0 0 8px">${esc(ME.user.email)}${isAdminMe() ? ' · <b>Admin</b>' : ''}</p>
     <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="pwchange">Passwort ändern</button><button class="btn sec" type="button" data-act="logout">Abmelden</button></div>
     <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px"><a class="btn sec" href="/api/me/export" download>Meine Daten herunterladen</a><button class="btn sec danger-t" type="button" data-act="delacc">Konto löschen</button></div>
-    <p class="fine">Deine Daten liegen auf dem Mac von Lars, nicht in einer Cloud. <a href="/privacy">Datenschutz</a></p></div>`;
+    <p class="fine">Deine Daten liegen auf dem AFC-Server und werden nie verkauft oder weitergegeben. <a href="/privacy">Datenschutz</a></p></div>`;
 }
 async function pwChange() {
   const d = dlg('#msgDlg', `<div class="dlg-in"><h2 id="msgDlgT" style="font:700 24px var(--f-num)">Passwort ändern</h2><form id="pwForm" class="prof-form">
@@ -4575,7 +4581,7 @@ async function pwChange() {
   d.querySelector('input')?.focus();
 }
 async function deleteAccount() {
-  if (!(await ask({ title: 'Konto löschen?', text: 'Dein Konto, dein Flugbuch, deine Ausrüstung, dein Profil und deine Rückmeldungen werden auf dem Mac gelöscht. Das lässt sich nicht rückgängig machen. Tipp: vorher «Meine Daten herunterladen».', ok: 'Weiter', danger: true }))) return;
+  if (!(await ask({ title: 'Konto löschen?', text: 'Dein Konto, dein Flugbuch, deine Ausrüstung, dein Profil und deine Rückmeldungen werden vom AFC-Server gelöscht. Das lässt sich nicht rückgängig machen. Tipp: vorher «Meine Daten herunterladen».', ok: 'Weiter', danger: true }))) return;
   const pw = prompt('Zur Sicherheit: dein Passwort');
   if (!pw) return;
   try { await jsonPost('/api/me', { password: pw }, 'DELETE'); for (const k of PERSONAL) store.del(k); alert('Dein Konto ist gelöscht. Danke fürs Testen!'); location.replace('/'); }
@@ -6000,6 +6006,39 @@ async function sendSurvey(form) {
   try { await jsonPost('/api/feedback', { kind: 'survey', answers, ver: APP_VER }); ME.survey = false; closeDlg($('#msgDlg')); toast('Vielen Dank fürs Mitmachen!'); render(); }
   catch (e) { form.querySelector('.gate-err').textContent = errTxt(e); }
 }
+/** Persönlicher Einladungslink: Kollegen zur Testphase einladen (bis 5, zählt, wer wen gebracht hat). */
+const REF = { data: null, busy: false };
+function refCard() {
+  if (!ME.user || !ME.test) return '';
+  if (!REF.data && !REF.busy) { REF.busy = true; rawFetch('/api/me/invite').then(r => r.json()).then(j => { REF.data = j; REF.busy = false; if (S.tab === 'profile') render(); }).catch(() => { REF.busy = false; }); }
+  const d = REF.data, i = d?.invite;
+  return `<div class="panel ref-card"><h3>Kollegen einladen</h3>
+    <p class="fine" style="margin:0 0 8px">Je mehr Piloten testen, desto schneller ist AFC genau. Dein persönlicher Link gilt für ${i ? i.max - i.uses + ' weitere' : 'bis zu 5'} Kollegen.${d?.brought ? ` Du hast schon ${d.brought} gebracht, danke!` : ''}</p>
+    <div class="btn-row" style="justify-content:flex-start"><button class="btn sec" type="button" data-act="refshare">Link teilen</button></div></div>`;
+}
+async function refShare() {
+  try {
+    const j = await jsonPost('/api/me/invite', {});
+    REF.data = j;
+    const url = inviteUrl(j.invite.code, 'invite');
+    const text = `Hoi! Ich teste AFC, eine App, die auf einen Blick zeigt, ob sich ein Flugtag lohnt und warum. Mach mit: Link öffnen, Konto anlegen und AFC über Teilen › «Zum Home-Bildschirm» ablegen. ${url}`;
+    if (navigator.share) { await navigator.share({ title: 'AFC testen', text }).catch(() => {}); }
+    else { await navigator.clipboard.writeText(text); toast('Link kopiert. Jetzt in WhatsApp einfügen.'); }
+  } catch (err) { toast(errTxt(err)); }
+}
+/** Testphase nach Flügen: ruhige Karte mit Fortschritt (Flugbuch und Profil). */
+function testCard() {
+  const t = ME.test;
+  if (!t || !t.parts) return '';
+  const part = k => t.parts.find(p => p.k === k) || { have: 0, need: 0 };
+  const fl = part('flights'), pi = part('pilots'), dy = part('days');
+  const head = t.done ? 'Testphase: Ziel erreicht, vielen Dank!' : `Testphase: ${fl.have} von ${fl.need} bewerteten Flügen`;
+  return `<div class="panel test-prog" role="region" aria-label="Fortschritt der Testphase">
+    <div class="tp-h"><b>${esc(head)}</b>${t.mine ? `<small>davon ${t.mine} von dir</small>` : ''}</div>
+    <div class="tp-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${t.pct}"><span style="width:${t.pct}%"></span></div>
+    <small class="fine">${pi.have} von ${pi.need} Piloten · ${dy.have} von ${dy.need} Flugtagen${t.done ? '' : ' · Nach jedem Flug «richtig», «zu streng» oder «zu mild» antippen'}</small>
+  </div>`;
+}
 const surveyCard = () => (ME.survey ? `<div class="lb-ask survey-card"><div><b>Umfrage zum Testende</b> <span class="fine">Zwei Minuten, sieben Fragen. Damit wird AFC besser.</span></div><div class="lb-ask-btns"><button type="button" class="btn" data-act="survey">Jetzt ausfüllen</button></div></div>` : '');
 function dayAskHtml() {
   if (!ME.user || !S.plan?.dates.includes(todayKey())) return '';
@@ -6021,6 +6060,15 @@ function testPanel() {
     ${d ? `<div class="pcard-stats" style="margin-bottom:10px"><div><b>${d.users.length}</b><span>Piloten</span></div><div><b>${open}</b><span>neue Rück­meldungen</span></div><div><b>${d.users.reduce((t, u) => t + u.stats.verdicts, 0)}</b><span>Flüge bewertet</span></div><div><b>${d.errors.reduce((t, x) => t + x.n, 0)}</b><span>App-Fehler</span></div></div>` : '<p class="fine" style="margin:0 0 8px">Lade …</p>'}
     <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Freund einladen</button><button class="btn sec" type="button" data-act="invgroup">Gruppenlink</button><button class="btn sec" type="button" data-act="admin">Übersicht öffnen</button></div></div>`;
 }
+/** Admin: Testphase nach Flügen, aufgeteilt nach Pilot, Gebiet und Tagestyp. */
+function admTestHtml(t) {
+  if (!t || !t.parts) return '';
+  const tbl = (title, rows) => rows?.length ? `<table class="adm-tp"><tr><th>${title}</th><th>Flüge</th><th>richtig</th><th>zu streng</th><th>zu mild</th></tr>${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${r.n}</td><td>${r.richtig}</td><td>${r.streng}</td><td>${r.mild}</td></tr>`).join('')}</table>` : '';
+  return `<h3 class="adm-h">Testphase nach Flügen</h3>
+    <div class="pcard-stats" style="margin-bottom:6px">${t.parts.map(p => `<div><b>${p.have}/${p.need}</b><span>${esc(p.label)}${p.ok ? ' ✓' : ''}</span></div>`).join('')}<div><b>${t.nofly}</b><span>nicht gestartet</span></div></div>
+    <p class="fine" style="margin:0 0 8px">${t.done ? 'Ziel erreicht. Jetzt kannst du die Abschluss-Umfrage einschalten.' : `Fertig bei ${t.goal.flights} bewerteten Flügen von mindestens ${t.goal.pilots} Piloten an mindestens ${t.goal.days} Tagen. Stand: ${t.pct} %.`}</p>
+    ${tbl('Pilot', t.byPilot)}${tbl('Gebiet', t.byArea)}${tbl('Tagestyp', t.byType)}`;
+}
 const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
 function adminHtml() {
   const d = ADM.data, t = ADM.tab;
@@ -6031,11 +6079,13 @@ function adminHtml() {
   if (t === 'users') body = `${us ? `<h3 class="adm-h" style="margin-top:0">Wer nutzt AFC?</h3><div class="pcard-stats" style="margin-bottom:6px"><div><b>${us.today}</b><span>heute</span></div><div><b>${us.week}</b><span>letzte 7 Tage</span></div><div><b>${us.month}</b><span>letzte 30 Tage</span></div><div><b>${us.posts7}</b><span>Beiträge in 7 Tagen</span></div></div>
     <p class="fine" style="margin:0 0 10px">Gezählt wird jeder Tag, an dem jemand AFC geöffnet hat${us.since ? ` (seit ${new Date(us.since).toLocaleDateString('de-CH')})` : ''}. Die Liste ist nach Nutzung sortiert.</p>` : ''}
     <div class="adm-users">${byUse.map(u => `<div class="adm-u">${avatarHtml(u)}<div><b>${esc(u.name)}</b>${u.role === 'admin' ? ' <small class="tag">Admin</small>' : ''}<small>${esc(u.email)} · zuletzt ${esc(agoTxt(u.lastSeen))}${u.days14 != null ? ` · aktiv an ${u.days14} von 14 Tagen` : ''}</small>
+      ${u.invitedBy || u.brought ? `<small>${u.invitedBy ? 'Eingeladen von ' + esc(u.invitedBy) : ''}${u.invitedBy && u.brought ? ' · ' : ''}${u.brought ? `hat ${u.brought} ${u.brought === 1 ? 'Kollegen' : 'Kollegen'} gebracht` : ''}</small>` : ''}
       <small>${u.stats.flights} Flüge (${u.stats.logged} im Flugbuch, ${u.stats.igc} IGC) · ${u.stats.verdicts} bewertet · ${u.feedback} Rückmeldungen · ${u.push ? 'Push an' : 'Push aus'}</small>
       ${u.profile.license ? `<small>${esc(LICENSES[u.profile.license] || '')}${u.profile.since ? ', seit ' + u.profile.since : ''}${u.profile.wing ? ' · ' + esc(u.profile.wing) : ''}</small>` : '<small>Profil noch leer</small>'}
       ${u.profile.styles?.length ? `<small>Fliegt: ${esc(u.profile.styles.map(x => d.styles?.[x] || x).join(', '))}</small>` : ''}
       ${u.profile.emergName ? `<small>Notfall: ${esc(u.profile.emergName)} ${esc(u.profile.emergPhone || '')}</small>` : ''}
       ${u.role !== 'admin' ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="admreset" data-id="${esc(u.id)}">Passwort-Link</button><button class="linkbtn" type="button" data-act="admdel" data-id="${esc(u.id)}" data-v="${esc(u.name)}">Entfernen</button></span>` : ''}</div></div>`).join('')}</div>
+    ${admTestHtml(d.test)}
     <h3 class="adm-h">Wie lag AFC laut den Piloten?</h3><p>${Object.keys(d.verdicts).length ? Object.entries(d.verdicts).map(([k, n]) => `${esc(LG()?.VERDICTS[k] || k)}: <b>${n}</b>`).join(' · ') : 'Noch keine Bewertungen nach Flügen.'}</p>
     <h3 class="adm-h">Abschluss-Umfrage</h3><p class="fine" style="margin:0 0 6px">Eingeschaltet sehen alle Piloten eine kurze Umfrage, bis sie sie ausgefüllt haben.</p>
     <button class="btn sec" type="button" data-act="admsurvey" data-v="${d.survey ? '0' : '1'}">${d.survey ? 'Umfrage ausschalten' : 'Umfrage einschalten'}</button>`;
@@ -6076,9 +6126,9 @@ function adminHtml() {
   }
   if (t === 'inv') {
     const now = new Date().toISOString();
-    const state = i => i.kind === 'group' ? `Gruppenlink · ${i.uses} von ${i.max} benutzt · ${i.expires < now ? 'abgelaufen' : i.uses >= i.max ? 'voll' : `offen bis ${new Date(i.expires).toLocaleDateString('de-CH')}`}`
+    const state = i => i.kind === 'group' || i.kind === 'ref' ? `${i.kind === 'ref' ? 'Persönlicher Link' : 'Gruppenlink'} · ${i.uses} von ${i.max} benutzt · ${i.expires < now ? 'abgelaufen' : i.uses >= i.max ? 'voll' : `offen bis ${new Date(i.expires).toLocaleDateString('de-CH')}`}`
       : `${i.kind === 'reset' ? `Neues Passwort für ${i.forUser || '?'} · ` : ''}${i.usedBy ? `benutzt von ${i.usedBy} ${whenTxt(i.usedAt)}` : i.expires < now ? 'abgelaufen' : `offen bis ${new Date(i.expires).toLocaleDateString('de-CH')}`}`;
-    const live = i => i.expires > now && (i.kind === 'group' ? i.uses < i.max : !i.usedBy);
+    const live = i => i.kind !== 'ref' && i.expires > now && (i.kind === 'group' ? i.uses < i.max : !i.usedBy);
     body = `<p>Jeder Freund bekommt einen eigenen Link (30 Tage, ein Konto). Für mehrere auf einmal: ein Gruppenlink für bis zu 50 Personen (14 Tage).</p><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" data-act="invite">Neuen Einladungslink erstellen</button><button class="btn sec" type="button" data-act="invgroup">Gruppenlink erstellen</button></div>
     <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : i.kind === 'group' ? 'Gruppenlink' : 'Einladung'))}</b><small>${esc(state(i))}</small>
       ${live(i) ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">${i.kind === 'group' ? 'Beenden' : 'Löschen'}</button></span>` : ''}</div>`).join('')}</div>`;

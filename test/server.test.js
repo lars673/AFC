@@ -51,7 +51,7 @@ test('Server liefert Plan, Detail, Health – guter Tag', async () => {
     // Detail
     const d = await (await fetch(s.base + '/api/site/' + p.sites[0].id)).json();
     assert.equal(d.ok, true);
-    assert.ok(d.days[1].hours.length > 8);
+    assert.ok(d.days[1].hours.length >= 6, 'Stunden ' + d.days[1].hours.length);   // im Winter nur ~8 helle Stunden
     assert.ok(d.days[1].hours[5].prof.length >= 3);
     // Validierung
     assert.equal((await fetch(s.base + '/api/plan?level=hacker')).status, 400);

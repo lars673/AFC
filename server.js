@@ -40,6 +40,7 @@ import { fetchEnsemble, ensembleCheck, pairDiff, ENS_MIN } from './lib/ensemble.
 import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
 import { accuracyData, accuracyHtml } from './lib/genau.js';
 import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, toolStations, toolProfile, toolSites, MYAFC_MODEL, MYAFC_DAILY } from './lib/myafc.js';
+import { testProgress, testBreakdown } from './lib/testphase.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -60,6 +61,7 @@ const DATA = process.env.AFC_DATA_DIR ? path.resolve(process.env.AFC_DATA_DIR) :
 
 const SITES_FILE = JSON.parse(await fs.readFile(path.join(ROOT, 'lib', 'sites.json'), 'utf8'));
 const SITES = SITES_FILE.sites;
+const SITE_GROUP = Object.fromEntries(SITES.map(x => [x.id, x.group || x.area || null]));
 const RANKED = SITES.filter(isRanked);
 const SITE_IDS = new Set(RANKED.map(s => s.id));
 const AREAS = areasOf(SITES.map(s => ({ ...s })));
@@ -921,11 +923,13 @@ function loginBlocked(email) {
 }
 // Gruppenlink (kind 'group'): ein Link für mehrere Personen, zählt mit (uses von max_uses)
 if (!dbAll('PRAGMA table_info(invites)').some(c => c.name === 'max_uses')) db.exec('ALTER TABLE invites ADD COLUMN max_uses INTEGER; ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0;');
+if (!dbAll('PRAGMA table_info(users)').some(c => c.name === 'invited_via')) db.exec('ALTER TABLE users ADD COLUMN invited_via TEXT;');
+const REF_MAX = 5, REF_DAYS = 30;   // persönlicher Einladungslink jedes Piloten: 5 Kollegen, 30 Tage, dann neu
 const GROUP_MAX = 50;
 const inviteRow = code => {
   const r = /^[a-z0-9]{6,20}$/.test(String(code || '')) ? dbGet('SELECT * FROM invites WHERE code=?', [code]) : null;
   if (!r || (r.expires && r.expires <= nowIso())) return null;
-  if (r.kind === 'group') return (r.uses || 0) < (r.max_uses || 0) ? r : null;
+  if (r.kind === 'group' || r.kind === 'ref') return (r.uses || 0) < (r.max_uses || 0) ? r : null;
   return r.used_by ? null : r;
 };
 function userStats(uid) {
@@ -966,6 +970,12 @@ function flightsWithPilot() {
     return f;
   });
 }
+/** Testphase nach Flügen: Fortschritt für alle (uid: eigene Anzahl dazu). */
+function testState(uid = null) {
+  const flights = dbAll("SELECT uid, data FROM logbook WHERE kind='flight'").map(r => { const f = JSON.parse(r.data); return { uid: r.uid, date: f.date, siteId: f.siteId, afcVerdict: f.afcVerdict, afcFc: f.afcFc }; });
+  const nofly = dbAll("SELECT uid, at FROM feedback WHERE kind='nofly'").map(r => ({ uid: r.uid, date: r.at.slice(0, 10) }));
+  return { flights, progress: testProgress({ flights, nofly, uid }) };
+}
 /** Für das Lernen je Startplatz: alle Flüge plus «nicht gestartet» (Grund und AFC-Score von damals). */
 function feedbackRecords() {
   const snaps = new Map(), snap = uid => { if (!snaps.has(uid)) snaps.set(uid, pilotSnap(uid)); return snaps.get(uid); };
@@ -992,7 +1002,7 @@ const sharedCams = () => { try { const o = JSON.parse(kvGet('cams') || '{}'); re
 function meResponse(u) {
   // Abschluss-Umfrage: sobald der Admin sie freischaltet, bis der Pilot sie beantwortet hat
   const survey = !!kvGet('survey') && !dbGet("SELECT 1 x FROM feedback WHERE uid=? AND kind='survey'", [u.id]);
-  return { ok: true, auth: true, user: publicUser(u), profile: cleanProfile(JSON.parse(u.profile || '{}')), prefs: cleanUserPrefs(JSON.parse(u.prefs || '{}')), prefsSet: u.prefs !== '{}', stats: userStats(u.id), survey };
+  return { ok: true, auth: true, user: publicUser(u), profile: cleanProfile(JSON.parse(u.profile || '{}')), prefs: cleanUserPrefs(JSON.parse(u.prefs || '{}')), prefsSet: u.prefs !== '{}', stats: userStats(u.id), survey, test: testState(u.id).progress };
 }
 function deleteUserData(uid) {
   db.exec('BEGIN');
@@ -1040,7 +1050,7 @@ async function accountRoute(req, res, p, u) {
 
   if (p === '/api/auth/state' && req.method === 'GET') {
     const inv = u.searchParams.get('invite') ? inviteRow(u.searchParams.get('invite')) : null;
-    return sendJson(req, res, 200, { ok: true, auth: authOn(), setup: !authOn(), user: publicUser(me), invite: inv ? { ok: true, kind: inv.kind, name: inv.kind === 'reset' ? dbGet('SELECT name FROM users WHERE id=?', [inv.uid])?.name : null } : u.searchParams.get('invite') ? { ok: false } : null });
+    return sendJson(req, res, 200, { ok: true, auth: authOn(), setup: !authOn(), user: publicUser(me), invite: inv ? { ok: true, kind: inv.kind, name: inv.kind === 'reset' || inv.kind === 'ref' ? dbGet('SELECT name FROM users WHERE id=?', [inv.uid])?.name : null } : u.searchParams.get('invite') ? { ok: false } : null });
   }
   if (p === '/api/auth/setup' && req.method === 'POST') {
     if (authOn()) return sendJson(req, res, 409, { error: 'Es gibt schon ein Admin-Konto. Bitte anmelden.' });
@@ -1062,15 +1072,16 @@ async function accountRoute(req, res, p, u) {
   if (p === '/api/auth/register' && req.method === 'POST') {
     const b = await body();
     const inv = inviteRow(b.invite);
-    if (!inv || (inv.kind !== 'invite' && inv.kind !== 'group')) return sendJson(req, res, 400, { error: inv?.kind === 'reset' ? 'Dieser Link ist zum Passwort-Setzen.' : 'Dieser Einladungslink ist nicht mehr gültig oder schon von allen benutzt. Bitte Lars um einen neuen.' });
+    if (!inv || (inv.kind !== 'invite' && inv.kind !== 'group' && inv.kind !== 'ref')) return sendJson(req, res, 400, { error: inv?.kind === 'reset' ? 'Dieser Link ist zum Passwort-Setzen.' : 'Dieser Einladungslink ist nicht mehr gültig oder schon von allen benutzt. Bitte Lars um einen neuen.' });
     const email = cleanEmail(b.email), name = cleanName(b.name), bad = passwordProblem(b.password);
     if (!name) return sendJson(req, res, 400, { error: 'Bitte deinen Namen eingeben' });
     if (!email) return sendJson(req, res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben' });
     if (bad) return sendJson(req, res, 400, { error: bad });
     if (dbGet('SELECT 1 x FROM users WHERE email=?', [email])) return sendJson(req, res, 409, { error: 'Mit dieser E-Mail gibt es schon ein Konto. Bitte anmelden.' });
     const user = createUser({ email, name, pw: b.password, role: 'pilot' });
-    if (inv.kind === 'group') dbRun('UPDATE invites SET uses=uses+1, used_at=? WHERE code=?', [nowIso(), inv.code]);
+    if (inv.kind === 'group' || inv.kind === 'ref') dbRun('UPDATE invites SET uses=uses+1, used_at=? WHERE code=?', [nowIso(), inv.code]);
     else dbRun('UPDATE invites SET used_by=?, used_at=? WHERE code=?', [user.id, nowIso(), inv.code]);
+    dbRun('UPDATE users SET invited_via=? WHERE id=?', [inv.code, user.id]);
     if (b.prefs) dbRun('UPDATE users SET prefs=? WHERE id=?', [JSON.stringify(cleanUserPrefs(b.prefs)), user.id]);
     setSession(req, res, user.id);
     return sendJson(req, res, 200, meResponse(dbGet('SELECT * FROM users WHERE id=?', [user.id])));
@@ -1204,12 +1215,31 @@ async function accountRoute(req, res, p, u) {
     return sendJson(req, res, 200, communityData(me, u.searchParams.get('date')));
   }
 
+  // Persönlicher Einladungslink: jeder Pilot kann bis zu 5 Kollegen einladen (zählt, wer wen gebracht hat)
+  if (p === '/api/me/invite' && (req.method === 'GET' || req.method === 'POST')) {
+    let r = dbGet("SELECT * FROM invites WHERE kind='ref' AND uid=? AND expires>? AND uses<max_uses ORDER BY created DESC LIMIT 1", [me.id, nowIso()]);
+    if (!r && req.method === 'POST') {
+      const code = newCode(10), expires = new Date(Date.now() + REF_DAYS * 86400000).toISOString();
+      dbRun("INSERT INTO invites(code,kind,note,uid,created,expires,max_uses) VALUES(?,'ref',?,?,?,?,?)", [code, 'von ' + me.name, me.id, nowIso(), expires, REF_MAX]);
+      r = dbGet('SELECT * FROM invites WHERE code=?', [code]);
+    }
+    const brought = dbGet("SELECT COUNT(*) n FROM users u JOIN invites i ON i.code=u.invited_via WHERE i.kind='ref' AND i.uid=?", [me.id]).n;
+    return sendJson(req, res, 200, { ok: true, brought, invite: r ? { code: r.code, uses: r.uses || 0, max: r.max_uses, expires: r.expires } : null });
+  }
+
   // Admin: Einladungen, Überblick über die Testphase
   if (p.startsWith('/api/admin/')) {
     if (me.role !== 'admin') return sendJson(req, res, 403, { error: 'nur für den Admin' });
     if (p === '/api/admin/overview' && req.method === 'GET') {
       const users = dbAll('SELECT * FROM users ORDER BY created').map(x => ({ ...publicUser(x), lastSeen: x.last_seen, profile: cleanProfile(JSON.parse(x.profile || '{}')), stats: userStats(x.id), push: dbGet('SELECT COUNT(*) n FROM push_subs WHERE uid=?', [x.id]).n, feedback: dbGet('SELECT COUNT(*) n FROM feedback WHERE uid=?', [x.id]).n }));
       const names = Object.fromEntries(users.map(x => [x.id, x.name]));
+      const invOf = Object.fromEntries(dbAll('SELECT code, kind, note, uid FROM invites').map(x => [x.code, x]));
+      const raw = Object.fromEntries(dbAll('SELECT id, invited_via FROM users').map(x => [x.id, x.invited_via]));
+      for (const x of users) {
+        const iv = invOf[raw[x.id]];
+        x.invitedBy = !iv ? null : iv.kind === 'ref' ? names[iv.uid] || '(gelöscht)' : iv.note || (iv.kind === 'group' ? 'Gruppenlink' : 'Einladung');
+        x.brought = users.filter(y => invOf[raw[y.id]]?.kind === 'ref' && invOf[raw[y.id]].uid === x.id).length;
+      }
       const invites = dbAll('SELECT * FROM invites ORDER BY created DESC LIMIT 60').map(x => ({ code: x.code, kind: x.kind, note: x.note, created: x.created, expires: x.expires, usedBy: x.used_by ? names[x.used_by] || '(gelöscht)' : null, usedAt: x.used_at, forUser: x.uid ? names[x.uid] || null : null, max: x.max_uses || null, uses: x.uses || 0 }));
       const feedback = dbAll('SELECT id, uid, at, kind, data, done FROM feedback ORDER BY at DESC LIMIT 200').map(r => ({ id: r.id, at: r.at, kind: r.kind, done: !!r.done, who: names[r.uid] || '(gelöscht)', ...JSON.parse(r.data) }));
       const errors = dbAll('SELECT id, uid, at, n, data FROM client_errors ORDER BY at DESC LIMIT 60').map(r => ({ id: r.id, at: r.at, n: r.n, who: names[r.uid] || '–', ...JSON.parse(r.data) }));
@@ -1221,7 +1251,9 @@ async function accountRoute(req, res, p, u) {
       for (const x of users) { const ds = days.get(x.id) || []; x.days14 = ds.filter(d => d >= dAgo(13)).length; x.days30 = ds.length; }
       const activeIn = n => users.filter(x => (days.get(x.id) || []).some(d => d >= dAgo(n - 1))).length;
       const usage = { today: activeIn(1), week: activeIn(7), month: activeIn(30), posts7: dbGet('SELECT COUNT(*) n FROM posts WHERE at>=?', [new Date(Date.now() - 7 * 86400000).toISOString()]).n, since: dbGet('SELECT MIN(day) d FROM user_days')?.d || today };
-      return sendJson(req, res, 200, { ok: true, users, usage, learned: groupLearned(), backup: backupStatus(), invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
+      const ts = testState();
+      const test = { ...ts.progress, ...testBreakdown({ flights: ts.flights, areaOf: id => SITE_GROUP[id] || null, names }) };
+      return sendJson(req, res, 200, { ok: true, test, users, usage, learned: groupLearned(), backup: backupStatus(), invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
     }
     if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
     if (p === '/api/admin/invite' && req.method === 'POST') {
@@ -1785,11 +1817,13 @@ async function pushTick(phase = pushPhase()) {
   const lbs = {};
   const plans = {};
   let sent = 0;
+  const tp = phase === 'evening' ? testState().progress : null;
+  const testLeft = tp && !tp.done ? tp.left : null;
   for (const row of subs) {
     const prefs = cleanPrefs(JSON.parse(row.prefs));
     const plan = plans[prefs.level] ||= model.planPayload(prefs.level);
     const lb = lbs[row.uid] ||= logbookData(row.uid);   // Ausrüstung und Flüge des Piloten, dem das Gerät gehört
-    for (const n of buildNotices({ phase, plan, prefs, gear: lb.gear, flights: lb.flights })) {
+    for (const n of buildNotices({ phase, plan, prefs, gear: lb.gear, flights: lb.flights, testLeft })) {
       if (dbGet('SELECT 1 x FROM push_sent WHERE endpoint=? AND key=?', [row.endpoint, n.key])) continue;
       const r = await pushTo(row, n);
       if (r.gone) break;

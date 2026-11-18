@@ -1499,3 +1499,13 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .wind-bar.folded .wind-now { display: none; }
 .mk-s.meas { box-shadow: 0 0 0 3px rgba(18,138,69,.55), 0 1px 4px rgba(0,0,0,.45); }
 .mk-s.meas.off { box-shadow: 0 0 0 3px rgba(220,132,38,.9), 0 1px 4px rgba(0,0,0,.45); }
+
+/* Testphase nach Flügen */
+.test-prog { display: grid; gap: 8px; padding: 12px 14px; }
+.test-prog .tp-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.test-prog .tp-h small { color: var(--muted); }
+.tp-bar { height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); overflow: hidden; }
+.tp-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .8s cubic-bezier(.2,.7,.2,1); }
+.adm-tp { width: 100%; border-collapse: collapse; font-size: .9em; margin-bottom: 8px; }
+.adm-tp td, .adm-tp th { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+.adm-tp td:not(:first-child), .adm-tp th:not(:first-child) { text-align: right; }

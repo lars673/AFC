@@ -81,6 +81,14 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal(be.status, 200); assert.equal(be.json.user.role, 'pilot');
     const B = be.cookie;
     assert.equal((await call('POST', '/api/auth/register', { invite: inv.json.code, name: 'Eva', email: 'eva@test.ch', password: 'Grindelwald-1' })).status, 400, 'Einladung nur einmal');
+    // persönlicher Link: Beat lädt Kollegen ein, gezählt wird, wer wen gebracht hat
+    assert.equal((await call('GET', '/api/me/invite', null, B)).json.invite, null);
+    const ref = await call('POST', '/api/me/invite', {}, B);
+    assert.equal(ref.json.invite.max, 5);
+    assert.equal((await call('POST', '/api/me/invite', {}, B)).json.invite.code, ref.json.invite.code, 'gleicher Link, solange er gilt');
+    assert.equal((await call('GET', '/api/auth/state?invite=' + ref.json.invite.code)).json.invite.name, 'Beat');
+    const me1 = await call('GET', '/api/me', null, B);
+    assert.equal(me1.json.test.goal.flights, 100);
     // getrennte Flugbücher
     assert.equal((await call('GET', '/api/logbook', null, B)).json.flights.length, 0);
     assert.equal((await call('PUT', '/api/logbook/flight/f2', { date: '2026-10-02', siteName: 'First', durMin: 30, afcVerdict: 'streng' }, B)).status, 200);
