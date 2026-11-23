@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.19';
+const APP_VER = '12.20';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1983,19 +1983,26 @@ const INTRO = [
   ['Briefing in 15 Sekunden', 'Merke dir deine Startplätze mit dem Stern. «Briefing» zeigt für jeden einen kurzen Film mit Score, bestem Fenster und den wichtigsten Gründen. Du kannst ihn als Video sichern oder in der Gruppe teilen. Im Flugbuch macht «Rückblick» aus deinem Flugjahr einen Film, und «Vergleichen» lässt zwei Startplätze Stunde für Stunde gegeneinander laufen.', 'brief'],
   ['Testphase: deine Rückmeldung zählt', 'Unter «Profil» trägst du Erfahrung und Schirm ein, daraus wählt AFC deine Grenzen. Beim Sprechblasen-Knopf oben rechts schickst du Lars jederzeit eine Idee oder einen Fehler, und nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. AFC ersetzt nie deine eigene Beurteilung am Startplatz.', 'test']
 ];
-function showIntro(i = 0) {
-  const last = i === INTRO.length - 1, [t, x, art] = INTRO[i];
+// Erster Start: nur das Wichtigste in drei kurzen Schritten. Die ganze Tour bleibt unter Profil › Hilfe.
+const INTRO_FIRST = [
+  ['Willkommen bei AFC', 'Jeder Startplatz bekommt stündlich einen Score. Ab 80 sieht es gut aus, ab 55 nur mit Vorsicht, darunter besser am Boden bleiben.', 'score'],
+  ['Immer mit Begründung', 'Tippe auf einen Startplatz. Unter «Kurz erklärt» steht, warum es passt oder nicht.', 'why'],
+  ['Deine Rückmeldung zählt', 'Nach jedem Flug fragt AFC kurz, ob die Prognose gestimmt hat. AFC ersetzt nie deine eigene Beurteilung am Startplatz.', 'test']
+];
+function showIntro(i = 0, list = INTRO) {
+  const L = list, last = i === L.length - 1, [t, x, art] = L[i];
+  const needProfile = store.get('pilot')?.flights == null;
   const d = dlg('#msgDlg', `<div class="dlg-in intro"><div class="dlg-h"><h2 id="msgDlgT">${esc(t)}</h2><button class="x-btn" type="button" data-intro="end" aria-label="Schliessen">×</button></div>
     <div class="intro-art">${INTRO_ART[art] || ''}</div>
     <p>${esc(x)}</p>
-    <div class="intro-dots" aria-label="Schritt ${i + 1} von ${INTRO.length}">${INTRO.map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('')}</div>
-    <div class="btn-row">${i ? `<button class="btn sec" type="button" data-intro="${i - 1}">Zurück</button>` : `<button class="btn sec" type="button" data-intro="end">Überspringen</button>`}<button class="btn" type="button" data-intro="${last ? (store.get('pilot')?.flights != null ? 'end' : 'profile') : i + 1}" autofocus>${last ? (store.get('pilot')?.flights != null ? 'Los gehts' : 'Profil ausfüllen') : 'Weiter'}</button></div></div>`);
+    <div class="intro-dots" aria-label="Schritt ${i + 1} von ${L.length}">${L.map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('')}</div>
+    <div class="btn-row">${i ? `<button class="btn sec" type="button" data-intro="${i - 1}">Zurück</button>` : `<button class="btn sec" type="button" data-intro="end">Überspringen</button>`}<button class="btn" type="button" data-intro="${last ? (needProfile ? 'profile' : 'end') : i + 1}" autofocus>${last ? (needProfile ? 'Kurz einrichten' : 'Los gehts') : 'Weiter'}</button></div></div>`);
   d.onclick = e => {
     const b = e.target.closest('[data-intro]'); if (!b) return;
     const v = b.dataset.intro;
-    if (/^\d+$/.test(v)) return showIntro(Number(v));
+    if (/^\d+$/.test(v)) return showIntro(Number(v), L);
     d.onclick = null; store.set('intro', INTRO_VER); closeDlg(d);
-    if (v === 'profile') { setTab('profile'); if (ME.user) setTimeout(profileEdit, 300); }
+    if (v === 'profile') { if (ME.user) setTimeout(quickStart, 300); else setTab('profile'); }
   };
   d.onclose = () => store.set('intro', INTRO_VER);
 }
@@ -4211,9 +4218,10 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('submit', e => {
   const fid = e.target.id;
-  if (['gateForm', 'profForm', 'pwForm', 'fbForm', 'noflyForm', 'surveyForm', 'grpForm'].includes(fid) || e.target.classList?.contains('grp-reply')) e.preventDefault();
+  if (['gateForm', 'profForm', 'quickForm', 'pwForm', 'fbForm', 'noflyForm', 'surveyForm', 'grpForm'].includes(fid) || e.target.classList?.contains('grp-reply')) e.preventDefault();
   if (fid === 'gateForm') gateSubmit(e.target);
   if (fid === 'profForm') saveProfile(e.target);
+  if (fid === 'quickForm') saveQuick(e.target);
   if (fid === 'fbForm') sendFeedback(e.target);
   if (fid === 'noflyForm') sendNofly(e.target);
   if (fid === 'grpForm' || e.target.classList?.contains('grp-reply')) groupPost(e.target);
@@ -4407,9 +4415,9 @@ function welcomeToast() {
   const w = store.get('welcome'); if (!w) return;
   store.del('welcome');
   if (w === 'register') {
-    toast(`Willkommen, ${ME.user?.name?.split(' ')[0] || ''}! Fülle jetzt kurz dein Pilotenprofil aus.`);
-    // die Einführung kommt zuerst und führt am Ende ins Profil; sonst gleich das Profil öffnen
-    if ((store.get('intro') ?? 0) >= INTRO_VER) { const go = (n = 0) => (S.plan || n > 20 ? profileEdit() : setTimeout(() => go(n + 1), 500)); setTimeout(go, 600); }
+    toast(`Willkommen, ${ME.user?.name?.split(' ')[0] || ''}!`);
+    // die Einführung kommt zuerst und führt am Ende in den Schnellstart; sonst gleich den Schnellstart öffnen
+    if ((store.get('intro') ?? 0) >= INTRO_VER) { const go = (n = 0) => (S.plan || n > 20 ? quickStart() : setTimeout(() => go(n + 1), 500)); setTimeout(go, 600); }
   }
   else if (w === 'setup') toast('Konto erstellt. Jetzt kannst du unter «Testphase» Freunde einladen.');
   else if (w === 'reset') toast('Neues Passwort gespeichert');
@@ -4465,6 +4473,43 @@ function pilotCard() {
     <div class="btn-row" style="justify-content:flex-start"><button class="btn${done < 60 ? '' : ' sec'}" type="button" data-act="profedit">${done < 60 ? 'Profil ausfüllen' : 'Profil bearbeiten'}</button>${ME.user.photo ? '' : '<button class="btn sec" type="button" data-act="photo">Foto hinzufügen</button>'}</div>
     <input type="file" id="photoIn" accept="image/*" hidden>
   </section>`;
+}
+/** Schnellstart nach der Anmeldung: nur was AFC für deine Grenzen braucht (Ausbildung, Erfahrung, Hausgebiete).
+ *  Alles andere kann später im ganzen Profil ergänzt werden. */
+function quickStart() {
+  if (!ME.user) return;
+  const p = ME.profile || {}, pi = store.get('pilot', {});
+  const v = x => (x == null ? '' : esc(x));
+  const areas = S.plan?.areas || [];
+  dlg('#msgDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="msgDlgT">Kurz einrichten</h2><button class="x-btn" type="button" data-act="closemsg" aria-label="Schliessen">×</button></div>
+    <p class="fine" style="margin-top:0">Drei Angaben, dann passt AFC Wind- und Böengrenzen an dich an.</p>
+    <form id="quickForm" class="prof-form">
+      <label class="fld"><span>Ausbildung</span><select name="license"><option value="">– bitte wählen –</option>${Object.entries(LICENSES).map(([k, t]) => `<option value="${k}" ${p.license === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <div class="fld-pair"><label class="fld"><span>Flüge total</span><input type="number" name="flights" inputmode="decimal" min="0" max="20000" placeholder="z.B. 150" value="${v(pi.flights)}"></label><label class="fld"><span>Stunden letzte 12 Monate</span><input type="number" name="hours12" inputmode="decimal" min="0" max="2000" placeholder="z.B. 25" value="${v(pi.hours12)}"></label></div>
+      ${areas.length ? `<p class="fine lb-wide" style="margin:10px 0 4px">Wo fliegst du meistens? (freiwillig)</p>
+      <div class="chips" role="group" aria-label="Hausgebiete">${areas.map(a => `<label class="chip"><input type="checkbox" name="homes" value="${esc(a.id)}" ${(p.homes || []).includes(a.id) ? 'checked' : ''}><span>${esc(a.name)}</span></label>`).join('')}</div>` : ''}
+      <p class="gate-err" id="quickErr" role="alert"></p>
+      <div class="btn-row"><button class="btn sec" type="button" data-act="closemsg">Später</button><button class="btn" type="submit">Fertig</button></div>
+      <p class="fine" style="text-align:center;margin:6px 0 0">Schirm, Gewicht und Notfallkontakt kannst du später unter «Profil» ergänzen.</p>
+    </form></div>`);
+}
+async function saveQuick(form) {
+  const fd = new FormData(form), err = $('#quickErr'); err.textContent = '';
+  const int = k => { const v = fd.get(k); return v === '' || v == null ? null : Math.max(0, Math.round(Number(v))); };
+  const license = (fd.get('license') || '').toString() || null, homes = fd.getAll('homes').slice(0, 6);
+  try {
+    const pi = { ...store.get('pilot', {}), student: license === 'student', flights: int('flights'), hours12: int('hours12') };
+    store.set('pilot', pi); store.del('levelManual');
+    const pl = P()?.pilotLevel(pi), lvChanged = pl && pl.level !== S.level;
+    if (lvChanged) { S.level = pl.level; store.set('level', S.level); }
+    const profile = { ...(ME.profile || {}), license, homes: homes.length ? homes : (ME.profile?.homes || []) };
+    const j = await jsonPost('/api/me', { profile, prefs: { ...prefsLocal(), pilot: pi } }, 'PUT');
+    setMe(j); closeDlg($('#msgDlg')); S.detail.clear();
+    toast(pl ? `Fertig. Deine Stufe: «${LEVEL_INFO[pl.level][0]}»` : 'Gespeichert');
+    lbAlignBefore().catch(() => {});
+    if (S.tab !== 'decide') setTab('decide');
+    render(); if (lvChanged) loadPlan();
+  } catch (e) { err.textContent = 'Nicht gespeichert: ' + errTxt(e); }
 }
 function profileEdit() {
   if (!ME.user) return;
@@ -6238,7 +6283,7 @@ function opener() {
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   myLoad();
-  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(); }, Math.max(600, openerUntil - performance.now() + 150));
+  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150));
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
   if ('serviceWorker' in navigator) {
