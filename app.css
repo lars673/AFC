@@ -1509,3 +1509,23 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .adm-tp { width: 100%; border-collapse: collapse; font-size: .9em; margin-bottom: 8px; }
 .adm-tp td, .adm-tp th { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
 .adm-tp td:not(:first-child), .adm-tp th:not(:first-child) { text-align: right; }
+
+/* Admin › Nutzung */
+.use-ctl { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.use-me { display: inline-flex; align-items: center; gap: 6px; font-size: .9em; }
+.use-bars { display: grid; grid-template-columns: minmax(90px, 34%) 1fr auto; align-items: center; gap: 6px 8px; margin: 6px 0 2px; font-size: .92em; }
+.use-row { display: contents; }
+.use-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.use-b { height: 10px; border-radius: 5px; background: var(--line, rgba(127,127,127,.18)); overflow: hidden; }
+.use-b i { display: block; height: 100%; border-radius: 5px; background: var(--accent); transform-origin: left; animation: useGrow .7s cubic-bezier(.2,.8,.2,1) both; }
+.use-v { font-variant-numeric: tabular-nums; font-size: .88em; opacity: .8; white-space: nowrap; }
+@keyframes useGrow { from { transform: scaleX(0); } }
+.use-days { display: flex; align-items: flex-end; gap: 2px; height: 46px; padding: 2px 0; }
+.use-days i { flex: 1; min-width: 2px; border-radius: 3px 3px 1px 1px; background: var(--accent); opacity: .85; transform-origin: bottom; animation: useRise .6s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes useRise { from { transform: scaleY(0); } }
+.use-funnel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px; }
+.use-funnel div { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 6px 4px; border-radius: 10px; background: var(--line, rgba(127,127,127,.12)); }
+.use-funnel b { font-size: 1.25em; }
+.use-funnel span { font-size: .78em; opacity: .8; }
+.use-never { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.use-never .chip { opacity: .75; font-size: .82em; padding: 2px 8px; border-radius: 999px; background: var(--line, rgba(127,127,127,.14)); }

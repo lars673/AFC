@@ -41,6 +41,7 @@ import { fogFromObs, fogTimeline, fogStateAt } from './lib/fog.js';
 import { accuracyData, accuracyHtml } from './lib/genau.js';
 import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, toolStations, toolProfile, toolSites, MYAFC_MODEL, MYAFC_DAILY } from './lib/myafc.js';
 import { testProgress, testBreakdown } from './lib/testphase.js';
+import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, uid TEXT NOT NULL, at 
 CREATE INDEX IF NOT EXISTS idx_posts_at ON posts(at);
 CREATE TABLE IF NOT EXISTS post_likes (post_id INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY(post_id, uid));
 CREATE TABLE IF NOT EXISTS user_days (uid TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(uid, day));
+CREATE TABLE IF NOT EXISTS usage_ev (uid TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, secs INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(uid, day, kind, key));
 CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
 CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(at);`);
 {
@@ -1057,7 +1059,7 @@ function meResponse(u) {
 function deleteUserData(uid) {
   db.exec('BEGIN');
   try {
-    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM post_likes WHERE uid=?', 'DELETE FROM user_days WHERE uid=?', 'DELETE FROM posts WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
+    for (const sql of ['DELETE FROM logbook WHERE uid=?', 'DELETE FROM watch WHERE uid=?', 'DELETE FROM sessions WHERE uid=?', 'DELETE FROM photos WHERE uid=?', 'DELETE FROM feedback WHERE uid=?', 'DELETE FROM client_errors WHERE uid=?', 'DELETE FROM post_likes WHERE uid=?', 'DELETE FROM user_days WHERE uid=?', 'DELETE FROM usage_ev WHERE uid=?', 'DELETE FROM posts WHERE uid=?', 'DELETE FROM invites WHERE uid=? AND used_by IS NULL', 'DELETE FROM users WHERE id=?']) dbRun(sql, [uid]);
     for (const r of dbAll('SELECT endpoint FROM push_subs WHERE uid=?', [uid])) { dbRun('DELETE FROM push_sent WHERE endpoint=?', [r.endpoint]); dbRun('DELETE FROM push_subs WHERE endpoint=?', [r.endpoint]); }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -1305,6 +1307,16 @@ async function accountRoute(req, res, p, u) {
       const test = { ...ts.progress, ...testBreakdown({ flights: ts.flights, areaOf: id => SITE_GROUP[id] || null, names }) };
       return sendJson(req, res, 200, { ok: true, test, users, usage, learned: groupLearned(), backup: backupStatus(), invites, feedback, errors, verdicts, groups: pilotGroups(users), licenses: LICENSES, styles: STYLES, kinds: FEEDBACK_KINDS, reasons: NOFLY_REASONS, survey: !!kvGet('survey') });
     }
+    if (p === '/api/admin/usage' && req.method === 'GET') {
+      const days = Math.max(1, Math.min(USAGE_KEEP_DAYS, Number(u.searchParams.get('days')) || 7));
+      const today = zurichDay(), from = zurichDay(Date.now() - (days - 1) * 86400000);
+      const users = dbAll('SELECT id, name, role FROM users');
+      const activeDays = new Map();
+      for (const r of dbAll('SELECT uid, day FROM user_days')) { if (!activeDays.has(r.uid)) activeDays.set(r.uid, []); activeDays.get(r.uid).push(r.day); }
+      const rows = dbAll('SELECT uid, day, kind, key, n, secs FROM usage_ev WHERE day>=?', [from]);
+      const since = dbGet('SELECT MIN(day) d FROM usage_ev')?.d || null;
+      return sendJson(req, res, 200, { ok: true, days, from, today, since, ...usageSummary(rows, { users, activeDays, today, from, withAdmin: u.searchParams.get('admin') === '1' }) });
+    }
     if (p === '/api/admin/survey' && req.method === 'PUT') { const b = await body(); kvSet('survey', b.on ? nowIso() : null); return sendJson(req, res, 200, { ok: true, survey: !!b.on }); }
     if (p === '/api/admin/invite' && req.method === 'POST') {
       const b = await body();
@@ -1448,6 +1460,16 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/client-error' && req.method === 'POST') {
         if (limited(req, 'cerr', 20)) return sendJson(req, res, 429, { error: 'zu viele' });
         return clientErrorRoute(req, res, await readBody(req, 8 * 1024));
+      }
+      // Nutzungsmessung (nur Zähler pro Pilot und Tag, siehe lib/usage.js); kommt auch per sendBeacon beim Schliessen
+      if (p === '/api/usage' && req.method === 'POST') {
+        const me = userOf(req);
+        if (!me) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
+        if (limited(req, 'usage', 30)) return sendJson(req, res, 429, { error: 'zu viele' });
+        const b = await readBody(req, 16 * 1024);
+        const day = zurichDay();
+        for (const e of cleanUsage(b)) dbRun('INSERT INTO usage_ev(uid,day,kind,key,n,secs) VALUES(?,?,?,?,?,?) ON CONFLICT(uid,day,kind,key) DO UPDATE SET n=n+excluded.n, secs=secs+excluded.secs', [me.id, day, e.kind, e.key, e.n, e.secs]);
+        return sendJson(req, res, 200, { ok: true });
       }
       if (p.startsWith('/api/auth/') || p === '/api/me' || p.startsWith('/api/me/') || p.startsWith('/api/admin/') || p.startsWith('/api/photo/') || p === '/api/feedback' || p.startsWith('/api/community')) return accountRoute(req, res, p, u);
       // Mit Konten braucht alles eine Anmeldung (ausser der Version für die Anzeige vor dem Anmelden)
@@ -2070,6 +2092,7 @@ async function maintenance() {
     dbRun('DELETE FROM model_fc WHERE target<?', [cut]);
     const cut120 = new Date(Date.now() - 120 * 86400000).toISOString();
     dbRun('DELETE FROM reg_fc WHERE target<?', [cut120]); dbRun('DELETE FROM reg_obs WHERE time<?', [cut120]);
+    dbRun('DELETE FROM usage_ev WHERE day<?', [new Date(Date.now() - USAGE_KEEP_DAYS * 86400000).toISOString().slice(0, 10)]);
     dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     for (const f of await fs.readdir(dataDir)) if (f.startsWith('tmp-sicherung-')) await fs.rm(path.join(dataDir, f), { recursive: true, force: true });
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;

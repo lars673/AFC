@@ -127,6 +127,17 @@ test('Konten: erstes Konto übernimmt die Daten, Einladung, Anmeldung, getrennte
     assert.equal((await call('POST', '/api/feedback', { kind: 'idea', text: 'Bitte Webcam am First' }, B)).status, 200);
     assert.equal((await call('POST', '/api/client-error', { msg: 'TypeError: x is undefined', src: '/app.js', line: 10 }, B)).status, 200);
     assert.equal((await call('POST', '/api/client-error', { msg: 'TypeError: x is undefined', src: '/app.js', line: 10 }, B)).status, 200);
+    // Nutzungsmessung: nur angemeldet, nur Zähler, Admin sieht die Summe
+    assert.equal((await call('POST', '/api/usage', { ev: [{ k: 'tab', key: 'map', n: 1, s: 30 }] })).status, 401);
+    assert.equal((await call('POST', '/api/usage', { ev: [{ k: 'sess', key: 'all', n: 1, s: 90 }, { k: 'tab', key: 'map', n: 2, s: 60 }, { k: 'feat', key: 'compare', n: 1 }, { k: 'hack', key: 'x', n: 1 }] }, B)).status, 200);
+    assert.equal((await call('POST', '/api/usage', { ev: [{ k: 'tab', key: 'map', n: 1, s: 30 }, { k: 'exit', key: 'tab:decide', n: 1 }] }, B)).status, 200);
+    assert.equal((await call('POST', '/api/usage', { ev: [{ k: 'sess', key: 'all', n: 1, s: 600 }] }, A)).status, 200);
+    assert.equal((await call('GET', '/api/admin/usage', null, B)).status, 403);
+    const us = (await call('GET', '/api/admin/usage?days=7', null, A)).json;
+    assert.equal(us.pilots, 1, 'Admin zählt standardmässig nicht mit');
+    assert.equal(us.sessions, 1); assert.equal(us.tabs[0].key, 'map'); assert.equal(us.tabs[0].secs, 90); assert.equal(us.tabs[0].n, 3);
+    assert.equal(us.feats[0].key, 'compare'); assert.equal(us.exits[0].key, 'tab:decide'); assert.equal(us.daily.length, 7);
+    assert.equal((await call('GET', '/api/admin/usage?days=7&admin=1', null, A)).json.pilots, 2);
     // Admin-Übersicht nur für Lars
     assert.equal((await call('GET', '/api/admin/overview', null, B)).status, 403);
     const ov = await call('GET', '/api/admin/overview', null, A);

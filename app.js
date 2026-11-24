@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.20';
+const APP_VER = '12.20.1';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -1991,6 +1991,7 @@ const INTRO_FIRST = [
 ];
 function showIntro(i = 0, list = INTRO) {
   const L = list, last = i === L.length - 1, [t, x, art] = L[i];
+  if (L === INTRO_FIRST) useAdd('flow', 'intro' + (i + 1));
   const needProfile = store.get('pilot')?.flights == null;
   const d = dlg('#msgDlg', `<div class="dlg-in intro"><div class="dlg-h"><h2 id="msgDlgT">${esc(t)}</h2><button class="x-btn" type="button" data-intro="end" aria-label="Schliessen">×</button></div>
     <div class="intro-art">${INTRO_ART[art] || ''}</div>
@@ -2002,6 +2003,7 @@ function showIntro(i = 0, list = INTRO) {
     const v = b.dataset.intro;
     if (/^\d+$/.test(v)) return showIntro(Number(v), L);
     d.onclick = null; store.set('intro', INTRO_VER); closeDlg(d);
+    if (L === INTRO_FIRST) useAdd('flow', last ? 'intro-done' : 'intro-skip');
     if (v === 'profile') { if (ME.user) setTimeout(quickStart, 300); else setTab('profile'); }
   };
   d.onclose = () => store.set('intro', INTRO_VER);
@@ -2211,7 +2213,7 @@ function flowBack(d) {
 async function openSite(id) {
   if (!S.plan || !siteById(id)) return;
   const base = siteById(id);
-  S.site = id; S.hour = null; S.panel = null;
+  S.site = id; S.hour = null; S.panel = null; useAdd('feat', 'site');
   for (const k of [...FOLD.keys()]) if (!/^(lb|lage)/.test(k)) FOLD.delete(k);   // jedes Öffnen beginnt ruhig: nur das Wichtige ist aufgeklappt
   const flow = flowStart(id);
   const dl = dlg('#siteDlg', `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">${esc(nm(base))}</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>${miniHtml(base)}<div class="skel" role="status"><div class="skel-b skel-rib"></div><div class="skel-ring"><div class="skel-b skel-c"></div><div><div class="skel-b skel-l1"></div><div class="skel-b skel-l2"></div></div></div>${'<div class="skel-b skel-row"></div>'.repeat(3)}<span class="sr">Lade Details …</span></div></div>`);
@@ -3968,13 +3970,73 @@ function locate() {
   }, err => toast(err.code === 1 ? 'Standortfreigabe verweigert' : 'Standort nicht verfügbar'), { enableHighAccuracy: true, timeout: 10000 });
 }
 
+/* ---------------------------------------------------------------- Nutzung messen */
+// Nur Zähler (welcher Reiter wie lange, welche Funktion wie oft), nur an den eigenen AFC-Server,
+// keine Inhalte, keine Klickspur, keine Fremdanbieter. Lars sieht sie unter Testphase › Nutzung.
+const FEATS = {
+  site: 'Startplatz geöffnet', compare: 'Vergleichen', week: 'Wochenblick', film: 'Tagesfilm', windnow: 'Wind jetzt', site3d: '3D-Startplatz', region3d: '3D-Region',
+  replay: '3D-Flug-Replay', v3dpov: 'Pilotensicht', duelplay: 'Vergleich animiert', brief: 'Briefing-Clip', briefall: 'Briefing Favoriten', recap: 'Saison-Rückblick',
+  layers: 'Kartenebenen', wind: 'Wind-Ebene', thermal: 'Thermik-Ebene', obsttoggle: 'Kabel-Ebene', airtoggle: 'Luftraum', route: 'Route', locate: 'Mein Standort',
+  showmap: 'Auf Karte zeigen', day: 'Anderer Tag', hour: 'Stunde gewählt', sort: 'Sortieren', fav: 'Favorit', watch: 'Flugtag-Wächter', cambig: 'Webcam gross',
+  landpick: 'Landeplatz gewählt', check: 'Checkliste', lbflight: 'Flug eintragen', fb: 'Flug bewertet', nofly: 'Nicht gestartet', report: 'Flugbericht',
+  lbcsv: 'Flugbuch-Export', lbprint: 'Flugbuch drucken', lbgear: 'Ausrüstung', feedback: 'Rückmeldung', myafc: 'MyAFC', grplike: 'Gruppe: Like', grpshare: 'Gruppe: Beitrag',
+  refshare: 'Freund eingeladen', pushon: 'Push eingeschaltet', sun: 'Sonnenmodus', photo: 'Profilbild'
+};
+const USE = { ev: new Map(), tab: null, at: 0, secs: 0, hidAt: 0 };
+function useAdd(k, key, n = 1, s = 0) {
+  if (!key) return;
+  const id = k + '|' + key, o = USE.ev.get(id) || { k, key, n: 0, s: 0 };
+  o.n += n; o.s += s; USE.ev.set(id, o);
+}
+/** Beendet das laufende sichtbare Stück: Zeit geht an den Reiter und an den Besuch. */
+function useClose() {
+  if (!USE.at) return;
+  const s = (Date.now() - USE.at) / 1000; USE.at = 0;
+  if (s > 0 && s < 4 * 3600) { useAdd('tab', USE.tab, 0, s); USE.secs += s; }
+}
+const useOpen = () => { if (!document.hidden) USE.at = Date.now(); };
+function useTab(t) { if (!t || t === USE.tab) return; useClose(); USE.tab = t; useAdd('tab', t, 1); useOpen(); }
+/** Wo man gerade ist (für «hier schliessen sie die App»). */
+function useWhere() {
+  if ($('#siteDlg')?.open) return 'dlg:' + (S.panel || 'site');
+  if ($('#msgDlg')?.open) return 'dlg:msg';
+  return 'tab:' + (S.tab || 'decide');
+}
+function useFlush(beacon) {
+  if (USE.at) { useClose(); useOpen(); }
+  if (USE.secs) { useAdd('sess', 'all', 0, USE.secs); USE.secs = 0; }
+  if (!USE.ev.size || !ME.user) return;
+  const body = JSON.stringify({ ev: [...USE.ev.values()].map(o => ({ k: o.k, key: o.key, n: o.n, s: Math.round(o.s) })) });
+  USE.ev.clear();
+  if (beacon && navigator.sendBeacon) { try { if (navigator.sendBeacon('/api/usage', new Blob([body], { type: 'application/json' }))) return; } catch {} }
+  rawFetch('/api/usage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+}
+/** Ein Besuch beginnt beim Öffnen oder nach mehr als 5 Minuten weg. Der Ort beim Weggehen zählt erst, wenn man wirklich länger weg war. */
+function useStart() {
+  const ex = store.get('useExit');
+  if (ex?.w) { useAdd('exit', ex.w); store.del('useExit'); }
+  useAdd('sess', 'all', 1);
+}
+function useInit() {
+  useStart(); useTab(S.tab || 'decide');
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { USE.hidAt = Date.now(); store.set('useExit', { w: useWhere(), at: USE.hidAt }); useClose(); useFlush(true); }
+    else {
+      if (USE.hidAt && Date.now() - USE.hidAt > 5 * 60000) useStart(); else store.del('useExit');
+      useOpen();
+    }
+  });
+  window.addEventListener('pagehide', () => useFlush(true));
+  setInterval(() => { if (!document.hidden) useFlush(false); }, 60000);
+}
+
 /* ---------------------------------------------------------------- Aktionen */
 /** Jeder Reiter merkt sich für zehn Minuten, wo man war: zurück im Flugbuch steht man wieder bei demselben Flug statt ganz oben. */
 const TABY = new Map();
 function setTab(t) {
   const was = S.tab;
   if (was !== t) TABY.set(was, { y: window.scrollY, at: Date.now() });
-  S.tab = t; store.set('tab', t);
+  S.tab = t; store.set('tab', t); useTab(t);
   render();
   if (was !== t) lively();
   if (t === 'map') setTimeout(() => M.map?.invalidateSize(), 120);
@@ -3996,6 +4058,7 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]');
   if (!b) return;
   const a = b.dataset.act, id = b.dataset.id;
+  if (FEATS[a] && a !== 'site') useAdd('feat', a);
   switch (a) {
     case 'setup': showGate('setup'); break;
     case 'gate': showGate(b.dataset.v); break;
@@ -4015,7 +4078,9 @@ document.addEventListener('click', async e => {
     case 'admin': openAdmin(); break;
     case 'bakkey': backupKey(); break;
     case 'bakkeydel': if (await ask({ title: 'Mac-Sicherung beenden?', text: 'Der Mac kann danach nichts mehr abholen, bis du einen neuen Schlüssel erstellst.', ok: 'Beenden', danger: true })) { try { await jsonPost('/api/admin/backup/key', undefined, 'DELETE'); await openAdmin('bak'); } catch (e) { toast(errTxt(e)); } } break;
-    case 'admtab': ADM.tab = b.dataset.v; dlg('#siteDlg', adminHtml()); $('#siteDlg .adm-tabs [aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }); break;
+    case 'admusedays': ADM.useDays = Number(b.dataset.v); ADM.use = null; dlg('#siteDlg', adminHtml()); admUseLoad(); break;
+    case 'admuseme': ADM.useMe = b.checked; ADM.use = null; dlg('#siteDlg', adminHtml()); admUseLoad(); break;
+    case 'admtab': ADM.tab = b.dataset.v; if (ADM.tab === 'use' && !ADM.use) admUseLoad(); dlg('#siteDlg', adminHtml()); $('#siteDlg .adm-tabs [aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }); break;
     case 'admreset': try { const j = await jsonPost('/api/admin/invite', { kind: 'reset', uid: id }); inviteShow(j.code, 'reset'); } catch (err) { toast(errTxt(err)); } break;
     case 'admdel': {
       if (!(await ask({ title: `${b.dataset.v} entfernen?`, text: 'Konto, Flugbuch, Profil und Rückmeldungen werden gelöscht (vorher legt AFC eine Sicherung an).', ok: 'Entfernen', danger: true }))) break;
@@ -4478,6 +4543,7 @@ function pilotCard() {
  *  Alles andere kann später im ganzen Profil ergänzt werden. */
 function quickStart() {
   if (!ME.user) return;
+  useAdd('flow', 'quick-open');
   const p = ME.profile || {}, pi = store.get('pilot', {});
   const v = x => (x == null ? '' : esc(x));
   const areas = S.plan?.areas || [];
@@ -4504,7 +4570,7 @@ async function saveQuick(form) {
     if (lvChanged) { S.level = pl.level; store.set('level', S.level); }
     const profile = { ...(ME.profile || {}), license, homes: homes.length ? homes : (ME.profile?.homes || []) };
     const j = await jsonPost('/api/me', { profile, prefs: { ...prefsLocal(), pilot: pi } }, 'PUT');
-    setMe(j); closeDlg($('#msgDlg')); S.detail.clear();
+    setMe(j); closeDlg($('#msgDlg')); S.detail.clear(); useAdd('flow', 'quick-done');
     toast(pl ? `Fertig. Deine Stufe: «${LEVEL_INFO[pl.level][0]}»` : 'Gespeichert');
     lbAlignBefore().catch(() => {});
     if (S.tab !== 'decide') setTab('decide');
@@ -6127,7 +6193,7 @@ const agoTxt = t => (t ? ageTxt(ageMin(t)) || 'gerade eben' : '–');
 function adminHtml() {
   const d = ADM.data, t = ADM.tab;
   if (!d) return '<div class="dlg-in"><div class="warm"><div class="spinner"></div>Lade …</div></div>';
-  const tabs = [['users', `Piloten ${d.users.length}`], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['types', 'Typen'], ['learn', 'Gelernt'], ['inv', 'Einladen'], ['bak', 'Sicherung'], ['err', `Fehler ${d.errors.length}`]];
+  const tabs = [['users', `Piloten ${d.users.length}`], ['use', 'Nutzung'], ['fb', `Meldungen ${d.feedback.filter(x => !x.done).length}`], ['types', 'Typen'], ['learn', 'Gelernt'], ['inv', 'Einladen'], ['bak', 'Sicherung'], ['err', `Fehler ${d.errors.length}`]];
   let body = '';
   const us = d.usage, byUse = d.users.slice().sort((a, b) => (b.days14 ?? 0) - (a.days14 ?? 0) || String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
   if (t === 'users') body = `${us ? `<h3 class="adm-h" style="margin-top:0">Wer nutzt AFC?</h3><div class="pcard-stats" style="margin-bottom:6px"><div><b>${us.today}</b><span>heute</span></div><div><b>${us.week}</b><span>letzte 7 Tage</span></div><div><b>${us.month}</b><span>letzte 30 Tage</span></div><div><b>${us.posts7}</b><span>Beiträge in 7 Tagen</span></div></div>
@@ -6187,15 +6253,62 @@ function adminHtml() {
     <div class="adm-inv">${d.invites.map(i => `<div class="adm-i"><b>${esc(i.note || (i.kind === 'reset' ? 'Passwort-Link' : i.kind === 'group' ? 'Gruppenlink' : 'Einladung'))}</b><small>${esc(state(i))}</small>
       ${live(i) ? `<span class="adm-act"><button class="linkbtn" type="button" data-act="invshow" data-id="${esc(i.code)}" data-v="${esc(i.kind)}">Link zeigen</button><button class="linkbtn" type="button" data-act="invdel" data-id="${esc(i.code)}">${i.kind === 'group' ? 'Beenden' : 'Löschen'}</button></span>` : ''}</div>`).join('')}</div>`;
   }
+  if (t === 'use') body = admUseHtml();
   if (t === 'err') body = d.errors.length ? `<button class="btn sec" type="button" data-act="admerrclear">Liste leeren</button><div class="adm-fb">${d.errors.map(e => `<div class="adm-f"><div class="adm-f-h"><b>${esc(e.msg)}</b><small>${e.n}× · ${esc(e.who)} · ${esc(whenTxt(e.at))}</small></div><small class="fine">${esc([e.src && e.src + ':' + e.line, e.page && 'Ansicht ' + (TAB_NAMES[e.page] || e.page), e.ver && 'Version ' + e.ver].filter(Boolean).join(' · '))}</small>${e.stack ? `<pre class="adm-stack">${esc(e.stack)}</pre>` : ''}</div>`).join('')}</div>` : '<p>Keine App-Fehler gemeldet.</p>';
   return `<div class="dlg-in"><div class="dlg-h"><h2 id="siteDlgT">Testphase</h2><button class="x-btn" type="button" data-act="closesite" aria-label="Schliessen">×</button></div>
     <div class="seg seg-sm adm-tabs" role="tablist">${tabs.map(([k, n]) => `<button type="button" data-act="admtab" data-v="${k}" aria-pressed="${t === k}">${n}</button>`).join('')}</div>
     ${body}</div>`;
 }
+/* ---- Admin: Nutzung (welche Reiter und Funktionen wie oft und wie lange) */
+const USE_TABS = { ...TAB_NAMES, group: 'Gruppe' };
+const USE_DLG = { site: 'Startplatz', compare: 'Vergleichen', week: 'Wochenblick', admin: 'Testphase', msg: 'Hinweis-Fenster' };
+const useName = k => (k.startsWith('tab:') ? USE_TABS[k.slice(4)] || k.slice(4) : k.startsWith('dlg:') ? (USE_DLG[k.slice(4)] || k.slice(4)) + ' (Fenster)' : USE_TABS[k] || FEATS[k] || k);
+const minTxt = m => (m >= 90 ? `${Math.round(m / 6) / 10} h` : `${Math.round(m)} min`);
+async function admUseLoad() {
+  ADM.useDays ??= 7;
+  try {
+    ADM.use = await rawFetch(`/api/admin/usage?days=${ADM.useDays}${ADM.useMe ? '&admin=1' : ''}`).then(r => (r.ok ? r.json() : Promise.reject(new Error('Fehler ' + r.status))));
+  } catch (e) { ADM.use = { error: errTxt(e) }; }
+  if (isOpen($('#siteDlg')) && S.panel === 'admin' && ADM.tab === 'use') dlg('#siteDlg', adminHtml());
+}
+function admUseHtml() {
+  const u = ADM.use;
+  const ctl = `<div class="use-ctl"><div class="seg seg-sm" role="group" aria-label="Zeitraum">${[[7, '7 Tage'], [30, '30 Tage'], [90, '90 Tage']].map(([n, l]) => `<button type="button" data-act="admusedays" data-v="${n}" aria-pressed="${(ADM.useDays ?? 7) === n}">${l}</button>`).join('')}</div>
+    <label class="use-me"><input type="checkbox" data-act="admuseme" ${ADM.useMe ? 'checked' : ''}> mich mitzählen</label></div>`;
+  if (!u) return ctl + '<div class="warm"><div class="spinner"></div>Lade …</div>';
+  if (u.error) return ctl + `<p>${esc(u.error)}</p>`;
+  if (!u.since) return ctl + '<p>Noch keine Messwerte. Sobald die Piloten die neue Version öffnen, füllt sich diese Seite.</p>';
+  const bars = (list, val, txt, max = Math.max(1, ...list.map(val))) => `<div class="use-bars">${list.map(x => `<div class="use-row"><span class="use-l">${esc(useName(x.key))}</span><span class="use-b"><i style="width:${Math.max(2, Math.round(val(x) / max * 100))}%"></i></span><span class="use-v">${txt(x)}</span></div>`).join('')}</div>`;
+  const pil = n => `${n} ${n === 1 ? 'Pilot' : 'Piloten'}`;
+  const allSecs = u.tabs.reduce((t, x) => t + x.secs, 0) || 1;
+  const usedFeat = new Set(u.feats.map(x => x.key)), never = Object.keys(FEATS).filter(k => !usedFeat.has(k));
+  const maxD = Math.max(1, ...u.daily.map(x => x.pilots));
+  const f = u.flow || {}, fl = k => f[k]?.pilots ?? 0;
+  const funnel = fl('intro1') ? `<h3 class="adm-h">Erster Start</h3><div class="use-funnel">${[['intro1', 'Einführung gesehen'], ['intro3', 'bis Schritt 3'], ['quick-open', '«Kurz einrichten» geöffnet'], ['quick-done', 'eingerichtet']].map(([k, l]) => `<div><b>${fl(k)}</b><span>${l}</span></div>`).join('')}</div>${fl('intro-skip') ? `<p class="fine" style="margin:4px 0 0">${pil(fl('intro-skip'))} ${fl('intro-skip') === 1 ? 'hat' : 'haben'} die Einführung übersprungen.</p>` : ''}` : '';
+  const exits = u.exits.reduce((t, x) => t + x.n, 0);
+  return `${ctl}
+    <div class="pcard-stats" style="margin:10px 0 6px"><div><b>${u.pilots}</b><span>aktive Piloten</span></div><div><b>${u.sessions}</b><span>Besuche</span></div><div><b>${minTxt(u.avgMin)}</b><span>pro Besuch</span></div><div><b>${minTxt(u.mins)}</b><span>total</span></div></div>
+    <div class="use-days" aria-label="Piloten pro Tag">${u.daily.map(x => `<i title="${new Date(x.day).toLocaleDateString('de-CH')}: ${pil(x.pilots)}, ${x.mins} min" style="height:${x.pilots ? Math.max(8, Math.round(x.pilots / maxD * 100)) : 2}%"></i>`).join('')}</div>
+    <p class="fine" style="margin:2px 0 10px">Piloten pro Tag${u.daily.length ? `, ${new Date(u.from).toLocaleDateString('de-CH')} bis heute` : ''}. Gemessen seit ${new Date(u.since).toLocaleDateString('de-CH')}.</p>
+    <h3 class="adm-h">Wo die Zeit hingeht</h3>
+    ${u.tabs.length ? bars(u.tabs, x => x.secs, x => `${Math.round(x.secs / allSecs * 100)} % · ${pil(x.pilots)}`) : '<p>Noch nichts.</p>'}
+    <h3 class="adm-h">Welche Funktionen</h3>
+    ${u.feats.length ? bars(u.feats, x => x.pilots, x => `${pil(x.pilots)} · ${x.n}×`) : '<p>Noch keine Funktion benutzt.</p>'}
+    ${never.length ? `<p class="fine" style="margin:6px 0 0">Von niemandem benutzt:</p><div class="chips use-never">${never.map(k => `<span class="chip">${esc(FEATS[k])}</span>`).join('')}</div>` : ''}
+    ${funnel}
+    ${exits ? `<h3 class="adm-h">Hier schliessen sie die App</h3>${bars(u.exits.slice(0, 6), x => x.n, x => `${Math.round(x.n / exits * 100)} %`)}<p class="fine" style="margin:4px 0 0">Gezählt, wenn jemand mehr als 5 Minuten weg war. Viel «Entscheid» heisst meist: Antwort gefunden. Ein Fenster weit oben kann heissen, dass dort etwas nicht klar ist.</p>` : ''}
+    <h3 class="adm-h">Pro Pilot</h3>
+    <div class="adm-fb">${u.perPilot.map(p => `<div class="adm-f"><div class="adm-f-h"><b>${esc(p.name)}</b><small>${p.days} ${p.days === 1 ? 'Tag' : 'Tage'} · ${p.sessions} Besuche · ${minTxt(p.mins)}</small></div>
+      ${p.tabs.length ? `<small>Meist in: ${p.tabs.map(x => `${esc(useName(x.key))} ${minTxt(x.v / 60)}`).join(', ')}</small>` : ''}
+      ${p.feats.length ? `<small>Benutzt: ${p.feats.map(x => `${esc(useName(x.key))} ${x.v}×`).join(', ')}</small>` : ''}</div>`).join('') || '<p>Noch niemand.</p>'}</div>
+    ${u.dropped.length ? `<h3 class="adm-h">Seit über 7 Tagen nicht mehr da</h3><div class="adm-fb">${u.dropped.map(p => `<div class="adm-f"><div class="adm-f-h"><b>${esc(p.name)}</b><small>${p.last ? `zuletzt ${new Date(p.last).toLocaleDateString('de-CH')} · vorher an ${p.days} ${p.days === 1 ? 'Tag' : 'Tagen'}` : 'noch nie geöffnet'}</small></div></div>`).join('')}</div><p class="fine" style="margin:4px 0 0">Ein kurzes Nachfragen bringt hier oft mehr als jede neue Funktion.</p>` : ''}
+    <p class="fine" style="margin-top:12px">Gemessen werden nur Zähler pro Pilot und Tag (welcher Reiter wie lange, welche Funktion wie oft), auf dem eigenen Server, ohne fremde Dienste. Nach ${120} Tagen wird gelöscht.</p>`;
+}
 async function openAdmin(tab) {
   if (tab) ADM.tab = tab;
   S.panel = 'admin';
   dlg('#siteDlg', adminHtml());
+  if (ADM.tab === 'use') admUseLoad();
   try { await adminLoad(); if (isOpen($('#siteDlg')) && S.panel === 'admin') dlg('#siteDlg', adminHtml()); } catch (e) { toast(errTxt(e)); }
 }
 const inviteUrl = (code, kind) => `${location.origin}/?${kind === 'reset' ? 'reset' : 'invite'}=${code}`;
@@ -6282,7 +6395,7 @@ function opener() {
   loadPlan();
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
-  myLoad();
+  myLoad(); useInit();
   if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150));
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
