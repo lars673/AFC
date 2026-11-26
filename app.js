@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.20.1';
+const APP_VER = '12.20.2';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -5016,7 +5016,8 @@ function cloudsFor(d, lat, lon, base) {
   return { cover: fog != null ? (d.cloud.up ?? 0) / 100 : low, base: num(base) && !(fog != null && base < fog + 50) ? base : d.cloud?.base ?? null, fog, wind: lv[1] || lv[0] || [0, 0] };
 }
 function v3dScene(g, area) {
-  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { mesh: innerWidth >= 700 ? 513 : 385, avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
+  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { mesh: innerWidth >= 700 ? 513 : 301,   // Handy: bewährte Netzgrösse, bis es auf dem iPhone geprüft ist
+    avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
   sc.glow = sc._glow = MO.glow ? 1 : 0; sc.dusk = duskK(); sc.calm = calmOn();
   sc.setArea(area);
