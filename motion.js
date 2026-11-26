@@ -91,7 +91,7 @@
     };
     const box = o.box || null;                                   // 2D-Karte: Rechteck [halbe Breite, halbe Höhe] statt Kreis
     const f3 = !box;                                             // 3D: Fluss am Gelände mit echter Spur (zwei Abschnitte je Teilchen)
-    const N = Math.min(f3 ? 40000 : 16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
+    const N = Math.min(f3 ? 60000 : 16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
     const A0 = new Float32Array(N), HX = new Float32Array(N * 4), HY = new Float32Array(N * 4), HZ = new Float32Array(N * 4), HT = new Float32Array(N), HN = new Uint8Array(N), PH = new Float32Array(N);
     const R2 = R * 0.95, INT = clamp(0.1 * R / 2400, 0.07, 0.7);   // Abstand der Spurpunkte: grössere Szene, längere Spur
     // 3D: feines Höhenraster (Mesh abgetastet), damit die Fäden dem Gelände genau folgen, ohne das Mesh je Teilchen zu fragen
@@ -194,15 +194,16 @@
           const o4 = i * 4; for (let q = 3; q > 0; q--) { HX[o4 + q] = HX[o4 + q - 1]; HY[o4 + q] = HY[o4 + q - 1]; HZ[o4 + q] = HZ[o4 + q - 1]; }
           HX[o4] = x; HY[o4] = (hF(x, z) + agl) * ex3; HZ[o4] = z; HT[i] = HN[i] === 0 ? 0 : HT[i] - INT; HN[i] = Math.min(4, HN[i] + 1);
         }
-        if (s0 < 0.3) continue;
+        if (s0 < 0.05) continue;
         const y = (hF(X[i], Z[i]) + AGL[i]) * ex3;
         const edge = 1 - sstep(0.8, 0.95, Math.hypot(X[i], Z[i]) / R);
-        const life = Math.min(1, AGE[i] / 0.9, (LIFE[i] - AGE[i]) / 1.2) * sstep(0.3, 2.5, s0);   // weich ein- und ausblenden, auch bei wenig Wind
+        const life = Math.min(1, AGE[i] / 0.9, (LIFE[i] - AGE[i]) / 1.2) * (0.45 + 0.55 * sstep(0.3, 2.5, s0));   // weich ein- und ausblenden; auch bei Flaute bleibt ein leiser Hauch sichtbar
         if (life <= 0) continue;
         const eff = Math.abs(along) + swirl * 10;
         ramp(glow ? GLOW : DAY, eff, col);
         if (soar > 0.05) { const mm = Math.min(0.9, soar * 1.1); col[0] = mix(col[0], glow ? 0.5 : 0.12, mm); col[1] = mix(col[1], glow ? 1.0 : 0.7, mm); col[2] = mix(col[2], glow ? 0.45 : 0.2, mm); }
-        if (lee > 0.04) { const mm = Math.min(1, (lee - 0.04) * 3.5); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
+        if (lee > 0.04) { const mm = Math.min(1, (lee - 0.04) * 3.5), lw = sim.leeLight ? 1 : 0;   // mit Lee-Ebene darunter: helle Körner, sonst gingen sie im Magenta unter
+          col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], lw ? 0.86 : glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], lw ? 0.97 : glow ? 0.75 : 0.65, mm); }
         const dust = sstep(0.15, 0.75, tq);   // 0 = Faden, 1 = Staubkorn: fliessender Übergang
         const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 1.3 * dust) * (1 + 0.9 * sstep(0.05, 0.5, lee));
         if (a < 0.01) continue;

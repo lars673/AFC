@@ -5162,6 +5162,7 @@ async function v3dApply() {
   V3.d = d;
   if (!V3.playing && !v3dBetween()) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
   sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
+  sc.ovA = V3.wind && V3.layer === 'lee' ? 0.5 : 1;   // Lee-Fläche zarter, damit die Wirbel darauf sichtbar bleiben
   if (!reg) v3dHourData();
   sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
   v3dWind(d);
@@ -5259,7 +5260,7 @@ const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g =
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
 /** 3D-Wind als feine Lichtfäden: viele Teilchen wie im Tunnel-Vorbild (ein Faden kostet wenig) */
-const windBudget = (k = 1) => Math.round((innerWidth < 700 ? 22000 : 40000) * k);
+const windBudget = (k = 1) => Math.round((innerWidth < 700 ? 26000 : 60000) * k);   // wird automatisch weniger, wenn das Gerät ruckelt
 const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 4200 : 6500) * k);   // so viel, dass der Wind lebt, so wenig, dass die Karte erkennbar bleibt
 /** Wind in 3D als leuchtender Partikelstrom (motion.js): Tempo und Farbe aus dem Modell, Lee-Wirbel hinter den Graten. */
 function v3dWind(d) {
@@ -5267,8 +5268,9 @@ function v3dWind(d) {
   if (!sc) return;
   sc.setLines('wind', null);
   if (!V3.wind || !d || !window.AFCMotion) { sc.setStreaks('wind', null); V3.wsim = null; return; }
-  if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { if (!v3dBetween()) V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
+  if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { V3.wsim.leeLight = V3.layer === 'lee'; if (!v3dBetween()) V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
   V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: windBudget(), calm: calmOn(), glow: MO.glow });
+  V3.wsim.leeLight = V3.layer === 'lee';
   sc.setStreaks('wind', V3.wsim);
 }
 /** Kabel, Seilbahnen und hohe Hindernisse des BAZL im Ausschnitt. */

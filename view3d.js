@@ -612,7 +612,7 @@
       if (!sim) { this.streaks.delete(key); return this.invalidate(); }
       if (sim.lines) {
         // Linienmodus: 2 Ecken je Stück (Position + Farbe), vorn Deckkraft a, hinten fast null
-        const max = Math.min(130000, sim.max), data = new Float32Array(max * 14);
+        const max = Math.min(200000, sim.max), data = new Float32Array(max * 14);
         const put = (i, h, t, r, g, b, a, tailA) => {
           if (i >= max) return;
           const o = i * 14;
@@ -913,7 +913,7 @@
       } else gl.uniform4f(P.u.u_cl, 0, 0, 1, 0);
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.X.noise); gl.uniform1i(P.u.u_noise, 3);
       gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.uniform1i(P.u.u_cov, 4);
-      gl.uniform1f(P.u.u_glow, tk); gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
+      gl.uniform1f(P.u.u_glow, tk); gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, this.ovA ?? 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.X.ov0); gl.uniform1i(P.u.u_ov0, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.X.ov1); gl.uniform1i(P.u.u_ov1, 1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.X.dr); gl.uniform1i(P.u.u_dr, 2);
