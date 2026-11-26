@@ -88,9 +88,16 @@
     };
     const box = o.box || null;                                   // 2D-Karte: Rechteck [halbe Breite, halbe Höhe] statt Kreis
     const f3 = !box;                                             // 3D: Fluss am Gelände mit echter Spur (zwei Abschnitte je Teilchen)
-    const N = Math.min(f3 ? 8000 : 16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
+    const N = Math.min(f3 ? 40000 : 16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
     const A0 = new Float32Array(N), HX = new Float32Array(N * 3), HY = new Float32Array(N * 3), HZ = new Float32Array(N * 3), HT = new Float32Array(N), HN = new Uint8Array(N);
-    const R2 = R * 0.95, INT = clamp(0.2 * R / 2400, 0.15, 0.55);   // Abstand der Spurpunkte: grössere Szene, längere Spur
+    const R2 = R * 0.95, INT = clamp(0.1 * R / 2400, 0.07, 0.7);   // Abstand der Spurpunkte: grössere Szene, längere Spur
+    // 3D: feines Höhenraster (Mesh abgetastet), damit die Fäden dem Gelände genau folgen, ohne das Mesh je Teilchen zu fragen
+    const MF = f3 ? 160 : 2, cf = 2 * R / (MF - 1), HF = new Float32Array(MF * MF);
+    if (f3) for (let j = 0; j < MF; j++) for (let i = 0; i < MF; i++) HF[j * MF + i] = sc._meshH(-R + i * cf, -R + j * cf);
+    const hF = (x, z) => {
+      const fx = clamp((x + R) / cf, 0, MF - 1.001), fz = clamp((z + R) / cf, 0, MF - 1.001), i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j, k = j * MF + i;
+      return (HF[k] * (1 - tx) + HF[k + 1] * tx) * (1 - tz) + (HF[k + MF] * (1 - tx) + HF[k + MF + 1] * tx) * tz;
+    };
     const out = (x, z) => (box ? Math.abs(x) > box[0] || Math.abs(z) > box[1] : x * x + z * z > R2 * R2);
     const spawn = (i, randomAge) => {
       let x, z; if (box) { x = (rnd() * 2 - 1) * box[0]; z = (rnd() * 2 - 1) * box[1]; } else do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
@@ -102,10 +109,99 @@
     for (let i = 0; i < N; i++) spawn(i, true);
     const col = [0, 0, 0], head = [0, 0, 0], tail = [0, 0, 0], mid = [0, 0, 0], ex = sc.ex;
     let t = 0;
+    /* 3D-Fluss: feine Lichtfäden dicht am Gelände.
+       - fliesst wie Wasser: dem Gelände entlang (Bodenwind um steile Hänge gelenkt), über Kuppen schneller
+       - Soaring: wo der Wind gegen den Hang drückt, stellt sich die Strömung auf und steigt über den Grat (grün)
+       - Lee: hinter Kreten eine Rotor-Walze (am Boden zurück zum Grat, oben weiter, dazwischen auf und ab) mit Wirbeln (magenta) */
+    const W = { i: 0, j: 0, a: 0, b: 0, c: 0, d: 0 };
+    const at = (x, z) => { const fx = clamp((x + R) / cell, 0, M - 1.001), fz = clamp((z + R) / cell, 0, M - 1.001), i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j; W.i = j * M + i; W.a = (1 - tx) * (1 - tz); W.b = tx * (1 - tz); W.c = (1 - tx) * tz; W.d = tx * tz; };
+    const rd = arr => arr[W.i] * W.a + arr[W.i + 1] * W.b + arr[W.i + M] * W.c + arr[W.i + M + 1] * W.d;
+    // Wirbelfeld (Curl-Rauschen) auf einem Raster, alle 0.12 s neu: viel schneller als Rauschen je Teilchen
+    const MC = 72, cc = 2 * R / (MC - 1), CX = new Float32Array(MC * MC), CZ = new Float32Array(MC * MC); let cT = -1;
+    const curl = () => {
+      const kk = 1 / Math.max(450, Math.min(1800, R * 0.27)), q = t * 0.35, e = 0.09;
+      for (let j = 0; j < MC; j++) for (let i = 0; i < MC; i++) {
+        const X0 = (-R + i * cc) * kk, Z0 = (-R + j * cc) * kk, k = j * MC + i;
+        CX[k] = (noise3(X0, Z0 + e, q) - noise3(X0, Z0 - e, q)) / (2 * e); CZ[k] = -(noise3(X0 + e, Z0, q) - noise3(X0 - e, Z0, q)) / (2 * e);
+      }
+    };
+    function step3(dt, put) {
+      const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = calm ? Math.round(N * 0.45) : N;
+      t += dt;
+      if (cT < 0 || t - cT > 0.12) { cT = t; curl(); }
+      const kmToM = ts / 3.6, mean = F.mean || { u: 1, v: 0, kmh: 1 }, ms = Math.hypot(mean.u, mean.v) || 1, mex = mean.u / ms, mez = -mean.v / ms;
+      const aK = (glow ? (calm ? 0.38 : 0.56) : (calm ? 0.55 : 0.8)) * (1 + 0.7 * sstep(4000, 16000, R));   // grosse Szene: Fäden weiter weg, etwas heller
+      let c = 0;
+      for (let i = 0; i < n; i++) {
+        AGE[i] += dt;
+        if (AGE[i] > LIFE[i] || out(X[i], Z[i])) spawn(i, false);
+        const x = X[i], z = Z[i], agl = AGL[i];
+        at(x, z);
+        if (rd(F.ok) < 0.5) { AGE[i] = LIFE[i] + 1; continue; }
+        const m = sstep(40, 900, agl);
+        let u = mix(rd(F.u0), rd(F.u8), m), v = mix(rd(F.v0), rd(F.v8), m);
+        const spd = 1 + 0.5 * rd(F.expo) * (1 - 0.5 * m); u *= spd; v *= spd;
+        const s0 = Math.hypot(u, v) || 0.001, ex = u / s0, ez = -v / s0, lee = rd(F.lee);
+        // Hangneigung in Strömungsrichtung: >0 Luv (Luft wird gehoben), <0 Lee
+        const slope = rd(GX) * ex + rd(GZ) * ez, up = s0 / 3.6 * slope;
+        let along = s0, cross = 0, w = up > 0 ? up * 0.9 * (1 - lee) : up * 0.25;
+        const soar = sstep(0.3, 2.0, up) * (1 - lee);
+        let swirl = 0;
+        if (lee > 0.05) {
+          // Rotor: Walze mit waagrechter Achse quer zum Wind (Stromfunktion sin·sin), wandert langsam mit, dazu Querwirbel
+          const Hr = 110 + 300 * lee, L = 2.3 * Hr, sa = (x * mex + z * mez) / L - t * 0.06, ph = sa - Math.floor(sa), hn = Math.min(1.25, agl / Hr);
+          const A = lee * (s0 + 6) * 1.25, cp = Math.cos(Math.PI * ph), sp = Math.sin(Math.PI * ph), ch = Math.cos(Math.PI * hn), sh = Math.sin(Math.PI * hn);
+          along = along * (1 - 0.75 * lee) - A * sp * ch;            // am Boden zurück, oben weiter
+          w += A / 3.6 * (Hr / L) * cp * sh * 2.2;                   // dazwischen auf und ab
+          const fx = clamp((x + R) / cc, 0, MC - 1.001), fz = clamp((z + R) / cc, 0, MC - 1.001), ci = fx | 0, cj = fz | 0, tx = fx - ci, tz = fz - cj, ck = cj * MC + ci;
+          const cx = (CX[ck] * (1 - tx) + CX[ck + 1] * tx) * (1 - tz) + (CX[ck + MC] * (1 - tx) + CX[ck + MC + 1] * tx) * tz;
+          const cz = (CZ[ck] * (1 - tx) + CZ[ck + 1] * tx) * (1 - tz) + (CZ[ck + MC] * (1 - tx) + CZ[ck + MC + 1] * tx) * tz;
+          u = 0; v = 0; cross = 0;
+          const tu = cx * lee * (s0 + 6) * 0.9, tv = cz * lee * (s0 + 6) * 0.9;
+          swirl = Math.min(1, Math.hypot(tu, tv) / (s0 + 6) + lee * 0.6);
+          // zurück in Ost/Süd-Komponenten
+          X[i] = x + (ex * along + tu) * kmToM * dt; Z[i] = z + (ez * along + tv) * kmToM * dt;
+        } else {
+          X[i] = x + ex * along * kmToM * dt; Z[i] = z + ez * along * kmToM * dt;
+        }
+        // Höhe über Grund: gehoben am Luv, im Lee runter und im Rotor auf und ab; kehrt langsam zur eigenen Höhe zurück
+        AGL[i] = clamp(agl + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.12 : 0.45)) * dt, 4, A0[i] + 900);
+        // Spur merken
+        HT[i] += dt;
+        if (HN[i] === 0 || HT[i] >= INT) {
+          const o3 = i * 3; HX[o3 + 2] = HX[o3 + 1]; HY[o3 + 2] = HY[o3 + 1]; HZ[o3 + 2] = HZ[o3 + 1]; HX[o3 + 1] = HX[o3]; HY[o3 + 1] = HY[o3]; HZ[o3 + 1] = HZ[o3];
+          HX[o3] = x; HY[o3] = (hF(x, z) + agl) * ex3; HZ[o3] = z; HT[i] = HN[i] === 0 ? 0 : HT[i] - INT; HN[i] = Math.min(3, HN[i] + 1);
+        }
+        if (s0 < 0.8) continue;
+        const y = (hF(X[i], Z[i]) + AGL[i]) * ex3;
+        const edge = 1 - sstep(0.8, 0.95, Math.hypot(X[i], Z[i]) / R);
+        const life = Math.min(1, AGE[i] / 0.5, (LIFE[i] - AGE[i]) / 0.7);
+        if (life <= 0) continue;
+        const eff = Math.abs(along) + swirl * 10;
+        ramp(glow ? GLOW : DAY, eff, col);
+        if (soar > 0.05) { const mm = Math.min(0.9, soar * 1.1); col[0] = mix(col[0], glow ? 0.5 : 0.12, mm); col[1] = mix(col[1], glow ? 1.0 : 0.7, mm); col[2] = mix(col[2], glow ? 0.45 : 0.2, mm); }
+        if (lee > 0.06) { const mm = Math.min(0.95, (lee - 0.06) * 2.4); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
+        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl);
+        if (a < 0.01) continue;
+        const o3 = i * 3, f = clamp(HT[i] / INT, 0, 1);
+        head[0] = X[i]; head[1] = y; head[2] = Z[i];
+        if (HN[i] < 3) {   // frisch geboren: kurzer Faden nach hinten, bis die Spur steht
+          const L2 = along * kmToM * INT * 1.5; tail[0] = X[i] - ex * L2; tail[1] = y; tail[2] = Z[i] - ez * L2;
+          put(c++, head, tail, col[0], col[1], col[2], a * Math.min(1, AGE[i] / (INT * 3)), 0); continue;
+        }
+        mid[0] = mix(HX[o3], HX[o3 + 1], f); mid[1] = mix(HY[o3], HY[o3 + 1], f); mid[2] = mix(HZ[o3], HZ[o3 + 1], f);
+        tail[0] = mix(HX[o3 + 1], HX[o3 + 2], f); tail[1] = mix(HY[o3 + 1], HY[o3 + 2], f); tail[2] = mix(HZ[o3 + 1], HZ[o3 + 2], f);
+        put(c++, head, mid, col[0], col[1], col[2], a, a * 0.45);
+        put(c++, mid, tail, col[0], col[1], col[2], a * 0.45, 0);
+      }
+      return c;
+    }
+    const ex3 = sc.ex;
     const sim = {
-      max: f3 ? N * 2 : N, mean: () => F.mean,
+      max: f3 ? N * 2 : N, mean: () => F.mean, lines: f3,
       setField(smp) { field(smp); },
       step(dt, put) {
+        if (f3) return step3(dt, put);
         const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = calm ? Math.round(N * 0.38) : N;
         t += dt;
         const kmToM = ts / 3.6, tailK = R * (calm ? 0.0022 : 0.0026) * (glow ? 1 : 0.8), wpx = (calm ? 1.05 : 1.45) * (glow ? 1 : 0.95);   // bei Tag kürzer und feiner: die Karte bleibt sichtbar

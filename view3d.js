@@ -252,6 +252,9 @@
       // leuchtender Punkt vorn, kurzer weicher Schweif dahinter: sieht aus wie fliessende Punkte, nicht wie Striche
       float s = abs(v_q.y), hd = 1. - smoothstep(0., .3, v_q.x), a = v_c.a*u_a*pow(1. - v_q.x, 2.2)*(u_core > .5 ? 1. - s*s : (1. - s)*(1. - s))*(1. + hd*.9);
       vec3 c = u_core < -.5 ? u_tint : mix(v_c.rgb, vec3(1.), hd*.45*step(.5, u_core)); gl_FragColor = vec4(c*a, a); }`;
+  /* Feine Lichtfäden (Wind in 3D): je Teilchen ein bis zwei Linienstücke, ein Pixel breit, vorn hell, hinten auslaufend */
+  const VS_FL = 'attribute vec3 a_p; attribute vec4 a_c; uniform mat4 u_mvp; varying vec4 v_c; void main(){ v_c = a_c; vec4 p = u_mvp*vec4(a_p, 1.); p.z -= .0008*p.w; gl_Position = p; }';
+  const FS_FL = HI + 'varying vec4 v_c; uniform float u_a; void main(){ float a = v_c.a*u_a; gl_FragColor = vec4(v_c.rgb*a, a); }';
   /* Bloom (Schein um die Wind- und Thermik-Teilchen, wie im Prototyp): Teilchen in halber Auflösung, mit der Tiefe des Geländes
      (hinter Bergen leuchtet nichts durch), weichgezeichnet und aufaddiert */
   const VS_Q = 'attribute vec2 a_p; varying vec2 v_uv; void main(){ v_uv = a_p*.5 + .5; gl_Position = vec4(a_p, 0., 1.); }';
@@ -340,7 +343,7 @@
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
       this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR) };
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR), fl: this._prog(VS_FL, FS_FL) };
       this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
@@ -604,6 +607,18 @@
     setStreaks(key, sim) {
       const old = this.streaks.get(key); if (old?.buf) this.gl.deleteBuffer(old.buf);
       if (!sim) { this.streaks.delete(key); return this.invalidate(); }
+      if (sim.lines) {
+        // Linienmodus: 2 Ecken je Stück (Position + Farbe), vorn Deckkraft a, hinten fast null
+        const max = Math.min(80000, sim.max), data = new Float32Array(max * 14);
+        const put = (i, h, t, r, g, b, a, tailA) => {
+          if (i >= max) return;
+          const o = i * 14;
+          data[o] = h[0]; data[o + 1] = h[1]; data[o + 2] = h[2]; data[o + 3] = r; data[o + 4] = g; data[o + 5] = b; data[o + 6] = a;
+          data[o + 7] = t[0]; data[o + 8] = t[1]; data[o + 9] = t[2]; data[o + 10] = r; data[o + 11] = g; data[o + 12] = b; data[o + 13] = tailA ?? a * 0.12;
+        };
+        this.streaks.set(key, { sim, max, data, put, buf: null, n: 0, fresh: true, lines: true });
+        return this.invalidate();
+      }
       const max = Math.min(16000, sim.max), data = new Float32Array(max * 52);
       const put = (i, h, t, r, g, b, a, w) => {
         let o = i * 52;
@@ -974,9 +989,9 @@
       let need = 0;
       for (const st of this.streaks.values()) {
         if (sdt > 0 || st.fresh) { st.n = Math.min(st.max, st.sim.step(st.fresh ? 0 : Math.min(sdt, 0.08), st.put) | 0); st.dirty = true; st.fresh = false; }
-        need = Math.max(need, st.n);
+        if (!st.lines) need = Math.max(need, st.n);
       }
-      if (!need) return;
+      if (!need) { this._drawLines(mvp, this._glow); if (this._bloomOn) this._bloomRun(); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); return; }
       if (!this._strIdx || this._strIdx.n < need) {
         const n = Math.max(need, 4096), I = new Uint16Array(n * 6);
         for (let i = 0; i < n; i++) { const v = i * 4, o = i * 6; I[o] = v; I[o + 1] = v + 1; I[o + 2] = v + 2; I[o + 3] = v + 1; I[o + 4] = v + 3; I[o + 5] = v + 2; }
@@ -988,7 +1003,7 @@
       const A = P.a, on = ['a_h', 'a_t', 'a_m', 'a_c'].filter(k => A[k] >= 0), gk = this._glow, calm = !!this.calm;
       for (const k of on) gl.enableVertexAttribArray(A[k]);
       for (const st of this.streaks.values()) {
-        if (!st.n) continue;
+        if (!st.n || st.lines) continue;
         if (!st.buf) { st.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); gl.bufferData(gl.ARRAY_BUFFER, st.data, gl.DYNAMIC_DRAW); st.dirty = false; }
         else { gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); if (st.dirty) { gl.bufferSubData(gl.ARRAY_BUFFER, 0, st.data.subarray(0, st.n * 52)); st.dirty = false; } }
         gl.vertexAttribPointer(A.a_h, 3, gl.FLOAT, false, 52, 0); gl.vertexAttribPointer(A.a_t, 3, gl.FLOAT, false, 52, 12);
@@ -1010,8 +1025,31 @@
         }
       }
       for (const k of on) gl.disableVertexAttribArray(A[k]);
+      this._drawLines(mvp, gk);
       if (this._bloomOn) this._bloomRun();
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    /** Lichtfäden: additiv im Glow-Look (Licht summiert sich wie im Tunnel-Vorbild), bei Tag normal gemischt; dazu in den Bloom-Puffer. */
+    _drawLines(mvp, gk) {
+      const gl = this.gl, P = this.P.fl;
+      let any = false; for (const st of this.streaks.values()) if (st.lines && st.n) any = true;
+      if (!any) return;
+      gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp);
+      gl.enableVertexAttribArray(P.a.a_p); gl.enableVertexAttribArray(P.a.a_c);
+      for (const st of this.streaks.values()) {
+        if (!st.lines || !st.n) continue;
+        if (!st.buf) { st.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); gl.bufferData(gl.ARRAY_BUFFER, st.data, gl.DYNAMIC_DRAW); st.dirty = false; }
+        else { gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); if (st.dirty) { gl.bufferSubData(gl.ARRAY_BUFFER, 0, st.data.subarray(0, st.n * 14)); st.dirty = false; } }
+        gl.vertexAttribPointer(P.a.a_p, 3, gl.FLOAT, false, 28, 0); gl.vertexAttribPointer(P.a.a_c, 4, gl.FLOAT, false, 28, 12);
+        gl.blendFunc(gl.ONE, gk > 0.5 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_a, 1);
+        gl.drawArrays(gl.LINES, 0, st.n * 2);
+        if (this._bloomOn) {
+          const b = this._bl; gl.bindFramebuffer(gl.FRAMEBUFFER, b.f0); gl.viewport(0, 0, b.w, b.h);
+          gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_a, 0.9); gl.drawArrays(gl.LINES, 0, st.n * 2);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        }
+      }
+      gl.disableVertexAttribArray(P.a.a_p); gl.disableVertexAttribArray(P.a.a_c);
     }
     _bloomPrep() {
       const gl = this.gl, w = Math.max(2, this.canvas.width >> 1), h = Math.max(2, this.canvas.height >> 1);

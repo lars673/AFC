@@ -1559,3 +1559,9 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .map-more > summary::before, .v3d-more > summary::before { content: "▸ "; } .map-more[open] > summary::before, .v3d-more[open] > summary::before { content: "▾ "; }
 .v3d-more > summary { color: #b6c5ba; }
 .v3d-views .v3d-chip.view { font-weight: 700; }
+
+/* Einzelne Ebenen immer sichtbar, aber kleiner und ruhiger als die drei Ansichten */
+.v3d-sub .v3d-chip { min-height: 32px; padding: 4px 11px; font-size: 13px; font-weight: 500; opacity: .92; }
+.v3d-sub { margin-top: 2px; }
+.map-sub .wind-row .wseg { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+.map-sub .wind-t { font-size: 12.5px; opacity: .75; }

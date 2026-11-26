@@ -5091,7 +5091,7 @@ async function miniMount(hr = null) {
 
 /* ---- Startplatz in 3D */
 function v3dSiteBar() {
-  return `${v3dViews(V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : '')}<details class="v3d-more"><summary>Einzeln wählen</summary><div class="v3d-chips" role="group" aria-label="Einzelne Ebenen">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div></details>
+  return `${v3dViews(V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : '')}<div class="v3d-chips v3d-sub" role="group" aria-label="Einzelne Ebenen, frei kombinierbar">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div>
     <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit in der 3D-Ansicht"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
@@ -5257,6 +5257,8 @@ function windLines3d(sc, d) {
 const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
+/** 3D-Wind als feine Lichtfäden: viele Teilchen wie im Tunnel-Vorbild (ein Faden kostet wenig) */
+const windBudget = (k = 1) => Math.round((innerWidth < 700 ? 14000 : 28000) * k);
 const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 4200 : 6500) * k);   // so viel, dass der Wind lebt, so wenig, dass die Karte erkennbar bleibt
 /** Wind in 3D als leuchtender Partikelstrom (motion.js): Tempo und Farbe aus dem Modell, Lee-Wirbel hinter den Graten. */
 function v3dWind(d) {
@@ -5265,7 +5267,7 @@ function v3dWind(d) {
   sc.setLines('wind', null);
   if (!V3.wind || !d || !window.AFCMotion) { sc.setStreaks('wind', null); V3.wsim = null; return; }
   if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { if (!v3dBetween()) V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
-  V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: motionBudget(), calm: calmOn(), glow: MO.glow });
+  V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: windBudget(), calm: calmOn(), glow: MO.glow });
   sc.setStreaks('wind', V3.wsim);
 }
 /** Kabel, Seilbahnen und hohe Hindernisse des BAZL im Ausschnitt. */
@@ -5434,7 +5436,7 @@ async function v3dPlay(on) {
 
 /* ---- Tagesfilm in 3D: Überflug über die Region; Sonne und Schatten, Wolken, Wind und Thermik laufen durch den Tag */
 function v3dRegionBar() {
-  return `${v3dViews(v3dChip('v3dtour', '', 'Überflug', V3.tour))}<details class="v3d-more"><summary>Einzeln wählen</summary><div class="v3d-chips" role="group" aria-label="Einzelne Ebenen">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div></details>
+  return `${v3dViews(v3dChip('v3dtour', '', 'Überflug', V3.tour))}<div class="v3d-chips v3d-sub" role="group" aria-label="Einzelne Ebenen, frei kombinierbar">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div>
     <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit im Tagesfilm"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
@@ -6641,7 +6643,7 @@ async function introFlight() {
     sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = MO.glow ? 1 : 0;
     sc.setArea({ lat: s.lat, lon: s.lon, radius: R, n: 121 });
     if (d?.sunPos) sc.setSun(d.sunPos);
-    if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: motionBudget(0.6), glow: MO.glow }));
+    if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: windBudget(0.6), glow: MO.glow }));
     const face = num(s.aspects?.[0]) ? s.aspects[0] : 180, az = (face + 162) % 360, alt = sc.ground(s.lat, s.lon);
     sc.flyTo({ lat: s.lat, lon: s.lon, alt, az: az - 120, el: 72, dist: R * 3.4 }, 0);
     sc.setMarkers([{ id: 's', lat: s.lat, lon: s.lon, cls: 'top', html: `<span class="v3d-pin s-${cls(top.best.score)}">${num(top.best.score) ? top.best.score : ''}</span>` }]);
