@@ -96,12 +96,6 @@
       <div id="windBar" class="wind-bar">
         <button type="button" class="bar-fold" data-act="barfold" aria-expanded="true" aria-controls="barBody"><span id="barSum">Wind und Aufwind</span><span class="bar-chev" aria-hidden="true">▾</span></button>
         <div id="barBody" class="bar-body">
-        <div class="wind-row view-row" role="group" aria-label="Ansicht: was die Karte zeigt">
-          <button type="button" class="wseg vseg" data-act="view" data-v="luft" aria-pressed="false" title="Wind fliesst übers Gelände: grün steigt er am Hang, magenta wirbelt er hinter Kreten">Luft</button>
-          <button type="button" class="wseg vseg" data-act="view" data-v="sonne" aria-pressed="false" title="Sonne, Schatten und Thermik">Sonne &amp; Thermik</button>
-          <button type="button" class="wseg vseg" data-act="view" data-v="sicher" aria-pressed="false" title="Lee hinter den Kreten und Wind">Sicherheit</button>
-        </div>
-        <div class="map-sub">
         <div class="wind-row" role="group" aria-label="Windkarte">
           <span class="wind-t">Wind</span>
           <button type="button" class="wseg" data-act="wind" data-lvl="off" aria-pressed="true">Aus</button>
@@ -109,13 +103,11 @@
           <button type="button" class="wseg" data-act="wind" data-lvl="800" aria-pressed="false">2000 m</button>
           <button type="button" class="wseg" data-act="wind" data-lvl="700" aria-pressed="false">3000 m</button>
         </div>
-        <div class="wind-row" role="group" aria-label="Karten für Thermik, Soaring und Lee, einzeln ein- und ausschaltbar">
+        <div class="wind-row" role="group" aria-label="Karten für Thermik (mit Sonne und Schatten), Soaring und Lee, einzeln ein- und ausschaltbar">
           <span class="wind-t">Ebenen</span>
-          <button type="button" class="wseg tseg" data-act="thermal" data-mode="sun" aria-pressed="false">Sonne</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="thermal" aria-pressed="false">Thermik</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="soar" aria-pressed="false">Soaring</button>
           <button type="button" class="wseg tseg" data-act="thermal" data-mode="lee" aria-pressed="false">Lee</button>
-        </div>
         </div>
         </div>
         <div class="wind-row wind-now">
