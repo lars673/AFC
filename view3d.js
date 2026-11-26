@@ -260,8 +260,17 @@
       vec3 c = u_core < -.5 ? u_tint : mix(v_c.rgb, vec3(1.), hd*.45*step(.5, u_core)); gl_FragColor = vec4(c*a, a); }`;
   /* Lichtsäulen (Score je Startplatz): senkrechtes Band, zur Kamera gedreht, unten hell und nach oben auslaufend,
      pulsiert sanft; ein Lichtring steigt langsam hoch. a_s: -1/1 Seite, a_v: 0 unten bis 1 oben. */
-  const VS_PIL = 'attribute vec3 a_p; attribute float a_s; attribute float a_v; attribute vec4 a_c; attribute float a_w; uniform mat4 u_mvp; uniform vec2 u_vp; varying vec4 v_c; varying float v_s; varying float v_v; void main(){ v_c = a_c; v_s = a_s; v_v = a_v; vec4 p = u_mvp*vec4(a_p, 1.); p.x += a_s*a_w*(1. - .55*a_v)*2./u_vp.x*p.w; gl_Position = p; }';
-  const FS_PIL = HI + 'varying vec4 v_c; varying float v_s; varying float v_v; uniform float u_t; void main(){ float ph = v_c.a; float k = .72 + .28*sin(u_t*2.1 + ph*6.283); float r = fract(u_t*.28 + ph); float band = exp(-pow((v_v - r)*9., 2.))*.9; float a = pow(1. - v_v, 1.6)*(1. - v_s*v_s)*k + band*(1. - v_s*v_s)*(1. - v_v); vec3 c = v_c.rgb; gl_FragColor = vec4(c*a, a*.6); }';
+  const VS_PIL = 'attribute vec3 a_p; attribute float a_s; attribute float a_v; attribute vec4 a_c; attribute float a_w; uniform mat4 u_mvp; uniform vec2 u_vp; uniform float u_sty; varying vec4 v_c; varying float v_s; varying float v_v; void main(){ v_c = a_c; v_s = a_s; v_v = a_v; vec4 p = u_mvp*vec4(a_p, 1.); p.x += a_s*a_w*(u_sty < .5 ? 1. - .55*a_v : 1.)*2./u_vp.x*p.w; gl_Position = p; }';
+  /* Stil 0 Glow (weich, additiv), 1 Messskala (Rahmen, Füllung, Striche), 2 Nadel (dünner Stab mit Rautenkopf), 3 LED-Segmente.
+     Bei 1 bis 3 trägt a_c.a den Score 0..1 (Füllhöhe), bei 0 die Phase des Pulses. */
+  const FS_PIL = HI + 'varying vec4 v_c; varying float v_s; varying float v_v; uniform float u_t; uniform float u_sty; void main(){ vec3 c = v_c.rgb; float ax = abs(v_s);'
+    + ' if (u_sty < .5) { float ph = v_c.a; float k = .72 + .28*sin(u_t*2.1 + ph*6.283); float r = fract(u_t*.28 + ph); float band = exp(-pow((v_v - r)*9., 2.))*.9; float a = pow(1. - v_v, 1.6)*(1. - v_s*v_s)*k + band*(1. - v_s*v_s)*(1. - v_v); gl_FragColor = vec4(c*a, a*.6); return; }'
+    + ' float f = v_c.a; vec3 col = c; float a = 0.;'
+    + ' if (u_sty < 1.5) { if (ax > .8) { col = vec3(.93); a = .9; } else if (ax < .62) { if (v_v < f) { a = .9; float sc = fract(u_t*.45)*f; col = c + .45*exp(-pow((v_v - sc)*40., 2.)); } else { col = vec3(.05,.08,.1); a = .45; }'
+    + '   float tk = fract(v_v*10. + .5); if (abs(tk - .5) < .045) { col = vec3(.02,.04,.05); a = .9; } if (abs(v_v - f) < .012) { col = vec3(1.); a = 1.; } } }'
+    + ' else if (u_sty < 2.5) { float head = 1. - abs(v_v - .93)/.07; if (head > 0. && ax < head) { a = 1.; col = mix(c, vec3(1.), .25 + .35*sin(u_t*3.)*sin(u_t*3.)); } else if (v_v < .9 && ax < .2) { a = .95; } }'
+    + ' else { float sg = floor(v_v*10.), fr = fract(v_v*10.); if (fr < .74 && ax < .86) { if (sg < floor(f*10. + .5)) { a = .95; float top = step(floor(f*10. + .5) - 1., sg); col = mix(c, vec3(1.), top*(.3 + .3*sin(u_t*4.))); } else { col = c*.35; a = .3; } } }'
+    + ' gl_FragColor = vec4(col, a); }';
   /* Feine Lichtfäden (Wind in 3D): je Teilchen ein bis zwei Linienstücke, ein Pixel breit, vorn hell, hinten auslaufend */
   const VS_FL = 'attribute vec3 a_p; attribute vec4 a_c; uniform mat4 u_mvp; varying vec4 v_c; void main(){ v_c = a_c; vec4 p = u_mvp*vec4(a_p, 1.); p.z -= .0008*p.w; gl_Position = p; }';
   const FS_FL = HI + 'varying vec4 v_c; uniform float u_a; void main(){ float a = v_c.a*u_a; gl_FragColor = vec4(v_c.rgb*a, a); }';
@@ -604,7 +613,7 @@
     }
     /** Flächen aus Dreiecken: verts = [x, y, z, r, g, b, a, …] in Szenen-Koordinaten (toLocal). */
     /** Lichtsäulen: [{lat, lon, h (m), color [r,g,b] 0..1, w (px), k (0..1 Stärke)}]; leer oder null entfernt sie. */
-    setPillars(list) {
+    setPillars(list, sty = 0) {
       const gl = this.gl;
       if (this._pil?.buf) gl.deleteBuffer(this._pil.buf);
       this._pil = null;
@@ -613,10 +622,10 @@
         const put = (p, s, v, c, ph, w) => { A[q++] = p[0]; A[q++] = p[1]; A[q++] = p[2]; A[q++] = s; A[q++] = v; A[q++] = c[0]; A[q++] = c[1]; A[q++] = c[2]; A[q++] = ph; A[q++] = w; };
         list.forEach((it, i) => {
           const g = this.ground(it.lat, it.lon), b = this.toLocal(it.lat, it.lon, g), t = this.toLocal(it.lat, it.lon, g + it.h), k = it.k ?? 1;
-          const c = it.color.map(x => x * (0.45 + 0.55 * k)), ph = (i * 0.618) % 1, w = it.w || 7;
+          const c = sty ? it.color : it.color.map(x => x * (0.45 + 0.55 * k)), ph = sty ? (it.f ?? k) : (i * 0.618) % 1, w = it.w || 7;
           put(b, -1, 0, c, ph, w); put(b, 1, 0, c, ph, w); put(t, 1, 1, c, ph, w); put(b, -1, 0, c, ph, w); put(t, 1, 1, c, ph, w); put(t, -1, 1, c, ph, w);
         });
-        this._pil = { data: A, n: list.length * 6, buf: null };
+        this._pil = { data: A, n: list.length * 6, buf: null, sty };
       }
       this.invalidate();
     }
@@ -624,10 +633,10 @@
       const p = this._pil; if (!p) return;
       const gl = this.gl, P = this.P.pil;
       if (!p.buf) { p.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, p.buf); gl.bufferData(gl.ARRAY_BUFFER, p.data, gl.STATIC_DRAW); } else gl.bindBuffer(gl.ARRAY_BUFFER, p.buf);
-      gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); gl.uniform2f(P.u.u_vp, this.w, this.h); gl.uniform1f(P.u.u_t, this.time);
+      gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); gl.uniform2f(P.u.u_vp, this.w, this.h); gl.uniform1f(P.u.u_t, this.time); gl.uniform1f(P.u.u_sty, p.sty || 0);
       const at = (n, k, off) => { gl.enableVertexAttribArray(P.a[n]); gl.vertexAttribPointer(P.a[n], k, gl.FLOAT, false, 40, off); };
       at('a_p', 3, 0); at('a_s', 1, 12); at('a_v', 1, 16); at('a_c', 4, 20); at('a_w', 1, 36);
-      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+      gl.enable(gl.BLEND); if (p.sty) gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); else gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
       gl.drawArrays(gl.TRIANGLES, 0, p.n);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       for (const n of ['a_p', 'a_s', 'a_v', 'a_c', 'a_w']) gl.disableVertexAttribArray(P.a[n]);
