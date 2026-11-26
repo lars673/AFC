@@ -874,8 +874,8 @@
       const night = [0.07, 0.10, 0.17], bg = this.o.bg;
       const top = bg ? bg.slice() : this.sky.top.map((v, i) => night[i] + (v - night[i]) * day), bot = bg ? bg.slice() : this.sky.bot.map((v, i) => night[i] * 1.6 + (v - night[i] * 1.6) * day);
       if (!bg && e > -4 && e < 12) { const w = 1 - Math.abs(e - 3) / 9; bot[0] += 0.22 * Math.max(0, w); bot[1] += 0.06 * Math.max(0, w); }
-      const gk = this._glow;
-      if (gk > 0) { const gt = [0.03, 0.016, 0.11], gb = [0.09, 0.05, 0.22]; for (let i = 0; i < 3; i++) { top[i] += (gt[i] - top[i]) * gk; bot[i] += (gb[i] - bot[i]) * gk; } }
+      const gk = this._glow, tk = gk * (this.dusk ?? 1);   // tk: wie stark Himmel und Gelände abgedunkelt werden (hell 0.3, Nacht-Look 1)
+      if (tk > 0) { const gt = [0.03, 0.016, 0.11], gb = [0.09, 0.05, 0.22]; for (let i = 0; i < 3; i++) { top[i] += (gt[i] - top[i]) * tk; bot[i] += (gb[i] - bot[i]) * tk; } }
       // Himmel
       let P = this.P.sky; gl.useProgram(P.p); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.enableVertexAttribArray(P.a.a_p); gl.vertexAttribPointer(P.a.a_p, 2, gl.FLOAT, false, 0, 0);
@@ -910,7 +910,7 @@
       } else gl.uniform4f(P.u.u_cl, 0, 0, 1, 0);
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.X.noise); gl.uniform1i(P.u.u_noise, 3);
       gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.uniform1i(P.u.u_cov, 4);
-      gl.uniform1f(P.u.u_glow, gk); gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
+      gl.uniform1f(P.u.u_glow, tk); gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.X.ov0); gl.uniform1i(P.u.u_ov0, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.X.ov1); gl.uniform1i(P.u.u_ov1, 1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.X.dr); gl.uniform1i(P.u.u_dr, 2);
@@ -935,7 +935,7 @@
         const amb = [0.24 + 0.30 * day, 0.27 + 0.30 * day, 0.34 + 0.28 * day], sun = [(0.78 + 0.16 * warm) * day, (0.74 - 0.06 * warm) * day, (0.66 - 0.2 * warm) * day];
         gl.uniform3f(P.u.u_lit, Math.min(1, amb[0] * 0.78 + sun[0] * 0.75), Math.min(1, amb[1] * 0.78 + sun[1] * 0.75), Math.min(1, amb[2] * 0.78 + sun[2] * 0.75));
         gl.uniform3f(P.u.u_dim, amb[0] * 1.02 + 0.06 * day, amb[1] * 1.02 + 0.07 * day, amb[2] * 1.02 + 0.09 * day);
-        if (gk > 0) { gl.uniform3f(P.u.u_lit, 0.42 - 0.1 * gk, 0.40 - 0.08 * gk, 0.62); gl.uniform3f(P.u.u_dim, 0.10, 0.08, 0.24); }
+        if (tk > 0.5) { gl.uniform3f(P.u.u_lit, 0.42 - 0.1 * tk, 0.40 - 0.08 * tk, 0.62); gl.uniform3f(P.u.u_dim, 0.10, 0.08, 0.24); }
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.enableVertexAttribArray(P.a.a_pos);
         const thick = clamp(this.R * 0.045, 220, 900) * this.ex, fogT = 90 * this.ex;
         const layers = [];

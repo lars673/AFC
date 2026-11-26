@@ -1343,8 +1343,8 @@ function renderProfile() {
       <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p>
       <div class="seg" role="group" aria-label="Bewegung" style="margin-top:10px">${[['full', 'Volle Bewegung'], ['calm', 'Ruhig']].map(([k, n]) => `<button type="button" data-act="motion" data-v="${k}" aria-pressed="${(k === 'calm') === MO.calm}">${n}</button>`).join('')}</div>
       <p class="fine">«Ruhig»: weniger leuchtende Teilchen in 3D, kein Schein, langsamer und ohne Anflug ins Tal beim Öffnen. Die Daten bleiben gleich.</p>
-      <div class="seg" role="group" aria-label="3D-Look" style="margin-top:10px">${[['glow', 'Leuchtend (Glow)'], ['day', 'Taglicht']].map(([k, n]) => `<button type="button" data-act="glowset" data-v="${k}" aria-pressed="${(k === 'glow') === MO.glow}">${n}</button>`).join('')}</div>
-      <p class="fine">3D-Look: «Leuchtend» dunkelt das Gelände ab, damit Wind und Thermik leuchten. «Taglicht» zeigt die Karte in normalen Farben.</p></div>
+      <div class="seg" role="group" aria-label="3D-Look" style="margin-top:10px">${[['glow', 'Hell mit Leuchten'], ['dark', 'Nacht-Look'], ['day', 'Ohne Leuchten']].map(([k, n]) => `<button type="button" data-act="glowset" data-v="${k}" aria-pressed="${k === (!MO.glow ? 'day' : MO.dark ? 'dark' : 'glow')}">${n}</button>`).join('')}</div>
+      <p class="fine">Look: «Hell mit Leuchten» lässt die Karte fast wie am Tag, Wind und Thermik leuchten trotzdem. «Nacht-Look» dunkelt alles stark ab. «Ohne Leuchten» zeigt die Karte in normalen Farben.</p></div>
     <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button>${ME.user ? '<button class="btn sec" type="button" data-act="feedback">Rückmeldung an Lars</button>' : ''}</div></div>
     ${accountPanel()}
     <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
@@ -3276,7 +3276,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     const dpr = Math.min(2, window.devicePixelRatio || 1), mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
     this._tr = mk(this._c.width, this._c.height); this._trx = this._tr.getContext('2d'); this._trx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this._bl = mk(Math.max(2, this._c.width >> 2), Math.max(2, this._c.height >> 2)); this._blx = this._bl.getContext('2d');
-    this._c.classList.add('wind-glow');
+    this._c.classList.add('wind-glow'); this._c.classList.toggle('dark', MO.dark);
     this._last = 0;
     this._raf = requestAnimationFrame(t => this._mframe(t));
   },
@@ -4293,7 +4293,7 @@ document.addEventListener('click', async e => {
     case 'v3drot': if (V3.scene && !V3.scene.pov) { V3.scene.orbit = 0; v3dCam({ az: V3.scene.cam.az + Number(b.dataset.v) }, 450); } break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
-    case 'glowset': MO.glow = b.dataset.v === 'glow'; store.set('v3dGlow3', MO.glow); motionSync(); render(); break;
+    case 'glowset': MO.glow = b.dataset.v !== 'day'; MO.dark = b.dataset.v === 'dark'; store.set('v3dGlow3', MO.glow); store.set('v3dDunkel', MO.dark); WindLayer._c?.classList.toggle('dark', MO.dark); motionSync(); render(); break;
     case 'v3dview': v3dView(b.dataset.v); break;
     case 'view': mapView(b.dataset.v); break;
     case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow3', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
@@ -4920,12 +4920,13 @@ function noflyForm(siteId) {
 const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, clouds: store.get('v3dClouds', true), tour: true, reg: null, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* Motion-Grafik (motion.js): Glow-Look in 3D und Ruhig-Modus (weniger Teilchen, kein Schein, langsamer, kein Intro-Flug). */
-const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow3', true) !== false };   // Glow wie im ersten Video, aber mit erkennbarer Karte (Farben gedämpft statt einfarbig)
+const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow3', true) !== false, dark: !!store.get('v3dDunkel', false) };   // dark: Nacht-Look (stark abgedunkelt); sonst hell, nur leicht gedämpft (Lars 2026-11-26: «wirkt wie Nacht»)
+const duskK = () => MO.dark ? 1 : 0.3;   // Glow wie im ersten Video, aber mit erkennbarer Karte (Farben gedämpft statt einfarbig)
 const calmOn = () => MO.calm || noMotion();
 function motionSync() {
   document.documentElement.classList.toggle('ruhig', MO.calm);
   const sc = V3.scene; if (!sc) return;
-  sc.glow = MO.glow ? 1 : 0; sc.calm = calmOn();
+  sc.glow = MO.glow ? 1 : 0; sc.dusk = duskK(); sc.calm = calmOn();
   for (const sim of [V3.wsim, V3.tsim]) if (sim) { sim.glow = MO.glow; sim.calm = calmOn(); }
   sc.invalidate();
 }
@@ -5012,7 +5013,7 @@ function cloudsFor(d, lat, lon, base) {
 function v3dScene(g, area) {
   const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
-  sc.glow = sc._glow = MO.glow ? 1 : 0; sc.calm = calmOn();
+  sc.glow = sc._glow = MO.glow ? 1 : 0; sc.dusk = duskK(); sc.calm = calmOn();
   sc.setArea(area);
   sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen verschiebt, zwei Finger zoomen, drehen und neigen (Maus: rechte Taste dreht). Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
   { const k = store.get('v3dHint', 0) || 0; if (k < 2) { store.set('v3dHint', k + 1); setTimeout(() => toast(matchMedia('(pointer: coarse)').matches ? 'Ein Finger verschiebt, zwei Finger zoomen, drehen und neigen.' : 'Ziehen verschiebt, ⟲ ⟳ oder rechte Maustaste dreht, Mausrad zoomt.'), 900); } }
@@ -5258,7 +5259,7 @@ const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g =
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
 /** 3D-Wind als feine Lichtfäden: viele Teilchen wie im Tunnel-Vorbild (ein Faden kostet wenig) */
-const windBudget = (k = 1) => Math.round((innerWidth < 700 ? 14000 : 28000) * k);
+const windBudget = (k = 1) => Math.round((innerWidth < 700 ? 22000 : 40000) * k);
 const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 4200 : 6500) * k);   // so viel, dass der Wind lebt, so wenig, dass die Karte erkennbar bleibt
 /** Wind in 3D als leuchtender Partikelstrom (motion.js): Tempo und Farbe aus dem Modell, Lee-Wirbel hinter den Graten. */
 function v3dWind(d) {
@@ -6640,7 +6641,7 @@ async function introFlight() {
   try {
     const R = 9000;
     sc = new AFC3D.Scene(host.firstChild, g, { interactive: false });
-    sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = MO.glow ? 1 : 0;
+    sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = MO.glow ? 1 : 0; sc.dusk = duskK();
     sc.setArea({ lat: s.lat, lon: s.lon, radius: R, n: 121 });
     if (d?.sunPos) sc.setSun(d.sunPos);
     if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: windBudget(0.6), glow: MO.glow }));

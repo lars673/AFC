@@ -1549,7 +1549,8 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .intro3d-t small { display: block; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #9fe9ff; }
 .intro3d-t b { font: 700 26px/1.1 var(--f-num); }
 /* Windkarte im Motion-Look: die Karte wird leicht abgedunkelt, damit die Wind-Punkte leuchten */
-.leaflet-wind-pane canvas.wind-glow { background: rgba(10, 8, 34, .36); }
+.leaflet-wind-pane canvas.wind-glow { background: rgba(10, 8, 34, .13); }
+.leaflet-wind-pane canvas.wind-glow.dark { background: rgba(10, 8, 34, .36); }
 
 /* Drei Ansichten (Luft, Sonne & Thermik, Sicherheit) vorne, einzelne Ebenen unter «Einzeln wählen» */
 .view-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }

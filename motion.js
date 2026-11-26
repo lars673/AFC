@@ -46,21 +46,21 @@
    */
   function wind(sc, sample, o = {}) {
     const R = sc.R, M = 44, cell = 2 * R / (M - 1), NN = M * M;
-    const F = { u0: new Float32Array(NN), v0: new Float32Array(NN), u8: new Float32Array(NN), v8: new Float32Array(NN), lee: new Float32Array(NN), expo: new Float32Array(NN), ok: new Uint8Array(NN) };
+    const F = { u0: new Float32Array(NN), v0: new Float32Array(NN), u8: new Float32Array(NN), v8: new Float32Array(NN), lee: new Float32Array(NN), soar: new Float32Array(NN), expo: new Float32Array(NN), ok: new Uint8Array(NN) };
     const H = new Float32Array(NN);
     for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) H[j * M + i] = sc._meshH(-R + i * cell, -R + j * cell);
     const hAt = (x, z) => sc._meshH(x, z);
-    // Hangneigung (Steigung in m pro m) für den 3D-Fluss: am Luv-Hang wird die Luft gehoben (Soaring), im Lee sinkt sie
-    const GX = new Float32Array(NN), GZ = new Float32Array(NN);
-    for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
-      const k = j * M + i, i0 = Math.max(0, i - 1), i1 = Math.min(M - 1, i + 1), j0 = Math.max(0, j - 1), j1 = Math.min(M - 1, j + 1);
-      GX[k] = (H[j * M + i1] - H[j * M + i0]) / ((i1 - i0) * cell || 1); GZ[k] = (H[j1 * M + i] - H[j0 * M + i]) / ((j1 - j0) * cell || 1);
-    }
     // Exposition: höher als die Umgebung (2 km) -> Wind schneller
     for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
       const x = -R + i * cell, z = -R + j * cell, h0 = H[j * M + i], rr = Math.min(2000, R * 0.25);
       let a = 0; for (let k = 0; k < 8; k++) a += hAt(x + Math.cos(k * Math.PI / 4) * rr, z + Math.sin(k * Math.PI / 4) * rr);
       F.expo[j * M + i] = sstep(0, 450, h0 - a / 8);
+    }
+    // Hangneigung (Steigung in m pro m) für den 3D-Fluss: am Luv-Hang wird die Luft gehoben (Soaring), im Lee sinkt sie
+    const GX = new Float32Array(NN), GZ = new Float32Array(NN);
+    for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
+      const k = j * M + i, i0 = Math.max(0, i - 1), i1 = Math.min(M - 1, i + 1), j0 = Math.max(0, j - 1), j1 = Math.min(M - 1, j + 1);
+      GX[k] = (H[j * M + i1] - H[j * M + i0]) / ((i1 - i0) * cell || 1); GZ[k] = (H[j1 * M + i] - H[j0 * M + i]) / ((j1 - j0) * cell || 1);
     }
     const field = smp => {
       let su = 0, sv = 0, n = 0;
@@ -78,6 +78,9 @@
         const x = -R + i * cell, z = -R + j * cell, h0 = H[j * M + i];
         let rise = 0; for (let d = 400; d <= 3000; d += 325) rise = Math.max(rise, hAt(x - ex * d, z - ez * d) - h0);
         F.lee[j * M + i] = sstep(120, 750, rise) * (0.25 + 0.75 * strong);
+        // Luv-Hang: Gelände steigt in Windrichtung an -> hier stellt sich die Strömung auf (Soaring)
+        const up = (GX[j * M + i] * ex + GZ[j * M + i] * ez);
+        F.soar[j * M + i] = sstep(0.08, 0.45, up) * (0.3 + 0.7 * strong);
       }
       F.mean = { u: su, v: sv, kmh: sp };
     };
@@ -100,10 +103,18 @@
     };
     const out = (x, z) => (box ? Math.abs(x) > box[0] || Math.abs(z) > box[1] : x * x + z * z > R2 * R2);
     const spawn = (i, randomAge) => {
-      let x, z; if (box) { x = (rnd() * 2 - 1) * box[0]; z = (rnd() * 2 - 1) * box[1]; } else do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
+      let x, z;
+      if (box) { x = (rnd() * 2 - 1) * box[0]; z = (rnd() * 2 - 1) * box[1]; }
+      else for (let k = 0; k < 8; k++) {
+        do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
+        // 3D: an Luv-Kanten und im Lee dichter, damit Soaring und Wirbel von selbst ins Auge fallen
+        if (!f3) break;
+        const fx = clamp((x + R) / cell, 0, M - 1.001), fz = clamp((z + R) / cell, 0, M - 1.001), kk = (fz | 0) * M + (fx | 0);
+        if (rnd() < 0.12 + 0.88 * Math.max(F.lee[kk], F.soar[kk])) break;
+      }
       X[i] = x; Z[i] = z;
       // 3D: dicht am Boden wie Wasser, ein paar Fäden etwas höher; 2D wie bisher
-      AGL[i] = A0[i] = f3 ? 12 + Math.pow(rnd(), 2.2) * Math.min(420, R * 0.05) : 30 + Math.pow(rnd(), 1.7) * Math.min(750, R * 0.09);
+      AGL[i] = A0[i] = f3 ? 5 + Math.pow(rnd(), 2.4) * Math.min(160, Math.max(60, R * 0.02)) : 30 + Math.pow(rnd(), 1.7) * Math.min(750, R * 0.09);
       LIFE[i] = f3 ? 3.5 + rnd() * 5 : 2.5 + rnd() * 3.5; AGE[i] = randomAge ? rnd() * LIFE[i] : 0; HN[i] = 0; HT[i] = 0;
     };
     for (let i = 0; i < N; i++) spawn(i, true);
@@ -138,7 +149,7 @@
         const x = X[i], z = Z[i], agl = AGL[i];
         at(x, z);
         if (rd(F.ok) < 0.5) { AGE[i] = LIFE[i] + 1; continue; }
-        const m = sstep(40, 900, agl);
+        const m = sstep(180, 1400, agl);   // nur Bodenwind und Bodennähe
         let u = mix(rd(F.u0), rd(F.u8), m), v = mix(rd(F.v0), rd(F.v8), m);
         const spd = 1 + 0.5 * rd(F.expo) * (1 - 0.5 * m); u *= spd; v *= spd;
         const s0 = Math.hypot(u, v) || 0.001, ex = u / s0, ez = -v / s0, lee = rd(F.lee);
@@ -165,7 +176,7 @@
           X[i] = x + ex * along * kmToM * dt; Z[i] = z + ez * along * kmToM * dt;
         }
         // Höhe über Grund: gehoben am Luv, im Lee runter und im Rotor auf und ab; kehrt langsam zur eigenen Höhe zurück
-        AGL[i] = clamp(agl + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.12 : 0.45)) * dt, 4, A0[i] + 900);
+        AGL[i] = clamp(agl + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.15 : 0.5)) * dt, 3, A0[i] + 380);
         // Spur merken
         HT[i] += dt;
         if (HN[i] === 0 || HT[i] >= INT) {
