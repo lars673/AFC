@@ -95,7 +95,7 @@
     const A0 = new Float32Array(N), HX = new Float32Array(N * 4), HY = new Float32Array(N * 4), HZ = new Float32Array(N * 4), HT = new Float32Array(N), HN = new Uint8Array(N), PH = new Float32Array(N);
     const R2 = R * 0.95, INT = clamp(0.1 * R / 2400, 0.07, 0.7);   // Abstand der Spurpunkte: grössere Szene, längere Spur
     // 3D: feines Höhenraster (Mesh abgetastet), damit die Fäden dem Gelände genau folgen, ohne das Mesh je Teilchen zu fragen
-    const MF = f3 ? Math.round(clamp(R / 30, 160, 256)) : 2, cf = 2 * R / (MF - 1), HF = new Float32Array(MF * MF);
+    const MF = f3 ? Math.round(clamp(R / 20, 160, 384)) : 2, cf = 2 * R / (MF - 1), HF = new Float32Array(MF * MF);
     if (f3) for (let j = 0; j < MF; j++) for (let i = 0; i < MF; i++) HF[j * MF + i] = sc._meshH(-R + i * cf, -R + j * cf);
     const hF = (x, z) => {
       const fx = clamp((x + R) / cf, 0, MF - 1.001), fz = clamp((z + R) / cf, 0, MF - 1.001), i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j, k = j * MF + i;

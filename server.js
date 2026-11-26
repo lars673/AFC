@@ -1764,6 +1764,14 @@ const server = http.createServer(async (req, res) => {
       if (!fsc.existsSync(path.join(dataDir, 'kk7-grid.bin'))) return sendJson(req, res, 404, { error: 'kein kk7-Abgleich vorhanden' });
       return serveStatic(req, res, [path.join(dataDir, 'kk7-grid.bin'), 'application/octet-stream']);
     }
+    // Feines Gelände aus swissALTI3D (© swisstopo), von tools/swisstopo-dem.py erzeugt: Höhenkacheln im Terrarium-Format
+    const dm = /^\/dem\/(1[0-3])\/(\d{1,5})\/(\d{1,5})\.png$/.exec(p);
+    if (dm && (req.method === 'GET' || req.method === 'HEAD')) {
+      const f = path.join(ROOT, 'dem', dm[1], dm[2], dm[3] + '.png');
+      let buf; try { buf = await fs.readFile(f); } catch { return sendJson(req, res, 404, { error: 'keine Kachel' }); }   // ausserhalb: der Browser nimmt die offenen 30-m-Daten
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=2592000', 'Content-Length': buf.length, ...SEC });
+      return res.end(req.method === 'HEAD' ? undefined : buf);
+    }
     const route = STATIC.get(p);
     if (route && (req.method === 'GET' || req.method === 'HEAD')) return serveStatic(req, res, route);
     return sendJson(req, res, 404, { error: 'not found' });

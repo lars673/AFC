@@ -78,7 +78,8 @@
   const mercY = (lat, n) => (1 - Math.log(Math.tan(lat * D2R) + 1 / Math.cos(lat * D2R)) / Math.PI) / 2 * n;
   async function demTrim(store) { const keys = await store.keys(); if (keys.length > 160) for (const k of keys.slice(0, keys.length - 120)) await store.delete(k); }
   /** Eine Kachel als Bild: zuerst aus dem Zwischenspeicher des Geräts (spart Daten und geht ohne Empfang), sonst aus dem Netz. */
-  async function demTile(url) {
+  async function demTile(url, alt) {
+    if (alt) { try { return await demTile(url); } catch { return demTile(alt); } }   // eigene Kachel fehlt (ausserhalb): offene Daten
     let res = null, store = null;
     try { store = await caches.open('afc-dem'); res = await store.match(url); } catch { /* kein Zwischenspeicher, z.B. im privaten Fenster */ }
     if (!res) {
@@ -98,8 +99,9 @@
   async function loadDem(tpl, { lat, lon, radius }, o = {}) {
     if (!tpl || typeof document === 'undefined') return null;
     const cosL = Math.cos(lat * D2R), want = 2 * radius / 300;                 // Maschenweite des Reliefs in m
-    if (want > 150) return null;
-    let z = 12; while (z > 10 && 40075016 * cosL / 2 ** z / 256 < want * 0.5) z--;
+    const zMax = o.maxZ ?? 12;
+    if (want > (zMax > 12 ? 320 : 150)) return null;
+    let z = zMax; while (z > 10 && 40075016 * cosL / 2 ** z / 256 < want * 0.5) z--;
     const n = 2 ** z, pad = radius + 400, mLon = M_LAT * cosL;
     const x0 = Math.floor((lon - pad / mLon + 180) / 360 * n), x1 = Math.floor((lon + pad / mLon + 180) / 360 * n), y0 = Math.floor(mercY(lat + pad / M_LAT, n)), y1 = Math.floor(mercY(lat - pad / M_LAT, n));
     const nx = x1 - x0 + 1, ny = y1 - y0 + 1;
@@ -109,7 +111,8 @@
     const keep = dem => { if (!dem) return; demMem.set(key, dem); if (demMem.size > 3) demMem.delete(demMem.keys().next().value); };
     const job = (async () => {
       const jobs = [];
-      for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) jobs.push(demTile(tpl.replace('{z}', z).replace('{x}', x0 + x).replace('{y}', y0 + y)));
+      const u = (t, x, y) => t && t.replace('{z}', z).replace('{x}', x0 + x).replace('{y}', y0 + y);
+      for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) jobs.push(demTile(u(tpl, x, y), u(o.fallback, x, y)));
       const ims = await Promise.all(jobs);
       const W = nx * 256, H = ny * 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
       const ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -373,7 +376,7 @@
     /* ---- Ausschnitt: runde Scheibe mit Radius (m) um lat/lon */
     /** dem: feines Höhenmodell aus AFC3D.loadDem (sonst das grobe Raster). n: Punkte je Seite (ohne Angabe passend zur Auflösung). */
     setArea({ lat, lon, radius, n, dem = null }) {
-      const g = this.g, coarse = samplers(g).smooth, nMax = this._u32 ? 301 : 255;
+      const g = this.g, coarse = samplers(g).smooth, nMax = this._u32 ? (this.o.mesh || 301) : 255;
       this.dem = dem;
       this.ground = dem ? (la, lo) => (dem.has(la, lo) ? dem.at(la, lo) : coarse(la, lo)) : coarse;
       n = Math.min(nMax, n || (dem ? Math.max(141, Math.ceil(2 * radius / dem.res) | 1) : 141));

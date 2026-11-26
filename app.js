@@ -4996,13 +4996,15 @@ function v3dEnd() {
   Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null, reg: null, tilt: false, flat: null, wsim: null, tsim: null });
 }
 function v3dFail(msg) { const el = $('#v3dLoad'); if (el) { el.hidden = false; el.innerHTML = `<span>${esc(msg)}</span>`; } }
-/** Offene Höhenkacheln (Terrain Tiles, Mapzen/AWS Open Data): rund 30 m Auflösung statt 250 m. */
-const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
-const RELIEF_NOTE = dem => (dem ? 'Relief aus offenen Höhendaten (rund 30 m): feine Kanten und Felsbänder sind geglättet.' : 'Relief aus dem 250-m-Geländemodell: zeigt die Lage, nicht jede Kante.');
+/** Feines Gelände: eigene Kacheln aus swissALTI3D (© swisstopo), sonst offene Höhenkacheln (Terrain Tiles, Mapzen/AWS Open Data, rund 30 m). */
+const DEM_AWS = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+/** swissALTI3D von swisstopo (auf rund 13 m gemittelt, tools/swisstopo-dem.py); ausserhalb des Berner Oberlands die offenen 30-m-Daten. */
+const DEM_URL = '/dem/{z}/{x}/{y}.png', DEM_O = { maxZ: 13, fallback: DEM_AWS };
+const RELIEF_NOTE = dem => (dem ? (dem.z >= 13 ? 'Relief aus swissALTI3D von swisstopo (rund 13 m).' : 'Relief aus swissALTI3D von swisstopo.') : 'Relief aus dem 250-m-Geländemodell: zeigt die Lage, nicht jede Kante.');
 /** Feines Höhenmodell für den Ausschnitt; null bei grossem Ausschnitt, ohne Netz oder wenn es zu lange dauert (dann grobes Relief). */
 async function v3dDem(g, area, timeout = 7000) {
   const el = $('#v3dLoad span'); if (el && !$('#v3dLoad').hidden) el.textContent = 'Feines Gelände wird geladen …';
-  try { return await AFC3D.loadDem(DEM_URL, area, { grid: g, timeout }); } catch { return null; }
+  try { return await AFC3D.loadDem(DEM_URL, area, { ...DEM_O, grid: g, timeout }); } catch { return null; }
 }
 /** Wolken und Nebelmeer einer Stunde für die Szene: Bedeckung aus dem Raster, Basis am Ort (wenn bekannt) oder aus der Region. */
 function cloudsFor(d, lat, lon, base) {
@@ -5011,7 +5013,7 @@ function cloudsFor(d, lat, lon, base) {
   return { cover: fog != null ? (d.cloud.up ?? 0) / 100 : low, base: num(base) && !(fog != null && base < fog + 50) ? base : d.cloud?.base ?? null, fog, wind: lv[1] || lv[0] || [0, 0] };
 }
 function v3dScene(g, area) {
-  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
+  const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { mesh: innerWidth >= 700 ? 513 : 385, avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
   sc.glow = sc._glow = MO.glow ? 1 : 0; sc.dusk = duskK(); sc.calm = calmOn();
   sc.setArea(area);
@@ -5069,7 +5071,7 @@ async function miniMount(hr = null) {
     const g = await thermalGrid();
     if (tok !== MINI.tok) return;
     const R = 2400, area = { lat: s.lat, lon: s.lon, radius: R };
-    const dem = await AFC3D.loadDem(DEM_URL, area, { grid: g, timeout: 3500 }).catch(() => null);
+    const dem = await AFC3D.loadDem(DEM_URL, area, { ...DEM_O, grid: g, timeout: 3500 }).catch(() => null);
     if (tok !== MINI.tok) return;
     const bg = (getComputedStyle($('#siteDlg')).backgroundColor.match(/[\d.]+/g) || [255, 255, 255]).slice(0, 3).map(v => v / 255);
     const sc = MINI.sc = new AFC3D.Scene(host, g, { spin: true, bg });
@@ -5874,7 +5876,7 @@ async function briefLoad(k) {
   try {
     const [det, g] = await Promise.all([loadDetail(s.id), thermalGrid().catch(() => null), document.fonts?.load?.('700 60px "Barlow Condensed"').catch(() => {})]);
     if (tok !== BR.tok || V3.mode !== 'brief') return;
-    const dem = g && window.AFC3D?.supported() ? await AFC3D.loadDem(DEM_URL, { lat: s.lat, lon: s.lon, radius: 5200 }, { grid: g, timeout: 4000 }).catch(() => null) : null;
+    const dem = g && window.AFC3D?.supported() ? await AFC3D.loadDem(DEM_URL, { lat: s.lat, lon: s.lon, radius: 5200 }, { ...DEM_O, grid: g, timeout: 4000 }).catch(() => null) : null;
     if (tok !== BR.tok || V3.mode !== 'brief') return;
     const dd = det.days[day], best = dd?.best || null, hours = dd?.hours || [];
     const hr = hours.find(h => h.h === best?.peak) || hours.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0] || null;
@@ -6104,7 +6106,7 @@ async function recapLoad(y) {
       const near = tr.filter(f => haversineKm(c.lat, c.lon, f.track.line[0][0], f.track.line[0][1]) < 5).slice(-40);
       const ext = Math.max(0, ...near.flatMap(f => f.track.line.map(p => haversineKm(c.lat, c.lon, p[0], p[1])))) * 1000;
       const R = Math.round(Math.min(11000, Math.max(5200, ext * 1.1 + 600)));
-      const dem = await AFC3D.loadDem(DEM_URL, { ...c, radius: R }, { grid: g, timeout: 4000 }).catch(() => null);
+      const dem = await AFC3D.loadDem(DEM_URL, { ...c, radius: R }, { ...DEM_O, grid: g, timeout: 4000 }).catch(() => null);
       if (tok !== BR.tok || V3.mode !== 'brief') return;
       try {
         sc = new AFC3D.Scene(null, g, { size: [BR_W, BR_H], interactive: false, manual: true, fov: 42 });
