@@ -258,6 +258,10 @@
       // leuchtender Punkt vorn, kurzer weicher Schweif dahinter: sieht aus wie fliessende Punkte, nicht wie Striche
       float s = abs(v_q.y), hd = 1. - smoothstep(0., .3, v_q.x), a = v_c.a*u_a*pow(1. - v_q.x, 2.2)*(u_core > .5 ? 1. - s*s : (1. - s)*(1. - s))*(1. + hd*.9);
       vec3 c = u_core < -.5 ? u_tint : mix(v_c.rgb, vec3(1.), hd*.45*step(.5, u_core)); gl_FragColor = vec4(c*a, a); }`;
+  /* Lichtsäulen (Score je Startplatz): senkrechtes Band, zur Kamera gedreht, unten hell und nach oben auslaufend,
+     pulsiert sanft; ein Lichtring steigt langsam hoch. a_s: -1/1 Seite, a_v: 0 unten bis 1 oben. */
+  const VS_PIL = 'attribute vec3 a_p; attribute float a_s; attribute float a_v; attribute vec4 a_c; attribute float a_w; uniform mat4 u_mvp; uniform vec2 u_vp; varying vec4 v_c; varying float v_s; varying float v_v; void main(){ v_c = a_c; v_s = a_s; v_v = a_v; vec4 p = u_mvp*vec4(a_p, 1.); p.x += a_s*a_w*(1. - .55*a_v)*2./u_vp.x*p.w; gl_Position = p; }';
+  const FS_PIL = HI + 'varying vec4 v_c; varying float v_s; varying float v_v; uniform float u_t; void main(){ float ph = v_c.a; float k = .72 + .28*sin(u_t*2.1 + ph*6.283); float r = fract(u_t*.28 + ph); float band = exp(-pow((v_v - r)*9., 2.))*.9; float a = pow(1. - v_v, 1.6)*(1. - v_s*v_s)*k + band*(1. - v_s*v_s)*(1. - v_v); vec3 c = v_c.rgb; gl_FragColor = vec4(c*a, a*.6); }';
   /* Feine Lichtfäden (Wind in 3D): je Teilchen ein bis zwei Linienstücke, ein Pixel breit, vorn hell, hinten auslaufend */
   const VS_FL = 'attribute vec3 a_p; attribute vec4 a_c; uniform mat4 u_mvp; varying vec4 v_c; void main(){ v_c = a_c; vec4 p = u_mvp*vec4(a_p, 1.); p.z -= .0008*p.w; gl_Position = p; }';
   const FS_FL = HI + 'varying vec4 v_c; uniform float u_a; void main(){ float a = v_c.a*u_a; gl_FragColor = vec4(v_c.rgb*a, a); }';
@@ -349,7 +353,7 @@
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
       this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR), fl: this._prog(VS_FL, FS_FL) };
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR), fl: this._prog(VS_FL, FS_FL), pil: this._prog(VS_PIL, FS_PIL) };
       this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
@@ -599,6 +603,35 @@
       this.invalidate();
     }
     /** Flächen aus Dreiecken: verts = [x, y, z, r, g, b, a, …] in Szenen-Koordinaten (toLocal). */
+    /** Lichtsäulen: [{lat, lon, h (m), color [r,g,b] 0..1, w (px), k (0..1 Stärke)}]; leer oder null entfernt sie. */
+    setPillars(list) {
+      const gl = this.gl;
+      if (this._pil?.buf) gl.deleteBuffer(this._pil.buf);
+      this._pil = null;
+      if (list && list.length) {
+        const A = new Float32Array(list.length * 6 * 10); let q = 0;
+        const put = (p, s, v, c, ph, w) => { A[q++] = p[0]; A[q++] = p[1]; A[q++] = p[2]; A[q++] = s; A[q++] = v; A[q++] = c[0]; A[q++] = c[1]; A[q++] = c[2]; A[q++] = ph; A[q++] = w; };
+        list.forEach((it, i) => {
+          const g = this.ground(it.lat, it.lon), b = this.toLocal(it.lat, it.lon, g), t = this.toLocal(it.lat, it.lon, g + it.h), k = it.k ?? 1;
+          const c = it.color.map(x => x * (0.45 + 0.55 * k)), ph = (i * 0.618) % 1, w = it.w || 7;
+          put(b, -1, 0, c, ph, w); put(b, 1, 0, c, ph, w); put(t, 1, 1, c, ph, w); put(b, -1, 0, c, ph, w); put(t, 1, 1, c, ph, w); put(t, -1, 1, c, ph, w);
+        });
+        this._pil = { data: A, n: list.length * 6, buf: null };
+      }
+      this.invalidate();
+    }
+    _drawPillars(mvp) {
+      const p = this._pil; if (!p) return;
+      const gl = this.gl, P = this.P.pil;
+      if (!p.buf) { p.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, p.buf); gl.bufferData(gl.ARRAY_BUFFER, p.data, gl.STATIC_DRAW); } else gl.bindBuffer(gl.ARRAY_BUFFER, p.buf);
+      gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); gl.uniform2f(P.u.u_vp, this.w, this.h); gl.uniform1f(P.u.u_t, this.time);
+      const at = (n, k, off) => { gl.enableVertexAttribArray(P.a[n]); gl.vertexAttribPointer(P.a[n], k, gl.FLOAT, false, 40, off); };
+      at('a_p', 3, 0); at('a_s', 1, 12); at('a_v', 1, 16); at('a_c', 4, 20); at('a_w', 1, 36);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+      gl.drawArrays(gl.TRIANGLES, 0, p.n);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      for (const n of ['a_p', 'a_s', 'a_v', 'a_c', 'a_w']) gl.disableVertexAttribArray(P.a[n]);
+    }
     setTris(key, verts, o = {}) {
       const old = this.tris.get(key); if (old?.buf) this.gl.deleteBuffer(old.buf);
       if (!verts || !verts.length) { this.tris.delete(key); return this.invalidate(); }
@@ -984,8 +1017,9 @@
         for (const k of on) gl.disableVertexAttribArray(A[k]);
       }
       if (this.streaks.size) this._drawStreaks(mvp);
+      this._drawPillars(mvp);
       gl.depthMask(true);
-      this.flowing = flow;
+      this.flowing = flow || (!!this._pil && !this.still);
       if (this.lab) this._place();
       this.onDraw?.();
     }

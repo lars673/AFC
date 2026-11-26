@@ -656,6 +656,7 @@ function renderDecide() {
     if (nx > 0) { h.next = nx; h.nextScore = sc(nx); }
   }
   const favSites = [...S.fav].map(siteById).filter(Boolean);
+  const clipBtn = window.AFC3D?.supported?.() ? `<button type="button" class="btn sec brief-btn" data-act="dayclip" title="Der Tag als kurzer Film zum Teilen">${PLAY_SVG} Tagesclip</button>` : '';
   const near = S.sort === 'near' && S.pos;
   const dist = a => Math.min(...a.sites.map(siteById).filter(Boolean).map(x => haversineKm(S.pos[0], S.pos[1], x.lat, x.lon)));
   const areas = [...p.areas].sort((a, b) => near ? dist(a) - dist(b) : (b.days[S.day]?.best.score ?? -1) - (a.days[S.day]?.best.score ?? -1));
@@ -672,12 +673,12 @@ function renderDecide() {
     ${myAskHtml()}
     ${feedbackHtml()}
     ${gearAlertHtml(gearAlerts().filter(x => x.level === 'due'))}
-    ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button></div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
+    ${favSites.length ? `<div class="sec-row"><h2 class="sec-h">Meine Startplätze</h2><button type="button" class="btn sec brief-btn" data-act="briefall">${PLAY_SVG} Briefing ${esc(dayName(S.day))}</button>${clipBtn}</div><div class="cards"><article class="card"><div class="rows" style="border-top:0">${favSites.map(s => {
       const b = s.days[S.day].best;
       return `<div class="srow"><button type="button" class="srow-main" data-act="site" data-id="${esc(s.id)}"><span class="srow-name">${esc(nmFull(s))}${skyIcon(s.days[S.day].sky, 18, true)}</span><span class="srow-sub">${s.alt} m · ${b ? winText(b) : 'kein Fenster'}</span>${ribbon(s.days[S.day].scores, b, { now: nowH })}</button><div style="display:grid;justify-items:center">${starBtn(s.id)}<div class="mini-pill s-${cls(b?.score)}" data-cu="f:${esc(s.id)}">${b ? b.score : '–'}</div></div></div>`;
     }).join('')}</div></article></div>` : ''}
     <div class="sec-row"><h2 class="sec-h">Gebiete ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
-      <div class="sec-tools"><div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
+      <div class="sec-tools">${favSites.length ? '' : clipBtn}<div class="seg seg-sm" role="group" aria-label="Sortierung"><button type="button" data-act="sort" data-v="best" aria-pressed="${!near}">Beste</button><button type="button" data-act="sort" data-v="near" aria-pressed="${!!near}" ${S.locating ? 'disabled' : ''}>${S.locating ? 'Suche …' : 'Nähe'}</button></div>
       <button type="button" class="ico-btn" data-act="week" aria-label="Wochenblick" title="Wochenblick"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><button type="button" class="ico-btn" data-act="compare" aria-label="Startplätze vergleichen" title="Vergleichen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button></div></div>
     ${tops.length ? `<div class="tops">${tops.map(x => areaRow(x, true)).join('')}</div>` : ''}
     ${rest.length || shown.length < areas.length ? `<div class="card alist${tops.length ? ' compact' : ''}">${rest.map(x => areaRow(x)).join('')}${shown.length < areas.length ? `<button type="button" class="alist-more" data-act="allareas">Alle ${areas.length} Gebiete zeigen</button>` : ''}</div>` : ''}
@@ -3158,7 +3159,7 @@ function drawSites() {
     // ohne Bewertung (z.B. am Abend) nur ein kleiner grauer Punkt statt einer Kugel mit «–»
     const icon = !b && !s.blocked
       ? L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-e"></div>' })
-      : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });
+      : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${!s.blocked && b.score >= 55 ? `<i class="mk-glow" style="--k:${Math.min(1, (b.score - 55) / 35).toFixed(2)};--d:${(-(s.lat * 997 % 2.6)).toFixed(2)}s" aria-hidden="true"></i>` : ''}${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });   // Lichtsäule von oben: je besser, desto heller und grösser der pulsierende Schein
     const at = n > 1 ? M.map.unproject(g.p, z) : [s.lat, s.lon];
     L.marker(at, { icon, title: n > 1 ? `${n} Startplätze, bester ${s.name}: ${b ? b.score : 'keine Bewertung'}` : `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 })
       .on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : n > 1 ? mapSheet('group', g.m.map(x => x.s.id)) : mapSheet('site', s.id))).addTo(M.sites);
@@ -4103,7 +4104,7 @@ function locate() {
 // keine Inhalte, keine Klickspur, keine Fremdanbieter. Lars sieht sie unter Testphase › Nutzung.
 const FEATS = {
   site: 'Startplatz geöffnet', compare: 'Vergleichen', week: 'Wochenblick', film: 'Tagesfilm', windnow: 'Wind jetzt', site3d: '3D-Startplatz', region3d: '3D-Region',
-  replay: '3D-Flug-Replay', v3dpov: 'Pilotensicht', duelplay: 'Vergleich animiert', brief: 'Briefing-Clip', briefall: 'Briefing Favoriten', recap: 'Saison-Rückblick',
+  replay: '3D-Flug-Replay', v3dpov: 'Pilotensicht', duelplay: 'Vergleich animiert', brief: 'Briefing-Clip', briefall: 'Briefing Favoriten', dayclip: 'Tagesclip', recap: 'Saison-Rückblick',
   layers: 'Kartenebenen', wind: 'Wind-Ebene', thermal: 'Thermik-Ebene', obsttoggle: 'Kabel-Ebene', airtoggle: 'Luftraum', route: 'Route', locate: 'Mein Standort',
   showmap: 'Auf Karte zeigen', day: 'Anderer Tag', hour: 'Stunde gewählt', sort: 'Sortieren', fav: 'Favorit', watch: 'Flugtag-Wächter', cambig: 'Webcam gross',
   landpick: 'Landeplatz gewählt', check: 'Checkliste', lbflight: 'Flug eintragen', fb: 'Flug bewertet', nofly: 'Nicht gestartet', report: 'Flugbericht',
@@ -4279,6 +4280,7 @@ document.addEventListener('click', async e => {
     case 'windnow': W.now = !nowMode(); store.set('windNow', W.now); if (W.now && FILM.playing) filmStop(); if (W.now && W.level === 'off') { W.level = '10m'; store.set('wind', W.level); } if (!W.now) { W.meas = null; W.measAt = null; drawStationsNow(); } updateWind(); updateThermal(); break;
     case 'brief': briefOpen([id]); break;
     case 'briefall': briefOpen([...S.fav]); break;
+    case 'dayclip': dayClipOpen(); break;
     case 'briefpost': { const i = S.plan?.dates.indexOf(b.dataset.d) ?? -1; if (i < 0) { toast('Dieser Tag ist nicht mehr in der Prognose.'); break; } if (i !== S.day) { S.day = i; render(); } briefOpen([id]); break; }
     case 'briefplay': briefPlay(!BR.playing); break;
     case 'briefnav': if (!BR.rec && BR.ids.length > 1) briefLoad((BR.k + Number(b.dataset.v) + BR.ids.length) % BR.ids.length); break;
@@ -5146,6 +5148,7 @@ function v3dSiteMarkers() {
   }
   if (V3.volte) { const p = V3.volte.pts[0]; ms.push({ id: 'gl', lat: p[0], lon: p[1], alt: p[2], air: true, center: true, cls: 'glider', html: GLIDER_SVG }); }
   sc.setMarkers(ms);
+  v3dPillars(S.plan.sites.filter(o => num(o.lat) && haversineKm(s.lat, s.lon, o.lat, o.lon) * 1000 < sc.R * 0.88));
 }
 function v3dSiteHud(err = '') {
   const { hr, score } = v3dHourData(), el = $('#v3dHud');
@@ -5553,6 +5556,7 @@ function v3dRegionMarkers() {
   const at = o => o.days?.[S.day]?.scores?.[V3.hour - S.plan.h0] ?? null, key = V3.hour + ':' + S.day + ':' + [...S.fav].join();
   if (reg.mk === key) return;
   reg.mk = key;
+  v3dPillars(reg.sites);
   const fav = reg.sites.filter(o => S.fav.has(o.id)), rest = reg.sites.filter(o => !S.fav.has(o.id));
   // ohne Favoriten: die fünf Besten des Tages gross
   const big = fav.length ? fav : rest.slice().sort((a, b) => (b.days?.[S.day]?.best?.score ?? -1) - (a.days?.[S.day]?.best?.score ?? -1)).slice(0, 5);
@@ -5560,6 +5564,15 @@ function v3dRegionMarkers() {
     ...big.sort((a, b) => (at(b) ?? -1) - (at(a) ?? -1)).map((o, i) => ({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'top', yield: i > 0, title: o.name + ' in 3D ansehen', html: `<span class="v3d-pin s-${cls(at(o))}">${num(at(o)) ? at(o) : ''}</span><span class="v3d-name">${esc(o.name)}</span>` })),
     ...rest.filter(o => !big.includes(o)).map(o => ({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'other', yield: true, title: o.name + ' in 3D ansehen', html: `<span class="v3d-dot s-${cls(at(o))}"></span><span class="v3d-name sm">${esc(o.name)}</span>` }))
   ]);
+}
+/* ---- Score als pulsierende Lichtsäule (Lars 2026-11-26): jeder Startplatz leuchtet so hoch und hell, wie gut sein Score
+   zur gezeigten Stunde ist. Grün sehr gut, gelb prüfen, orange/rot schwach; unter 40 keine Säule. */
+const PIL_COL = s => (s >= 85 ? [0.25, 1, 0.55] : s >= 80 ? [0.5, 1, 0.35] : s >= 70 ? [1, 0.85, 0.25] : s >= 55 ? [1, 0.55, 0.2] : [1, 0.3, 0.28]);
+function pilOf(sc, o, s) { const k = Math.min(1, Math.max(0, (s - 40) / 50)); return { lat: o.lat, lon: o.lon, h: sc.R * (0.025 + 0.1 * k), color: PIL_COL(s), w: 5 + 10 * k, k }; }
+function v3dPillars(sites) {
+  const sc = V3.scene; if (!sc) return;
+  const at = o => o.days?.[S.day]?.scores?.[V3.hour - S.plan.h0] ?? null;
+  sc.setPillars(sites.filter(o => num(at(o)) && at(o) >= 40 && !o.blocked).map(o => pilOf(sc, o, at(o))));
 }
 function v3dRegionHud(err = '') {
   const el = $('#v3dHud'), reg = V3.reg;
@@ -5937,6 +5950,7 @@ function briefDraw(dt) {
   const cv = $('#briefC'), D = BR.data;
   if (!cv || !D) return;
   if (D.recap) return recapDraw(dt);
+  if (D.dayclip) return dayClipDraw(dt);
   const x = cv.getContext('2d'), t = BR.t, W = BR_W, H = BR_H, sc = BR.scene;
   const ph = (a, b) => Math.min(1, Math.max(0, (t - a) / (b - a))), eo = v => 1 - Math.pow(1 - v, 3);
   const NUM = '"Barlow Condensed", "Barlow", system-ui, sans-serif', TXT = '"Barlow", system-ui, -apple-system, sans-serif';
@@ -6067,9 +6081,175 @@ async function briefShare() {
   if (!ME.user) { toast('Zum Teilen in der Gruppe brauchst du ein Konto.'); return; }
   const btn = $('#briefShare'); btn.disabled = true;
   try {
-    groupSet(await jsonPost('/api/community', D.recap ? { kind: 'report', text: D.text } : { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
+    groupSet(await jsonPost('/api/community', D.recap || D.dayclip ? { kind: 'report', text: D.text } : { kind: 'brief', siteId: D.s.id, siteName: D.s.name, date: D.date, text: briefText(D) }));
     toast('In der Gruppe geteilt'); btn.textContent = 'Geteilt ✓';
   } catch (e) { btn.disabled = false; toast('Nicht geteilt: ' + errTxt(e)); }
+}
+
+/* ------------------------------------------------------------------ Tagesclip (Lars 2026-11-26): der Tag als kurzer Film zum Teilen.
+   Die Sonne zieht von 9 bis 17 Uhr über das Gelände, der Wind fliesst als Lichtstrom, jeder Startplatz leuchtet als Säule
+   so hoch und hell wie sein Score zur Stunde. Läuft im Rahmen des Briefings (Aufnahme, Teilen, Gruppe). */
+const DC_LEN = 17, DC_H0 = 9, DC_H1 = 17;
+const dcHour = t => DC_H0 + (DC_H1 - DC_H0) * Math.min(1, Math.max(0, (t - 2.4) / 10.6));
+const DC_SAY = { go: 'Guter Flugtag', ready: 'Guter Flugtag', check: 'Flugtag mit Fragezeichen', wait: 'Eher schwacher Tag', no: 'Kein Flugtag', none: 'Ohne Bewertung' };
+/** Score eines Startplatzes zur Stunde h (auch zwischen vollen Stunden, weich gemischt). */
+function dcScore(o, day, h) {
+  const a = o.days?.[day]?.scores || [], i = Math.floor(h) - S.plan.h0, f = h - Math.floor(h), p = a[i], q = a[i + 1];
+  if (!num(p)) return num(q) && f > 0.5 ? q : null;
+  return num(q) ? p + (q - p) * f : p;
+}
+function dayClipOpen() {
+  if (!S.plan) return;
+  if (!window.AFC3D?.supported()) { toast('Dieses Gerät kann den Tagesclip nicht darstellen.'); return; }
+  v3dEnd();
+  V3.mode = 'brief';
+  Object.assign(BR, { ids: [], k: 0, file: null });
+  dlg('#v3dDlg', briefShell());
+  $('#v3dT').textContent = 'Tagesclip';
+  const l = $('#v3dLoad span'); if (l) l.textContent = 'Tagesclip wird vorbereitet …';
+  dayClipLoad();
+}
+function dayClipText(D) {
+  const b = D.top[0], rest = D.top.slice(1);
+  return `AFC ${dayName(D.day)} ${dayDate(D.day)}: ${DC_SAY[cls(D.score)]}.${b ? ` Am besten ${nmFull(b.o)} (${b.s}, ${winText(b.best)})` : ''}${rest.length ? `, danach ${rest.map(r => `${nmFull(r.o)} ${r.s}`).join(', ')}` : ''}.${D.gw ? ` ${D.gw.k === 'foehn' ? 'Föhn' : 'Bise'}-${D.gw.lvl === 'danger' ? 'Gefahr' : 'Warnung'} ab ${D.gw.h} Uhr.` : ''} Der Entscheid fällt vor Ort.`;
+}
+async function dayClipLoad() {
+  briefStop();
+  const tok = BR.tok, day = S.day, date = S.plan.dates[day];
+  Object.assign(BR, { k: 0, t: 0, last: 0, file: null, len: DC_LEN });
+  $('#briefProg').innerHTML = '<i><b></b></i>';
+  $('#briefRec').textContent = 'Als Video speichern'; $('#briefRec').disabled = false;
+  $('#v3dLoad').hidden = false;
+  try {
+    const all = S.plan.sites.filter(o => !o.blocked && num(o.lat) && num(o.lon)), fav = all.filter(o => S.fav.has(o.id));
+    const pool = fav.length >= 2 ? fav : all, best = o => o.days?.[day]?.best;
+    const top = pool.filter(o => num(best(o)?.score)).sort((a, b) => best(b).score - best(a).score).slice(0, 3).map(o => ({ o, s: best(o).score, best: best(o) }));
+    const c = top[0]?.o || pool[0];
+    if (!c) throw new Error('keine Startplätze');
+    $('#v3dSub').textContent = `${dayName(day)} ${dayDate(day)} · ${fav.length >= 2 ? 'deine Startplätze' : 'Berner Oberland'}`;
+    const hrs = []; for (let h = DC_H0; h <= DC_H1; h++) hrs.push(h);
+    const [g, ds] = await Promise.all([thermalGrid().catch(() => null), Promise.all(hrs.map(h => thermalData(filmIso(date, h)).catch(() => null))), document.fonts?.load?.('700 60px "Barlow Condensed"').catch(() => {})]);
+    if (tok !== BR.tok || V3.mode !== 'brief') return;
+    const R = 14000, lat = c.lat, lon = c.lon;
+    const dem = g ? await AFC3D.loadDem(DEM_URL, { lat, lon, radius: R }, { ...DEM_O, grid: g, timeout: 5000 }).catch(() => null) : null;
+    if (tok !== BR.tok || V3.mode !== 'brief') return;
+    const sites = all.filter(o => haversineKm(lat, lon, o.lat, o.lon) * 1000 < R * 0.9);
+    const face = num(c.aspects?.[0]) ? c.aspects[0] : 180;
+    const D = BR.data = { dayclip: true, day, date, top, sites, ds, score: top[0]?.s ?? null, gw: gwOf(day), az0: face + 150, h: -1, sunAt: -9,
+      file: `AFC-Tag-${date}`, title: `AFC ${dayName(day)} ${dayDate(day)}` };
+    D.text = dayClipText(D);
+    let sc = null;
+    if (g) {
+      try {
+        sc = new AFC3D.Scene(null, g, { size: [BR_W, BR_H], interactive: false, manual: true, fov: 42 });
+        sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = 1; sc.dusk = duskK();
+        sc.setArea({ lat, lon, radius: R, n: dem ? 221 : 121, dem });
+        sc.flyTo({ lat, lon, alt: sc.ground(lat, lon) - 300, az: D.az0, el: 33, dist: R * 2.1 }, 0);
+        const d0 = ds.find(Boolean);
+        if (d0 && window.AFCMotion) { D.sim = AFCMotion.wind(sc, windSampler(d0), { n: innerWidth < 700 ? 9000 : 16000, glow: true }); sc.setStreaks('wind', D.sim); }
+      } catch { sc?.destroy(); sc = null; }
+    }
+    BR.scene = sc;
+    $('#briefNote').textContent = D.text;
+    $('#v3dLoad').hidden = true;
+    if (noMotion()) { BR.t = 14.6; briefDraw(0); briefSync(); } else briefPlay(true);
+  } catch (e) { if (tok === BR.tok) v3dFail('Der Tagesclip konnte nicht geladen werden: ' + errTxt(e)); }
+}
+/** Ein Bild des Tagesclips: Titel, die Stunden laufen durch (Sonne, Wind, Lichtsäulen), Schlusskarte mit den Besten. */
+function dayClipDraw(dt) {
+  const cv = $('#briefC'), D = BR.data, x = cv.getContext('2d'), t = BR.t, W = BR_W, H = BR_H, sc = BR.scene, day = D.day;
+  const ph = (a, b) => Math.min(1, Math.max(0, (t - a) / (b - a))), eo = v => 1 - Math.pow(1 - v, 3);
+  const NUM = '"Barlow Condensed", "Barlow", system-ui, sans-serif', TXT = '"Barlow", system-ui, -apple-system, sans-serif', SKY = '#6cc3e2', SOFT = '#c9d6cc';
+  const col = { go: cssVar('--go'), ready: cssVar('--ready'), check: cssVar('--check'), wait: cssVar('--wait'), no: cssVar('--no'), none: '#6b7a70' };
+  const text = (s, px, py, font, fill, align = 'left', a = 1) => { if (a <= 0) return; x.globalAlpha = Math.min(1, a); x.font = font; x.fillStyle = fill; x.textAlign = align; x.fillText(s, px, py); x.globalAlpha = 1; };
+  const fit = (s, max, font) => { x.font = font; if (x.measureText(s).width <= max) return s; let n = s.length; while (n > 3 && x.measureText(s.slice(0, n) + '…').width > max) n--; return s.slice(0, n).trimEnd() + '…'; };
+  const box = (px, py, w, h, r, fill) => { x.beginPath(); if (x.roundRect) x.roundRect(px, py, w, h, r); else x.rect(px, py, w, h); x.fillStyle = fill; x.fill(); };
+  const hh = dcHour(t), hi = Math.round(hh);
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.textBaseline = 'alphabetic';
+  // Gelände: Sonne wandert, Wind wechselt zur vollen Stunde, Säulen wachsen und schrumpfen mit dem Score
+  if (sc) {
+    if (Math.abs(hh - D.sunAt) > 0.12 || (t < 0.05 && D.sunAt < 0)) {
+      D.sunAt = hh;
+      const p = AFC3D.sunAt(Date.parse(filmIso(D.date, Math.floor(hh))) + (hh % 1) * 3600000, D.sites[0]?.lat ?? 46.65, D.sites[0]?.lon ?? 7.9);
+      sc.setSun({ az: p.az, elev: Math.max(9, p.elev) });
+    }
+    const dH = D.ds[hi - DC_H0];
+    if (hi !== D.h && dH && D.sim) { D.h = hi; D.sim.setField(windSampler(dH)); }
+    sc.setPillars(D.sites.map(o => ({ o, s: dcScore(o, day, hh) })).filter(p => num(p.s) && p.s >= 40).map(p => { const q = pilOf(sc, p.o, p.s); q.w *= 1.6; q.h *= 1.25; return q; }));
+    sc.cam.az = D.az0 + t * 4.2; sc.cam.dist = sc.R * (2.1 - 0.45 * eo(Math.min(1, t / DC_LEN)));
+    sc.renderNow(dt); x.drawImage(sc.canvas, 0, 0, W, H);
+  } else { const g = x.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#34526f'); g.addColorStop(1, '#16241c'); x.fillStyle = g; x.fillRect(0, 0, W, H); }
+  let g = x.createLinearGradient(0, 0, 0, 420); g.addColorStop(0, 'rgba(4,10,14,.88)'); g.addColorStop(1, 'rgba(4,10,14,0)'); x.fillStyle = g; x.fillRect(0, 0, W, 420);
+  g = x.createLinearGradient(0, 860, 0, H); g.addColorStop(0, 'rgba(4,10,14,0)'); g.addColorStop(0.5, 'rgba(4,10,14,.82)'); g.addColorStop(1, 'rgba(4,10,14,.95)'); x.fillStyle = g; x.fillRect(0, 860, W, H - 860);
+  // Namen der Besten über ihren Säulen (zur laufenden Stunde)
+  const mid = 1 - ph(13.1, 13.6);
+  if (sc && mid > 0) D.top.forEach((r, i) => {
+    const p = sc.project(sc.toLocal(r.o.lat, r.o.lon, null)), s = dcScore(r.o, day, hh), a = eo(ph(2.2 + i * 0.25, 2.9 + i * 0.25)) * mid;
+    if (!p || p.y < 330 || p.y > 900 || p.x < 30 || p.x > W - 30 || a <= 0) return;
+    const lbl = `${nmFull(r.o)}${num(s) ? ' ' + Math.round(s) : ''}`, f = `600 24px ${TXT}`; x.font = f; const w = x.measureText(lbl).width + 26;
+    const bx = Math.min(W - w - 16, Math.max(16, p.x - w / 2)), by = p.y + 18;
+    x.globalAlpha = a * 0.85; box(bx, by, w, 38, 19, 'rgba(4,10,14,.78)'); x.globalAlpha = 1;
+    text(lbl, bx + w / 2, by + 27, f, num(s) ? col[cls(s)] : SOFT, 'center', a);
+  });
+  // Kopf: Tag und Aussage
+  let a = eo(ph(0.15, 0.9));
+  x.save(); if ('letterSpacing' in x) x.letterSpacing = '5px';
+  text('AFC TAGESCLIP', 40, 92 - (1 - a) * 18, `600 26px ${TXT}`, SKY, 'left', a); x.restore();
+  const dl = new Date(D.date + 'T12:00').toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' });
+  let fs = 70; x.font = `700 ${fs}px ${NUM}`; while (fs > 46 && x.measureText(dl).width > 640) { fs -= 2; x.font = `700 ${fs}px ${NUM}`; }
+  text(fit(dl, 640, `700 ${fs}px ${NUM}`), 40, 172, `700 ${fs}px ${NUM}`, '#fff', 'left', eo(ph(0.3, 1.1)));
+  const c = cls(D.score);
+  text(DC_SAY[c], 40, 224, `600 36px ${TXT}`, c === 'none' ? SOFT : col[c], 'left', eo(ph(0.8, 1.5)));
+  // Föhn/Bise: Warnstreifen mit pulsierendem Rand
+  if (D.gw) {
+    const u = eo(ph(1.6, 2.2)) * mid, pu = 0.55 + 0.45 * Math.sin(t * 4);
+    if (u > 0) {
+      x.globalAlpha = u; box(40, 252, 640, 60, 14, 'rgba(60,8,8,.72)');
+      x.lineWidth = 3; x.strokeStyle = `rgba(255,${D.gw.lvl === 'danger' ? 70 : 150},70,${(0.5 + 0.5 * pu).toFixed(3)})`; x.stroke(); x.globalAlpha = 1;
+      text(`${D.gw.k === 'foehn' ? 'Föhn' : 'Bise'}: ${D.gw.lvl === 'danger' ? 'Gefahr' : 'Vorsicht'} ab ${D.gw.h} Uhr`, 64, 292, `700 28px ${TXT}`, '#ffd2c4', 'left', u);
+    }
+  }
+  // Mitte: die Uhr läuft, darunter das Band der Stunden (Farbe = bester Score der Gegend zur Stunde)
+  a = eo(ph(2, 2.7)) * mid;
+  if (a > 0) {
+    const hr = Math.floor(hh), mi = Math.floor((hh % 1) * 60 / 15) * 15;
+    text(`${hr}:${String(mi).padStart(2, '0')}`, 40, 1060, `700 120px ${NUM}`, '#fff', 'left', a);
+    const now = D.sites.map(o => ({ o, s: dcScore(o, day, hh) })).filter(p => num(p.s)).sort((p, q) => q.s - p.s)[0];
+    if (now) {
+      text('Jetzt am besten', 300, 990, `500 26px ${TXT}`, '#a9b9ad', 'left', a);
+      text(fit(nmFull(now.o), 380, `700 46px ${NUM}`), 300, 1042, `700 46px ${NUM}`, '#fff', 'left', a);
+      const sv = Math.round(now.s), sc2 = cls(sv); x.font = `700 46px ${NUM}`;
+      text(String(sv), 680, 1042, `700 46px ${NUM}`, col[sc2], 'right', a);
+    }
+    const n = DC_H1 - DC_H0 + 1, bw = 640 / n;
+    for (let i = 0; i < n; i++) {
+      const h = DC_H0 + i, s = Math.max(-1, ...D.sites.map(o => o.days?.[day]?.scores?.[h - S.plan.h0] ?? -1)), on = h <= hh + 0.5;
+      x.globalAlpha = a * (on ? 1 : 0.35); box(40 + i * bw, 1100, bw - 4, 14, 5, s >= 0 ? col[cls(s)] : 'rgba(255,255,255,.2)'); x.globalAlpha = 1;
+      if (i % 2 === 0) text(String(h), 40 + i * bw + (bw - 4) / 2, 1146, `500 21px ${TXT}`, '#a9b9ad', 'center', a);
+    }
+    const px = 40 + (hh - DC_H0 + 0.5) * bw - 2;
+    x.globalAlpha = a; x.beginPath(); x.arc(px, 1107, 11, 0, 7); x.fillStyle = '#fff'; x.fill(); x.globalAlpha = 1;
+  }
+  // Schluss: die drei Besten des Tages
+  a = eo(ph(13.4, 14.1));
+  if (a > 0) {
+    x.fillStyle = `rgba(4,10,14,${(0.5 * a).toFixed(3)})`; x.fillRect(0, 0, W, H);
+    text('Die Besten heute', 40, 420 + (1 - a) * 16, `700 58px ${NUM}`, '#fff', 'left', a);
+    D.top.forEach((r, i) => {
+      const u = eo(ph(13.7 + i * 0.3, 14.4 + i * 0.3)), y = 470 + i * 150, bx = 40 + (1 - u) * 40, k = cls(r.s);
+      if (u <= 0) return;
+      x.globalAlpha = u * 0.88; box(bx, y, 640, 128, 20, 'rgba(8,16,20,.86)'); x.globalAlpha = 1;
+      x.globalAlpha = u; x.beginPath(); x.arc(bx + 66, y + 64, 40, 0, 7); x.fillStyle = col[k]; x.fill(); x.globalAlpha = 1;
+      text(String(r.s), bx + 66, y + 80, `700 44px ${NUM}`, '#0a140e', 'center', u);
+      text(fit(nmFull(r.o), 500, `700 42px ${NUM}`), bx + 128, y + 58, `700 42px ${NUM}`, '#fff', 'left', u);
+      text(`${winText(r.best)} · ${DECISION[k]}`, bx + 128, y + 98, `500 26px ${TXT}`, SOFT, 'left', u);
+    });
+    if (!D.top.length) text('Heute ohne Fenster', 40, 520, `500 32px ${TXT}`, SOFT, 'left', a);
+    const u = eo(ph(15, 15.6));
+    text('Der Entscheid fällt vor Ort', W / 2, 1060, `700 44px ${NUM}`, '#fff', 'center', u);
+    text('Wind, Wolken und Schirme am Start anschauen', W / 2, 1104, `500 24px ${TXT}`, SOFT, 'center', u);
+  }
+  text(`AFC · Prognose von ${whenTxt(S.plan.fetchedAt)}${sc?.dem ? ' · Gelände © swisstopo' : ''}`, W / 2, 1262, `500 18px ${TXT}`, '#8fa095', 'center', 1);
 }
 
 /* ------------------------------------------------------------------ Saison-Rückblick: das Flugjahr als kurzer Film (läuft im Rahmen des Briefings) */
