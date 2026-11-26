@@ -4921,7 +4921,7 @@ const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, 
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* Motion-Grafik (motion.js): Glow-Look in 3D und Ruhig-Modus (weniger Teilchen, kein Schein, langsamer, kein Intro-Flug). */
 const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow3', true) !== false, dark: !!store.get('v3dDunkel', false) };   // dark: Nacht-Look (stark abgedunkelt); sonst hell, nur leicht gedämpft (Lars 2026-11-26: «wirkt wie Nacht»)
-const duskK = () => MO.dark ? 1 : 0.3;   // Glow wie im ersten Video, aber mit erkennbarer Karte (Farben gedämpft statt einfarbig)
+const duskK = () => MO.dark ? 1 : 0.5;   // Glow wie im ersten Video, aber mit erkennbarer Karte (Farben gedämpft statt einfarbig)
 const calmOn = () => MO.calm || noMotion();
 function motionSync() {
   document.documentElement.classList.toggle('ruhig', MO.calm);

@@ -105,12 +105,12 @@
     const spawn = (i, randomAge) => {
       let x, z;
       if (box) { x = (rnd() * 2 - 1) * box[0]; z = (rnd() * 2 - 1) * box[1]; }
-      else for (let k = 0; k < 8; k++) {
+      else for (let k = 0; k < 3; k++) {
         do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
         // 3D: an Luv-Kanten und im Lee dichter, damit Soaring und Wirbel von selbst ins Auge fallen
         if (!f3) break;
         const fx = clamp((x + R) / cell, 0, M - 1.001), fz = clamp((z + R) / cell, 0, M - 1.001), kk = (fz | 0) * M + (fx | 0);
-        if (rnd() < 0.12 + 0.88 * Math.max(F.lee[kk], F.soar[kk])) break;
+        if (rnd() < 0.6 + 0.4 * Math.max(F.lee[kk], F.soar[kk])) break;   // Wind ist überall: nur leicht dichter an Luv und Lee
       }
       X[i] = x; Z[i] = z;
       // 3D: dicht am Boden wie Wasser, ein paar Fäden etwas höher; 2D wie bisher
@@ -141,7 +141,7 @@
       t += dt;
       if (cT < 0 || t - cT > 0.12) { cT = t; curl(); }
       const kmToM = ts / 3.6, mean = F.mean || { u: 1, v: 0, kmh: 1 }, ms = Math.hypot(mean.u, mean.v) || 1, mex = mean.u / ms, mez = -mean.v / ms;
-      const aK = (glow ? (calm ? 0.38 : 0.56) : (calm ? 0.55 : 0.8)) * (1 + 0.7 * sstep(4000, 16000, R));   // grosse Szene: Fäden weiter weg, etwas heller
+      const aK = (glow ? (calm ? 0.5 : 0.78) : (calm ? 0.55 : 0.8)) * (1 + 0.7 * sstep(4000, 16000, R));   // grosse Szene: Fäden weiter weg, etwas heller
       let c = 0;
       for (let i = 0; i < n; i++) {
         AGE[i] += dt;
@@ -175,8 +175,11 @@
         } else {
           X[i] = x + ex * along * kmToM * dt; Z[i] = z + ez * along * kmToM * dt;
         }
+        // Turbulenz: im Rotor und wo sich der Wind am Hang aufstellt, wirbeln die Teilchen wie Staub durcheinander
+        const tq = Math.max(sstep(0.12, 0.6, lee), soar * 0.8);
+        if (tq > 0.05) { const jk = tq * (s0 + 8) * kmToM * dt * 0.9; X[i] += (rnd() - 0.5) * jk; Z[i] += (rnd() - 0.5) * jk; AGL[i] += (rnd() - 0.5) * jk * 0.6; }
         // Höhe über Grund: gehoben am Luv, im Lee runter und im Rotor auf und ab; kehrt langsam zur eigenen Höhe zurück
-        AGL[i] = clamp(agl + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.15 : 0.5)) * dt, 3, A0[i] + 380);
+        AGL[i] = clamp(AGL[i] + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.15 : 0.5)) * dt, 3, A0[i] + 380);
         // Spur merken
         HT[i] += dt;
         if (HN[i] === 0 || HT[i] >= INT) {
@@ -192,10 +195,15 @@
         ramp(glow ? GLOW : DAY, eff, col);
         if (soar > 0.05) { const mm = Math.min(0.9, soar * 1.1); col[0] = mix(col[0], glow ? 0.5 : 0.12, mm); col[1] = mix(col[1], glow ? 1.0 : 0.7, mm); col[2] = mix(col[2], glow ? 0.45 : 0.2, mm); }
         if (lee > 0.06) { const mm = Math.min(0.95, (lee - 0.06) * 2.4); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
-        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl);
+        const dust = sstep(0.25, 0.7, tq);   // 0 = Faden, 1 = Staubkorn
+        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 0.6 * dust);
         if (a < 0.01) continue;
         const o3 = i * 3, f = clamp(HT[i] / INT, 0, 1);
         head[0] = X[i]; head[1] = y; head[2] = Z[i];
+        if (dust > 0.5) {   // Staub: nur ein winziges Korn in Flugrichtung, keine Linie
+          const L3 = Math.max(cf * 0.06, Math.abs(along) * kmToM * INT * 0.12); tail[0] = X[i] - ex * L3; tail[1] = y - (w > 0 ? L3 * 0.3 * ex3 : 0); tail[2] = Z[i] - ez * L3;
+          put(c++, head, tail, col[0], col[1], col[2], a, a * 0.6); continue;
+        }
         if (HN[i] < 3) {   // frisch geboren: kurzer Faden nach hinten, bis die Spur steht
           const L2 = along * kmToM * INT * 1.5; tail[0] = X[i] - ex * L2; tail[1] = y; tail[2] = Z[i] - ez * L2;
           put(c++, head, tail, col[0], col[1], col[2], a * Math.min(1, AGE[i] / (INT * 3)), 0); continue;
