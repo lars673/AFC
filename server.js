@@ -1371,7 +1371,7 @@ function clientErrorRoute(req, res, body) {
 /* ------------------------------------------------------------------ Statische Dateien */
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']], ['/index.html', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']], ['/view3d.js', ['view3d.js', 'text/javascript; charset=utf-8']], ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']], ['/view3d.js', ['view3d.js', 'text/javascript; charset=utf-8']], ['/motion.js', ['motion.js', 'text/javascript; charset=utf-8']], ['/app.css', ['app.css', 'text/css; charset=utf-8']],
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8', true]], ['/sw_7.2.js', ['sw.js', 'text/javascript; charset=utf-8', true]],
   ['/manifest.json', ['manifest.json', 'application/manifest+json; charset=utf-8']],
   ['/seite.css', ['seite.css', 'text/css; charset=utf-8']],

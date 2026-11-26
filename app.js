@@ -414,8 +414,8 @@ function stateBox() {
 function headlineFor(d) {
   const p = S.plan, h = p.headline;
   if (d === h.day) {
-    if (!h.site || !h.win) return { tone: h.tone, title: h.title, text: h.text };       // älterer gespeicherter Stand: nur Text
-    return { tone: h.tone, title: h.title, text: h.text, site: h.site, score: h.score, win: h.win, notes: [h.over ? 'Der Flugtag ist vorbei.' : '', ...(h.why || []), h.region ? 'Regional: ' + h.region : '', h.after || ''].filter(Boolean) };
+    if (!h.site || !h.win) return { tone: h.tone, title: h.title, text: h.text, gw: gwOf(d) };       // älterer gespeicherter Stand: nur Text
+    return { tone: h.tone, title: h.title, text: h.text, site: h.site, score: h.score, win: h.win, gw: gwOf(d), notes: [h.over ? 'Der Flugtag ist vorbei.' : '', ...(h.why || []), h.region ? 'Regional: ' + h.region : '', h.after || ''].filter(Boolean) };
   }
   const t = p.days[d].top;
   if (!t) {
@@ -433,7 +433,7 @@ function headlineFor(d) {
   const notes = [];
   if (dd.regionStatus && dd.regionStatus !== 'ok') notes.push(`Regional: ${({ front: 'Kaltfront', storm: 'Gewitterrisiko', foehn: 'Föhn', bise: 'Bise', valley: 'Talwind', upper: 'starker Höhenwind' })[dd.regionWorst] || 'Lage'} ${dd.regionStatus === 'danger' ? '(K.-o.)' : '(Vorsicht)'}`);
   if (d > 2) { text += ' Je weiter in der Zukunft, desto unsicherer.'; notes.push('Je weiter in der Zukunft, desto unsicherer'); }
-  return { tone, title, text, site: t.siteId, score: sc, win: [t.best.from, t.best.to], notes };
+  return { tone, title, text, site: t.siteId, score: sc, win: [t.best.from, t.best.to], notes, gw: gwOf(d) };
 }
 
 /** Lebendiger Himmel hinter der Tagesaussage: dezent Sonne, ziehende Wolken, Regen. Reine Zierde aus dem Wetterbild des Tages
@@ -484,6 +484,63 @@ function panoHtml(siteId) {
   return (prev ? `<div class="pano-old" aria-hidden="true">${prev.svg}</div>` : '') + svg.replace('class="pano"', 'class="pano pano-in"');
 }
 
+/* ---- Glow-Warnung bei Föhn und Bise: dunkle Karte, in der leuchtende Windstreifen in Windrichtung ziehen (Föhn aus Süden,
+   Bise aus Nordosten), der Rand pulsiert. Fällt auf, ohne zu schreien; im Ruhig-Modus steht das Bild still. */
+function gwOf(d) {
+  const dd = S.plan?.days?.[d];
+  if (!dd || !['warn', 'danger'].includes(dd.regionStatus)) return null;
+  const hours = (S.plan.region?.days?.[d]?.hours || []).filter(h => h.h >= 8 && h.h <= 18);
+  for (const k of ['foehn', 'bise']) {
+    const hit = hours.find(h => h[k] === 'danger') || hours.find(h => h[k] === 'warn' && !h.biseWeak);
+    if (hit) return { k, lvl: hit[k], h: hit.h };
+  }
+  return null;
+}
+function gwHtml(g) {
+  if (!g) return '';
+  const name = g.k === 'foehn' ? 'Föhn' : 'Bise', hint = g.k === 'foehn' ? (g.lvl === 'danger' ? 'starker Südwind, Turbulenz im Lee. Nicht fliegen.' : 'Südwind möglich, Lee-Seiten und Höhe meiden.') : (g.lvl === 'danger' ? 'starke Bise: Lee-Hänge am Thuner- und Brienzersee meiden.' : 'Bise möglich: auf Lee-Turbulenz achten.');
+  return `<div class="gw gw-${g.k} ${g.lvl}" role="note"><canvas class="gw-c" data-k="${g.k}" data-l="${g.lvl}" aria-hidden="true"></canvas><span class="gw-t"><b>${name} ab ${g.h} Uhr</b> ${esc(hint)}</span></div>`;
+}
+const GW = { raf: 0, st: new WeakMap(), last: 0 };
+function gwKick() { if (!GW.raf && document.querySelector('.gw-c')) GW.raf = requestAnimationFrame(gwTick); }
+function gwTick(ts) {
+  GW.raf = 0;
+  const cvs = [...document.querySelectorAll('.gw-c')].filter(c => c.offsetParent);
+  if (!document.querySelector('.gw-c')) return;
+  const still = noMotion(), slow = calmOn();
+  if (ts - GW.last >= 33 && !document.hidden) {
+    const dt = Math.min(0.06, (ts - (GW.last || ts)) / 1000); GW.last = ts;
+    for (const c of cvs) {
+      const w = c.clientWidth, h = c.clientHeight, dpr = Math.min(2, devicePixelRatio || 1);
+      if (!w || !h) continue;
+      let st = GW.st.get(c);
+      if (!st || st.w !== w || st.h !== h) {
+        c.width = w * dpr; c.height = h * dpr;
+        const n = Math.round(w * h / (slow ? 900 : 380)), P = [];
+        for (let i = 0; i < n; i++) P.push({ x: Math.random() * w, y: Math.random() * h, s: 0.6 + Math.random() * 0.9, l: Math.random() });
+        st = { w, h, P, drawn: false }; GW.st.set(c, st);
+      }
+      if (still && st.drawn) continue;
+      const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const foehn = c.dataset.k === 'foehn', danger = c.dataset.l === 'danger';
+      // Föhn strömt nach Norden (oben), Bise nach Südwesten (links unten); leicht schräg, damit es nach Wind aussieht
+      const ang = foehn ? -Math.PI / 2 + 0.25 : Math.PI * 0.78, vx = Math.cos(ang), vy = Math.sin(ang), sp = (danger ? 120 : 80) * (slow ? 0.45 : 1);
+      ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = `rgba(0,0,0,${still ? 0 : 0.82})`; ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+      for (const p of st.P) {
+        const len = (still ? 26 : 14) * p.s, wob = Math.sin(ts / 600 + p.l * 9) * 0.25;
+        const dx = (vx - vy * wob) * len, dy = (vy + vx * wob) * len;
+        const col = danger ? (p.l > 0.5 ? '255,70,200' : '160,90,255') : (p.l > 0.5 ? '120,90,255' : '60,200,255');
+        ctx.strokeStyle = `rgba(${col},${0.35 + 0.4 * p.l})`; ctx.lineWidth = 1.2 + p.s * 0.6;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + dx, p.y + dy); ctx.stroke();
+        if (!still) { p.x += vx * sp * p.s * dt; p.y += vy * sp * p.s * dt; if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) { if (Math.abs(vx) > Math.abs(vy)) { p.x = vx > 0 ? -20 : w + 20; p.y = Math.random() * h; } else { p.y = vy > 0 ? -20 : h + 20; p.x = Math.random() * w; } } }
+      }
+      ctx.globalCompositeOperation = 'source-over'; st.drawn = true;
+    }
+  }
+  GW.raf = requestAnimationFrame(gwTick);
+}
+
 /** Tagesaussage: eine Überschrift, der beste Start als antippbare Zeile, darunter höchstens kurze Stichworte. */
 function headlineHtml(h, conf, sky) {
   const s = h.site ? siteById(h.site) : null, area = s ? S.plan.areas.find(a => a.sites.includes(s.id)) : null;
@@ -492,7 +549,8 @@ function headlineHtml(h, conf, sky) {
   const notes = s ? (keep.length ? `<ul class="hl-notes">${keep.map(n => `<li>${esc(n.charAt(0).toUpperCase() + n.slice(1).replace(/\.$/, ''))}</li>`).join('')}</ul>` : '') : `<p>${esc(h.text)}</p>`;
   const k = typeof sky === 'string' ? sky : sky?.k;
   const top = h.site ? `<div class="hl-hero k-${esc(k || 'few')}">${hlSkyHtml(sky)}${panoHtml(h.site)}<h2>${esc(h.title)}</h2></div>` : `<h2>${esc(h.title)}</h2>`;
-  return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${best}${notes}${confHtml(conf)}${isToday() ? liveAllHtml() : ''}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
+  setTimeout(gwKick, 0);
+  return `<div class="headline ${h.tone}${h.site ? ' has-hero' : ''}">${top}${gwHtml(h.gw)}${best}${notes}${confHtml(conf)}${isToday() ? liveAllHtml() : ''}${h.next > 0 ? `<button type="button" class="btn sec hl-next" data-act="day" data-i="${h.next}">${h.nextScore ? `${h.nextScore >= 80 ? 'Nächster guter Tag' : 'Besser'}: ${esc(dayName(h.next))} <span class="mini-pill s-${cls(h.nextScore)}">${h.nextScore}</span>` : `${esc(dayName(h.next))} ansehen`}</button>` : ''}</div>`;
 }
 
 /** Score-Ring für die besten Gebiete: füllt sich beim Öffnen und Tageswechsel (nur dann, siehe lively). */
@@ -922,8 +980,9 @@ function renderLage() {
     <div class="headline ${p.days[S.day].regionStatus === 'danger' ? 'danger' : p.days[S.day].regionStatus === 'warn' ? 'warn' : 'ok'}">
       <h2>Lage ${isToday() ? 'heute' : dayName(S.day) === 'Morgen' ? 'morgen' : 'am ' + dayName(S.day)}</h2>
       <p>${esc(regionSummary(S.day))}</p>
+      ${gwHtml(gwOf(S.day))}
     </div>
-    <div class="sec-row lage-film"><span class="fine">Sonne, Wolken, Wind und Thermik im Gelände, Stunde für Stunde.</span><button type="button" class="btn sec brief-btn" data-act="region3d">${PLAY_SVG} Tagesfilm in 3D</button></div>
+    ${(setTimeout(gwKick, 0), '')}<div class="sec-row lage-film"><span class="fine">Sonne, Wolken, Wind und Thermik im Gelände, Stunde für Stunde.</span><button type="button" class="btn sec brief-btn" data-act="region3d">${PLAY_SVG} Tagesfilm in 3D</button></div>
     ${lcHtml(day?.hours || [], nowH)}
     ${short.length > 4 ? table(short.filter(r => !r[3])) : ''}
     ${quiet.length ? `<p class="fine lage-quiet">Unauffällig: ${esc(quiet.join(', '))}.</p>` : ''}
@@ -1281,7 +1340,9 @@ function renderProfile() {
     <div class="panel"><h3>AFC und Updates</h3><div id="statusPanel">${statusHtml()}</div></div>
     <div class="panel"><h3>Darstellung</h3>
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel'], ['sun', 'Sonne']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div>
-      <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p></div>
+      <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p>
+      <div class="seg" role="group" aria-label="Bewegung" style="margin-top:10px">${[['full', 'Volle Bewegung'], ['calm', 'Ruhig']].map(([k, n]) => `<button type="button" data-act="motion" data-v="${k}" aria-pressed="${(k === 'calm') === MO.calm}">${n}</button>`).join('')}</div>
+      <p class="fine">«Ruhig»: weniger leuchtende Teilchen in 3D, kein Schein, langsamer und ohne Anflug ins Tal beim Öffnen. Die Daten bleiben gleich.</p></div>
     <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button>${ME.user ? '<button class="btn sec" type="button" data-act="feedback">Rückmeldung an Lars</button>' : ''}</div></div>
     ${accountPanel()}
     <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
@@ -4164,6 +4225,8 @@ document.addEventListener('click', async e => {
     case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
+    case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
+    case 'v3dcalm': case 'motion': MO.calm = a === 'motion' ? b.dataset.v === 'calm' : !MO.calm; store.set('ruhig', MO.calm); $$('[data-act="v3dcalm"]').forEach(x => x.setAttribute('aria-pressed', String(MO.calm))); motionSync(); if (a === 'motion') render(); break;
     case 'v3dtog': {
       const k = ['wind', 'clouds'].includes(b.dataset.v) ? b.dataset.v : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k]));
       if (k === 'wind') v3dWind(V3.d); else if (k === 'clouds') { store.set('v3dClouds', V3.clouds); if (V3.scene) { V3.scene.cloudsOn = V3.clouds; V3.scene.invalidate(); } } else v3dCables();
@@ -4339,13 +4402,24 @@ document.addEventListener('input', e => {
   if (e.target.closest?.('#profForm')) profHint();
   if (e.target.id === 'v3dHour') {
     const v = Number(e.target.value);
-    if (V3.playing) { V3.t = v; v3dPlay(false); } else { V3.hour = V3.t = Math.round(v); $('#v3dHourT').textContent = `${V3.hour} Uhr`; v3dApply(); }
+    if (V3.playing) { V3.t = v; v3dPlay(false); } else v3dScrub(v);
   }
   if (e.target.id === 'duelScrub') { duelPlay(false); duelShow(Number(e.target.value)); }
   if (e.target.id === 'v3dScrub' && V3.fl) { const F = V3.fl; F.drag = true; F.now = F.tA + Number(e.target.value) / 1000 * (F.tB - F.tA); v3dFlightPose(); V3.scene?.invalidate(); }
   if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
+// Scroll = Zeit: Mausrad oder Wischen (hoch/runter) über der Zeitleiste gleitet durch den Tag
+document.addEventListener('wheel', e => {
+  if (!e.target.closest?.('#v3dBar .v3d-time') || !$('#v3dHour') || V3.fl) return;
+  e.preventDefault(); if (V3.playing) v3dPlay(false);
+  v3dScrub(V3.t + (Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX) * 0.004);
+}, { passive: false });
+{ let sw = null;
+  document.addEventListener('touchstart', e => { const t = e.target.closest?.('#v3dBar .v3d-time'); sw = t && !e.target.closest('input') && $('#v3dHour') && !V3.fl ? { y: e.touches[0].clientY, x: e.touches[0].clientX, t: V3.t } : null; }, { passive: true });
+  document.addEventListener('touchmove', e => { if (!sw) return; const dy = sw.y - e.touches[0].clientY, dx = e.touches[0].clientX - sw.x; if (V3.playing) v3dPlay(false); v3dScrub(sw.t + (Math.abs(dy) > Math.abs(dx) ? dy : dx) / 28); }, { passive: true });
+  document.addEventListener('touchend', () => { sw = null; }, { passive: true });
+}
 $('#v3dDlg')?.addEventListener('close', () => { v3dEnd(); mapTilt(false); miniWake(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) miniWake(); });
 $('#siteDlg')?.addEventListener('close', () => { miniEnd(); flowEnd(); $('#siteDlg').classList.remove('flow'); if (FLOW.back) { FLOW.back.cancel(); FLOW.back = null; } });
@@ -4764,6 +4838,16 @@ function noflyForm(siteId) {
 /* ------------------------------------------------------------------ 3D-Ansicht (view3d.js): Startplatz im Gelände und Flug-Replay */
 const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, clouds: store.get('v3dClouds', true), tour: true, reg: null, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+/* Motion-Grafik (motion.js): Glow-Look in 3D und Ruhig-Modus (weniger Teilchen, kein Schein, langsamer, kein Intro-Flug). */
+const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow', true) !== false };
+const calmOn = () => MO.calm || noMotion();
+function motionSync() {
+  document.documentElement.classList.toggle('ruhig', MO.calm);
+  const sc = V3.scene; if (!sc) return;
+  sc.glow = MO.glow ? 1 : 0; sc.calm = calmOn();
+  for (const sim of [V3.wsim, V3.tsim]) if (sim) { sim.glow = MO.glow; sim.calm = calmOn(); }
+  sc.invalidate();
+}
 const V3_LAYERS = {
   thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Schläuche: die stärksten Stellen, vom Wind geneigt, bis zur Obergrenze oder (weisser Ring) zur Wolkenbasis.'],
   soar: ['Soaring', 'Soaring: wo der Wind frontal auf einen steilen Hang trifft.'],
@@ -4796,7 +4880,7 @@ function v3dEnd() {
   V3.tok++;
   if (typeof briefStop === 'function') briefStop();
   V3.scene?.destroy();
-  Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null, reg: null, tilt: false, flat: null });
+  Object.assign(V3, { scene: null, mode: null, playing: false, fl: null, volte: null, obst: null, d: null, hr: null, home: null, reg: null, tilt: false, flat: null, wsim: null, tsim: null });
 }
 function v3dFail(msg) { const el = $('#v3dLoad'); if (el) { el.hidden = false; el.innerHTML = `<span>${esc(msg)}</span>`; } }
 /** Offene Höhenkacheln (Terrain Tiles, Mapzen/AWS Open Data): rund 30 m Auflösung statt 250 m. */
@@ -4816,6 +4900,7 @@ function cloudsFor(d, lat, lon, base) {
 function v3dScene(g, area) {
   const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
+  sc.glow = sc._glow = MO.glow ? 1 : 0; sc.calm = calmOn();
   sc.setArea(area);
   sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen dreht, zwei Finger zoomen und verschieben. Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
   sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.heading).toFixed(1)}deg)`; };
@@ -4893,8 +4978,8 @@ async function miniMount(hr = null) {
 
 /* ---- Startplatz in 3D */
 function v3dSiteBar() {
-  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : ''}</div>
-    <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="1" value="${V3.hour}" aria-label="Uhrzeit in der 3D-Ansicht"></div>
+  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${v3dChip('v3dglow', '', 'Glow', MO.glow)}${v3dChip('v3dcalm', '', 'Ruhig', MO.calm)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : ''}</div>
+    <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit in der 3D-Ansicht"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
 async function open3dSite(id) {
@@ -4991,7 +5076,8 @@ function thermalSpots(sc, d) {
 function v3dThermals(d) {
   const sc = V3.scene;
   if (!sc) return;
-  if (!d || V3.layer !== 'thermal') { sc.setTris('therm', null); sc.setLines('thermL', null); sc.setLines('thermC', null); V3.thN = null; return; }
+  if (!d || V3.layer !== 'thermal') { sc.setTris('therm', null); sc.setLines('thermL', null); sc.setLines('thermC', null); sc.setStreaks('therm', null); V3.tsim = null; V3.thN = null; return; }
+  const glowSpots = [];
   const spots = thermalSpots(sc, d), base = sc.clouds?.deck ? sc.clouds.base : null;
   const tris = [], lines = [], caps = [], col = [1, 0.66, 0.2];
   for (const [i, p] of spots.entries()) {
@@ -5001,6 +5087,8 @@ function v3dThermals(d) {
     const lean = Math.min(H * 0.7, kmh / 3.6 / Math.max(1.2, p.wstar || 1.5) * H * 0.55), lx = kmh > 0.5 ? w[0] / kmh * lean : 0, lz = kmh > 0.5 ? -w[1] / kmh * lean : 0;
     const r0 = Math.max(40, Math.min(300, sc.R * 0.011)) * (0.7 + 0.6 * p.v), r1 = r0 * 1.9;
     const A = sc.toLocal(p.lat, p.lon, g0), B = [A[0] + lx, top * sc.ex, A[2] + lz], a = 0.14 + 0.22 * p.v, n = 16;
+    glowSpots.push({ A, lean: [lx, lz], H, climb: p.wstar || 1.5, v: p.v });
+    if (window.AFCMotion) { const cp = []; for (let k = 0; k <= 20; k++) { const [la, lo] = sc.toGeo(B[0] + Math.cos(k / 20 * 2 * Math.PI) * r1, B[2] + Math.sin(k / 20 * 2 * Math.PI) * r1); cp.push([la, lo, top]); } caps.push({ pts: cp, color: capped ? [1, 1, 1, 0.9] : [1, 0.74, 0.3, 0.55], width: 1.8 }); continue; }
     const ring = (C, r, k) => [C[0] + Math.cos(k / n * 2 * Math.PI) * r, C[1], C[2] + Math.sin(k / n * 2 * Math.PI) * r];
     for (let k = 0; k < n; k++) {
       const a0 = ring(A, r0, k), a1 = ring(A, r0, k + 1), b0 = ring(B, r1, k), b1 = ring(B, r1, k + 1);
@@ -5022,6 +5110,13 @@ function v3dThermals(d) {
     caps.push({ pts: cp, color: capped ? [1, 1, 1, 0.9] : [1, 0.74, 0.3, 0.75], width: 2.2 });
   }
   V3.thN = spots.length;
+  if (window.AFCMotion) {
+    // Thermik als Glow-Säule: Teilchen kreisen nach oben, je stärker, desto heller und schneller
+    V3.tsim = glowSpots.length ? AFCMotion.thermals(sc, glowSpots, { n: motionBudget(0.55), calm: calmOn(), glow: MO.glow }) : null;
+    sc.setStreaks('therm', V3.tsim);
+    sc.setTris('therm', null); sc.setLines('thermL', null); sc.setLines('thermC', caps, { bias: 0.001 });
+    return;
+  }
   sc.setTris('therm', tris);
   sc.setLines('thermL', lines, { flow: 520, alpha: 1, bias: 0.001 });
   sc.setLines('thermC', caps, { bias: 0.001 });
@@ -5045,10 +5140,20 @@ function windLines3d(sc, d) {
   }
   return lines;
 }
+/** Wind für die Teilchen: Bodenwind dem Gelände entlang und Höhenwind (ca. 2000 m) an einem Punkt, in km/h. */
+const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
+/** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
+const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
+const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 7000 : 11000) * k);
+/** Wind in 3D als leuchtender Partikelstrom (motion.js): Tempo und Farbe aus dem Modell, Lee-Wirbel hinter den Graten. */
 function v3dWind(d) {
   const sc = V3.scene;
   if (!sc) return;
-  sc.setLines('wind', V3.wind && d ? windLines3d(sc, d) : null, { flow: Math.max(2400, sc.R * 0.42), alpha: 0.95, bias: 0.001 });
+  sc.setLines('wind', null);
+  if (!V3.wind || !d || !window.AFCMotion) { sc.setStreaks('wind', null); V3.wsim = null; return; }
+  if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
+  V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: motionBudget(), calm: calmOn(), glow: MO.glow });
+  sc.setStreaks('wind', V3.wsim);
 }
 /** Kabel, Seilbahnen und hohe Hindernisse des BAZL im Ausschnitt. */
 async function v3dCables() {
@@ -5166,12 +5271,33 @@ function v3dSiteFrame(ts, dt) {
   }
   return busy;
 }
+/** Zeitregler stufenlos (Scroll = Zeit): Sonne, Schatten und Windströmung gleiten zwischen den Stunden, Thermik und Wolken je volle Stunde. */
+function v3dScrub(t) {
+  const sc = V3.scene;
+  if (!sc || (V3.mode !== 'site' && V3.mode !== 'region')) return;
+  V3.t = Math.min(20, Math.max(6, t));
+  const sl = $('#v3dHour'); if (sl && Math.abs(Number(sl.value) - V3.t) > 0.01) sl.value = V3.t;
+  $('#v3dHourT').textContent = filmClock(V3.t) + ' Uhr';
+  const date = S.plan?.dates?.[S.day], fr = FILM.frames && FILM.date === date ? FILM.frames : null;
+  if (!fr) { if (!V3.filmReq && date) V3.filmReq = filmLoad().catch(() => {}).finally(() => { V3.filmReq = null; }); }
+  else {
+    const h = Math.min(19, Math.floor(V3.t)), f = V3.t - h, a = fr[h - FILM.H0], b = fr[h + 1 - FILM.H0];
+    if (a && b) {
+      sc.setSun({ elev: a.sunPos.elev + (b.sunPos.elev - a.sunPos.elev) * f, az: lerpDeg(a.sunPos.az, b.sunPos.az, f) });
+      const now = performance.now();
+      if (V3.wsim && now - (V3.wT || 0) > 110) { V3.wT = now; V3.wsim.setField(windSamplerMix(a, b, f)); }
+    }
+  }
+  const hh = Math.round(V3.t);
+  if (hh !== V3.hour) { V3.hour = hh; clearTimeout(V3.scrubT); V3.scrubT = setTimeout(v3dApply, 90); }
+  sc.invalidate();
+}
 async function v3dPlay(on) {
   const sc = V3.scene, btn = $('#v3dPlay'), sl = $('#v3dHour');
   if (!sc || (V3.mode !== 'site' && V3.mode !== 'region') || !btn) return;
   if (!on) {
     V3.playing = false; V3.hour = Math.min(20, Math.max(6, Math.round(V3.t))); V3.t = V3.hour;
-    btn.setAttribute('aria-pressed', 'false'); btn.classList.remove('busy'); sl.step = '1'; sl.value = V3.hour; $('#v3dHourT').textContent = V3.hour + ' Uhr';
+    btn.setAttribute('aria-pressed', 'false'); btn.classList.remove('busy'); sl.step = 'any'; sl.value = V3.hour; $('#v3dHourT').textContent = V3.hour + ' Uhr';
     return v3dApply();
   }
   const tok = V3.tok;
@@ -5193,8 +5319,8 @@ async function v3dPlay(on) {
 
 /* ---- Tagesfilm in 3D: Überflug über die Region; Sonne und Schatten, Wolken, Wind und Thermik laufen durch den Tag */
 function v3dRegionBar() {
-  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${v3dChip('v3dtour', '', 'Überflug', V3.tour)}</div>
-    <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="1" value="${V3.hour}" aria-label="Uhrzeit im Tagesfilm"></div>
+  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${v3dChip('v3dtour', '', 'Überflug', V3.tour)}${v3dChip('v3dglow', '', 'Glow', MO.glow)}${v3dChip('v3dcalm', '', 'Ruhig', MO.calm)}</div>
+    <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit im Tagesfilm"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
 async function open3dRegion() {
@@ -6371,7 +6497,47 @@ function opener() {
   const day = todayKey(), seen = store.get('openDay') === day;
   store.set('openDay', day);
   const out = wait => { openerUntil = performance.now() + wait + 600; setTimeout(() => { o.classList.add('op-out'); setTimeout(() => o.remove(), 650); }, wait); };
-  if (seen || noMotion()) out(0); else out(Math.max(0, 2700 - performance.now()));
+  if (seen || noMotion()) out(0); else { out(Math.max(0, 2700 - performance.now())); INTRO3D.want = true; }
+}
+/* ---- Anflug ins Tal (Motion): beim ersten Öffnen des Tages fliegt die Kamera nach dem Auftakt in gut zwei Sekunden
+   aus der Höhe zum besten Startplatz, der Wind zieht als leuchtender Strom mit, dann landet der Blick auf der Tagesaussage.
+   Antippen überspringt. Nicht im Ruhig-Modus und nur, wenn Gelände und Prognose schnell genug da sind. */
+const INTRO3D = { want: false, done: false };
+async function introFlight() {
+  if (!INTRO3D.want || INTRO3D.done || calmOn() || !window.AFC3D?.supported() || !window.AFCMotion) return;
+  INTRO3D.done = true;
+  const t0 = performance.now();
+  while (!S.plan && performance.now() - t0 < 4000) await new Promise(r => setTimeout(r, 120));
+  const top = S.plan?.days?.[S.day]?.top, s = top && siteById(top.siteId);
+  if (!s || document.hidden || $('#msgDlg')?.open || $('#siteDlg')?.open || S.tab !== 'decide') return;
+  let g = null, d = null;
+  try { g = await Promise.race([thermalGrid(), new Promise(r => setTimeout(() => r(null), 2500))]); } catch { g = null; }
+  if (!g) return;
+  try { d = await Promise.race([thermalData(filmIso(S.plan.dates[S.day], Math.min(17, Math.max(10, top.best.from || 12)))), new Promise(r => setTimeout(() => r(null), 900))]); } catch { d = null; }
+  if ($('#msgDlg')?.open || $('#siteDlg')?.open) return;
+  const host = document.createElement('div'); host.className = 'intro3d'; host.setAttribute('aria-hidden', 'true');
+  host.innerHTML = '<div class="intro3d-stage"></div><p class="intro3d-t"><small>Bester Start</small><b></b></p>';
+  host.querySelector('b').textContent = nm(s) + (num(top.best.score) ? ' · ' + top.best.score : '');
+  document.body.appendChild(host);
+  let sc;
+  try {
+    const R = 9000;
+    sc = new AFC3D.Scene(host.firstChild, g, { interactive: false });
+    sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = 1;
+    sc.setArea({ lat: s.lat, lon: s.lon, radius: R, n: 121 });
+    if (d?.sunPos) sc.setSun(d.sunPos);
+    if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: motionBudget(0.35), glow: true }));
+    const face = num(s.aspects?.[0]) ? s.aspects[0] : 180, az = (face + 162) % 360, alt = sc.ground(s.lat, s.lon);
+    sc.flyTo({ lat: s.lat, lon: s.lon, alt, az: az - 120, el: 72, dist: R * 3.4 }, 0);
+    sc.setMarkers([{ id: 's', lat: s.lat, lon: s.lon, cls: 'top', html: `<span class="v3d-pin s-${cls(top.best.score)}">${num(top.best.score) ? top.best.score : ''}</span>` }]);
+    requestAnimationFrame(() => host.classList.add('on'));
+    sc.flyTo({ lat: s.lat, lon: s.lon, alt: alt - 150, az, el: 24, dist: R * 0.95 }, 2300);
+  } catch { host.remove(); return; }
+  let gone = false;
+  const end = () => { if (gone) return; gone = true; host.classList.add('out'); setTimeout(() => { sc?.destroy(); host.remove(); }, 520); };
+  host.addEventListener('pointerdown', end, { once: true });
+  setTimeout(() => host.classList.add('label'), 1500);
+  setTimeout(end, 3100);
 }
 
 (async function init() {
@@ -6393,10 +6559,12 @@ function opener() {
   { const t = store.get('thermal'); T.modes = new Set((Array.isArray(t) ? t : t === true ? ['thermal'] : [t]).filter(x => T_MODES.includes(x))); }
   render();
   loadPlan();
+  document.documentElement.classList.toggle('ruhig', MO.calm);
+  if (INTRO3D.want) setTimeout(introFlight, Math.max(0, openerUntil - performance.now() - 450));
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   myLoad(); useInit();
-  if ((store.get('intro') ?? 0) < INTRO_VER) setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150));
+  if ((store.get('intro') ?? 0) < INTRO_VER) { INTRO3D.want = false; setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150)); }
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
   if ('serviceWorker' in navigator) {

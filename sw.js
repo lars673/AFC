@@ -3,7 +3,7 @@
 // - /api/ wird nie zwischengespeichert; die App hält den letzten Plan selbst vor und kennzeichnet ihn als alt.
 // - Leaflet liegt im Projekt (/vendor/leaflet) und gehört zu den App-Dateien.
 const CACHE = 'afc-12.20.1';
-const CORE = ['/', '/app.js', '/view3d.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/pano.json', '/icon-192.png', '/icon-512.png', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css'];
+const CORE = ['/', '/app.js', '/view3d.js', '/motion.js', '/pilot.js', '/route.js', '/airspace.js', '/logbook.js', '/igc.js', '/app.css', '/manifest.json', '/pano.json', '/icon-192.png', '/icon-512.png', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', e => e.waitUntil((async () => {
   const c = await caches.open(CACHE);

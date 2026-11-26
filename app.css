@@ -1529,3 +1529,24 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .use-funnel span { font-size: .78em; opacity: .8; }
 .use-never { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .use-never .chip { opacity: .75; font-size: .82em; padding: 2px 8px; border-radius: 999px; background: var(--line, rgba(127,127,127,.14)); }
+
+/* ---- Motion (13.x Prototyp): Glow-Warnung bei Föhn und Bise, Anflug ins Tal, Ruhig-Modus */
+.gw { position: relative; overflow: hidden; isolation: isolate; border-radius: 12px; margin: 10px 0 12px; padding: 12px 14px; color: #f3eaff; background: linear-gradient(135deg, #0f0830, #1d0f4a 60%, #24104f); border: 1px solid rgba(150, 110, 255, .5); box-shadow: 0 0 0 1px rgba(122, 60, 255, .2), 0 0 22px rgba(122, 60, 255, .32); animation: gwPulse 2.8s ease-in-out infinite; }
+.gw.danger { border-color: rgba(255, 70, 200, .65); box-shadow: 0 0 0 1px rgba(255, 60, 200, .25), 0 0 26px rgba(255, 60, 200, .38); }
+.gw-c { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; opacity: .9; }
+.gw-t { position: relative; display: block; font-size: 15px; line-height: 1.35; text-shadow: 0 1px 6px rgba(10, 4, 36, .9); }
+.gw-t b { display: block; font: 700 18px/1.15 var(--f-num); letter-spacing: .01em; margin-bottom: 2px; color: #fff; }
+@keyframes gwPulse { 50% { box-shadow: 0 0 0 1px rgba(122, 60, 255, .35), 0 0 34px rgba(122, 60, 255, .55); } }
+.gw.danger { animation-name: gwPulseD; }
+@keyframes gwPulseD { 50% { box-shadow: 0 0 0 1px rgba(255, 60, 200, .4), 0 0 38px rgba(255, 60, 200, .6); } }
+.ruhig .gw, .ruhig .gw.danger { animation: none; }
+@media (prefers-reduced-motion: reduce) { .gw, .gw.danger { animation: none; } }
+.intro3d { position: fixed; inset: 0; z-index: 9990; background: #07041a; opacity: 0; transition: opacity .45s var(--ease); }
+.intro3d.on { opacity: 1; }
+.intro3d.out { opacity: 0; pointer-events: none; transition-duration: .5s; }
+.intro3d-stage { position: absolute; inset: 0; }
+.intro3d-stage .v3d-c { width: 100%; height: 100%; display: block; }
+.intro3d-t { position: absolute; left: 0; right: 0; bottom: calc(14vh + env(safe-area-inset-bottom)); text-align: center; color: #fff; opacity: 0; transform: translateY(10px); transition: opacity .5s var(--ease), transform .5s var(--ease); text-shadow: 0 2px 14px rgba(10, 4, 36, .9); pointer-events: none; }
+.intro3d.label .intro3d-t { opacity: 1; transform: none; }
+.intro3d-t small { display: block; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #9fe9ff; }
+.intro3d-t b { font: 700 26px/1.1 var(--f-num); }

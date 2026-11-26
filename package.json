@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/budget.test.js test/scoring.test.js test/logbook.test.js test/igc.test.js test/obstacles.test.js test/updater.test.js test/webpush.test.js test/notify.test.js test/watch.test.js test/learn.test.js test/backfill.test.js test/server.test.js test/accounts.test.js test/community-brief.test.js test/clouds.test.js test/umzug.test.js test/ensemble.test.js test/fog.test.js test/live.test.js test/windnow.test.js test/myafc.test.js test/version.test.js test/genau.test.js test/pano.test.js test/testphase.test.js test/msfc.test.js test/usage.test.js"
+    "test": "node --test test/budget.test.js test/scoring.test.js test/logbook.test.js test/igc.test.js test/obstacles.test.js test/updater.test.js test/webpush.test.js test/notify.test.js test/watch.test.js test/learn.test.js test/backfill.test.js test/server.test.js test/accounts.test.js test/community-brief.test.js test/clouds.test.js test/umzug.test.js test/ensemble.test.js test/fog.test.js test/live.test.js test/windnow.test.js test/myafc.test.js test/version.test.js test/genau.test.js test/pano.test.js test/testphase.test.js test/msfc.test.js test/usage.test.js test/motion.test.js"
   },
   "engines": {
     "node": ">=22.13"

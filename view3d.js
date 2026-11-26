@@ -171,7 +171,7 @@
   const FS_TER = d => (d ? '#extension GL_OES_standard_derivatives : enable\n' : '') + HI + `
     varying vec3 v_pos, v_n; varying vec2 v_uv, v_duv; varying float v_w, v_sh, v_cv;
     uniform vec3 u_sun, u_sunCol, u_amb, u_eye, u_fog; uniform vec2 u_c; uniform vec3 u_f;   // u_f: Radius, Nebel ab, Nebel bis
-    uniform sampler2D u_ov0, u_ov1, u_dr, u_noise, u_cov; uniform float u_ovMix, u_ovA, u_drape, u_ex;
+    uniform sampler2D u_ov0, u_ov1, u_dr, u_noise, u_cov; uniform float u_ovMix, u_ovA, u_drape, u_ex, u_glow;
     uniform vec4 u_cv, u_cl; uniform vec2 u_coff, u_sunH;   // u_cl: Wolken an, Basis, Massstab, Nebel-Obergrenze (Szenenhöhe)
     void main(){
       float r = length(v_pos.xz - u_c), edge = 1. - smoothstep(u_f.x*.94, u_f.x, r);
@@ -201,6 +201,14 @@
       lit = mix(lit, dr.rgb*(1. + v_cv*.16)*(u_amb*1.25*hemi + u_sunCol*(.35 + .65*dif)), u_drape);
       vec4 ov = mix(texture2D(u_ov0, v_uv), texture2D(u_ov1, v_uv), u_ovMix)*u_ovA;
       lit = lit*(1. - ov.a) + ov.rgb*(.72 + .28*dif);
+      if (u_glow > .001) {
+        // Glow-Look: Nacht-Indigo, Helligkeit aus dem Tageslicht, feine Höhenlinien in Cyan (Wind und Thermik leuchten darauf)
+        float lum = dot(lit, vec3(.3, .55, .15));
+        vec3 nt = (vec3(.035, .026, .10) + vec3(.15, .13, .38)*pow(lum, 1.05)*2.1)*(1. + v_cv*.7);
+        ${d ? 'float g5 = h/500., gw = fwidth(g5), g1 = h/100., gw1 = fwidth(g1); nt += vec3(.17, .94, 1.)*((1. - smoothstep(0., 1.4*gw, abs(fract(g5 - .5) - .5)))*.10 + (1. - smoothstep(0., 1.2*gw1, abs(fract(g1 - .5) - .5)))*.035*clamp(1. - gw1*2.5, 0., 1.));' : ''}
+        nt = mix(nt, vec3(.012, .01, .045), smoothstep(.35, .65, v_w));
+        lit = mix(lit, nt, u_glow);
+      }
       float fd = length(v_pos - u_eye);
       lit = mix(lit, u_fog, clamp((fd - u_f.y)/(u_f.z - u_f.y), 0., .6));
       gl_FragColor = vec4(lit, edge);
@@ -227,6 +235,20 @@
       if (u_dash > 0.) a *= step(.45, fract(v_d/u_dash));
       gl_FragColor = vec4(v_col.rgb, a);
     }`;
+  // Leuchtstreifen (Partikel): Kopf und Schwanz je Streifen, vier Ecken; Breite in Bildpunkten. Wind und Thermik als Motion-Grafik.
+  const VS_STR = `attribute vec3 a_h, a_t, a_m; attribute vec4 a_c;
+    uniform mat4 u_mvp; uniform vec2 u_vp; uniform float u_wk; varying vec4 v_c; varying vec2 v_q;
+    void main(){
+      vec4 h = u_mvp*vec4(a_h, 1.), t = u_mvp*vec4(a_t, 1.);
+      if (h.w < 2. || t.w < 2.) { gl_Position = vec4(2., 2., 2., 1.); v_c = vec4(0.); v_q = vec2(1.); return; }
+      vec2 d = (h.xy/h.w - t.xy/t.w)*u_vp; float l = length(d); d = l > 1e-3 ? d/l : vec2(1., 0.);
+      float w = a_m.z*u_wk; vec4 p = a_m.y < .5 ? h : t;
+      p.xy += (vec2(-d.y, d.x)*a_m.x*w + d*(a_m.y < .5 ? w : -w*.5))*2./u_vp*p.w;
+      p.z -= .0008*p.w;
+      v_c = a_c; v_q = vec2(a_m.y, a_m.x); gl_Position = p;
+    }`;
+  const FS_STR = HI + `varying vec4 v_c; varying vec2 v_q; uniform float u_core, u_a; uniform vec3 u_tint;
+    void main(){ float s = abs(v_q.y), a = v_c.a*u_a*pow(1. - v_q.x, 1.5)*(u_core > .5 ? 1. - s*s : (1. - s)*(1. - s)); vec3 c = u_core < -.5 ? u_tint : v_c.rgb; gl_FragColor = vec4(c*a, a); }`;
   const VS_CLD = 'attribute vec3 a_pos; uniform mat4 u_mvp; uniform float u_lift; varying vec3 v_pos; void main(){ v_pos = vec3(a_pos.x, a_pos.y + u_lift, a_pos.z); gl_Position = u_mvp*vec4(v_pos, 1.); }';
   const FS_CLD = HI + `varying vec3 v_pos; uniform sampler2D u_noise, u_cov; uniform vec4 u_cv; uniform vec2 u_off; uniform vec3 u_lit, u_dim;
     uniform float u_k, u_R, u_sc, u_fog, u_a;
@@ -263,7 +285,8 @@
       this.cam = { t: [0, 0, 0], az: 0, el: 32, dist: 6000 };
       this.sun = { az: 180, elev: 45 };
       this.sky = o.sky || { top: [0.36, 0.56, 0.80], bot: [0.80, 0.88, 0.94] };
-      this.lines = new Map(); this.tris = new Map(); this.markers = [];
+      this.lines = new Map(); this.tris = new Map(); this.streaks = new Map(); this.markers = [];
+      this.glow = 0; this._glow = 0; this._sdt = 0;
       this._ov = { mix: 1, t0: 0, ms: 1, on: false }; this._drape = { a: 0, t0: 0, ok: false };
       this._vel = [0, 0]; this.orbit = 0; this.time = 0; this.pov = null;
       const c = this.canvas = document.createElement('canvas');
@@ -306,7 +329,7 @@
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
       this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD) };
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR) };
       this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
@@ -316,6 +339,8 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.generateMipmap(gl.TEXTURE_2D);
       if (this._cl) this._cl.dirty = true;
       for (const m of [this.lines, this.tris]) for (const v of m.values()) v.buf = null;
+      for (const v of this.streaks.values()) v.buf = null;
+      this._strIdx = null;
     }
     /** Alles, was im Speicher der App liegt, (wieder) auf die Grafikkarte laden. */
     _upload() {
@@ -560,6 +585,25 @@
       this.tris.set(key, { data: verts instanceof Float32Array ? verts : new Float32Array(verts), n: verts.length / 7, buf: null, alpha: o.alpha ?? 1 });
       this.invalidate();
     }
+    /**
+     * Leuchtstreifen, die sich selbst bewegen (Wind, Thermik). sim = { max, step(dt, put) -> Anzahl }:
+     * step rückt um dt Sekunden vor (0 = stehen lassen) und schreibt jeden Streifen mit
+     * put(i, kopf[x,y,z], schwanz[x,y,z], r, g, b, a, breitePx) in Szenen-Koordinaten. Höchstens 16 000 je Schlüssel.
+     */
+    setStreaks(key, sim) {
+      const old = this.streaks.get(key); if (old?.buf) this.gl.deleteBuffer(old.buf);
+      if (!sim) { this.streaks.delete(key); return this.invalidate(); }
+      const max = Math.min(16000, sim.max), data = new Float32Array(max * 52);
+      const put = (i, h, t, r, g, b, a, w) => {
+        let o = i * 52;
+        for (let k = 0; k < 4; k++) {
+          data[o] = h[0]; data[o + 1] = h[1]; data[o + 2] = h[2]; data[o + 3] = t[0]; data[o + 4] = t[1]; data[o + 5] = t[2];
+          data[o + 6] = k & 1 ? 1 : -1; data[o + 7] = k < 2 ? 0 : 1; data[o + 8] = w; data[o + 9] = r; data[o + 10] = g; data[o + 11] = b; data[o + 12] = a; o += 13;
+        }
+      };
+      this.streaks.set(key, { sim, max, data, put, buf: null, n: 0, fresh: true });
+      this.invalidate();
+    }
     /** Vorhang von einer Linie in der Luft bis zum Boden (macht die Flughöhe sichtbar). */
     curtain(pts, color, aTop = 0.26, aBot = 0.03) {
       const c = rgba(color), v = [];
@@ -763,6 +807,8 @@
       if (this._cloudStep()) busy = true;
       if (this.onFrame && this.onFrame(ts, dt)) busy = true;
       if (this.flowing) { this.time += dt / 1000; busy = true; }
+      if (Math.abs(this.glow - this._glow) > 0.002) { this._glow += (this.glow - this._glow) * Math.min(1, dt / 260); busy = true; } else this._glow = this.glow;
+      if (this.streaks.size && !this.still) { this._sdt = dt / 1000; busy = true; }
       this._draw();
       if (busy) this.invalidate(); else this._last = 0;
     }
@@ -792,6 +838,8 @@
       const night = [0.07, 0.10, 0.17], bg = this.o.bg;
       const top = bg ? bg.slice() : this.sky.top.map((v, i) => night[i] + (v - night[i]) * day), bot = bg ? bg.slice() : this.sky.bot.map((v, i) => night[i] * 1.6 + (v - night[i] * 1.6) * day);
       if (!bg && e > -4 && e < 12) { const w = 1 - Math.abs(e - 3) / 9; bot[0] += 0.22 * Math.max(0, w); bot[1] += 0.06 * Math.max(0, w); }
+      const gk = this._glow;
+      if (gk > 0) { const gt = [0.03, 0.016, 0.11], gb = [0.09, 0.05, 0.22]; for (let i = 0; i < 3; i++) { top[i] += (gt[i] - top[i]) * gk; bot[i] += (gb[i] - bot[i]) * gk; } }
       // Himmel
       let P = this.P.sky; gl.useProgram(P.p); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.enableVertexAttribArray(P.a.a_p); gl.vertexAttribPointer(P.a.a_p, 2, gl.FLOAT, false, 0, 0);
@@ -826,7 +874,7 @@
       } else gl.uniform4f(P.u.u_cl, 0, 0, 1, 0);
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.X.noise); gl.uniform1i(P.u.u_noise, 3);
       gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.uniform1i(P.u.u_cov, 4);
-      gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
+      gl.uniform1f(P.u.u_glow, gk); gl.uniform1f(P.u.u_ex, this.ex); gl.uniform1f(P.u.u_ovMix, this._ov.mix); gl.uniform1f(P.u.u_ovA, 1); gl.uniform1f(P.u.u_drape, this._drape.a * (this.drapeOn === false ? 0 : 1));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.X.ov0); gl.uniform1i(P.u.u_ov0, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.X.ov1); gl.uniform1i(P.u.u_ov1, 1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.X.dr); gl.uniform1i(P.u.u_dr, 2);
@@ -843,6 +891,7 @@
         const amb = [0.24 + 0.30 * day, 0.27 + 0.30 * day, 0.34 + 0.28 * day], sun = [(0.78 + 0.16 * warm) * day, (0.74 - 0.06 * warm) * day, (0.66 - 0.2 * warm) * day];
         gl.uniform3f(P.u.u_lit, Math.min(1, amb[0] * 0.78 + sun[0] * 0.75), Math.min(1, amb[1] * 0.78 + sun[1] * 0.75), Math.min(1, amb[2] * 0.78 + sun[2] * 0.75));
         gl.uniform3f(P.u.u_dim, amb[0] * 1.02 + 0.06 * day, amb[1] * 1.02 + 0.07 * day, amb[2] * 1.02 + 0.09 * day);
+        if (gk > 0) { gl.uniform3f(P.u.u_lit, 0.42 - 0.1 * gk, 0.40 - 0.08 * gk, 0.62); gl.uniform3f(P.u.u_dim, 0.10, 0.08, 0.24); }
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.enableVertexAttribArray(P.a.a_pos);
         const thick = clamp(this.R * 0.045, 220, 900) * this.ex, fogT = 90 * this.ex;
         const layers = [];
@@ -884,13 +933,51 @@
         }
         for (const k of on) gl.disableVertexAttribArray(A[k]);
       }
+      if (this.streaks.size) this._drawStreaks(mvp);
       gl.depthMask(true);
       this.flowing = flow;
       if (this.lab) this._place();
       this.onDraw?.();
     }
+    /** Leuchtstreifen: vorrücken, hochladen und zweimal zeichnen (weicher Schein, dann heller Kern). Im Glow-Look addiert sich das Licht. */
+    _drawStreaks(mvp) {
+      const gl = this.gl, P = this.P.str, sdt = this._sdt; this._sdt = 0;
+      let need = 0;
+      for (const st of this.streaks.values()) {
+        if (sdt > 0 || st.fresh) { st.n = Math.min(st.max, st.sim.step(st.fresh ? 0 : Math.min(sdt, 0.08), st.put) | 0); st.dirty = true; st.fresh = false; }
+        need = Math.max(need, st.n);
+      }
+      if (!need) return;
+      if (!this._strIdx || this._strIdx.n < need) {
+        const n = Math.max(need, 4096), I = new Uint16Array(n * 6);
+        for (let i = 0; i < n; i++) { const v = i * 4, o = i * 6; I[o] = v; I[o + 1] = v + 1; I[o + 2] = v + 2; I[o + 3] = v + 1; I[o + 4] = v + 3; I[o + 5] = v + 2; }
+        if (this._strIdx) gl.deleteBuffer(this._strIdx.buf);
+        this._strIdx = { n, buf: gl.createBuffer() }; gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this._strIdx.buf); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+      }
+      gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); gl.uniform2f(P.u.u_vp, this.w, this.h);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this._strIdx.buf);
+      const A = P.a, on = ['a_h', 'a_t', 'a_m', 'a_c'].filter(k => A[k] >= 0), gk = this._glow, calm = !!this.calm;
+      for (const k of on) gl.enableVertexAttribArray(A[k]);
+      for (const st of this.streaks.values()) {
+        if (!st.n) continue;
+        if (!st.buf) { st.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); gl.bufferData(gl.ARRAY_BUFFER, st.data, gl.DYNAMIC_DRAW); st.dirty = false; }
+        else { gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); if (st.dirty) { gl.bufferSubData(gl.ARRAY_BUFFER, 0, st.data.subarray(0, st.n * 52)); st.dirty = false; } }
+        gl.vertexAttribPointer(A.a_h, 3, gl.FLOAT, false, 52, 0); gl.vertexAttribPointer(A.a_t, 3, gl.FLOAT, false, 52, 12);
+        gl.vertexAttribPointer(A.a_m, 3, gl.FLOAT, false, 52, 24); gl.vertexAttribPointer(A.a_c, 4, gl.FLOAT, false, 52, 36);
+        // Schein: im Glow-Look farbig und addiert, bei Tag ein dunkler Saum (lesbar auf hellem Gelände)
+        if (!calm) {
+          if (gk > 0.5) { gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_core, 0); gl.uniform1f(P.u.u_a, 0.22 * gk); }
+          else { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, -1); gl.uniform3f(P.u.u_tint, 0.02, 0.03, 0.08); gl.uniform1f(P.u.u_a, 0.32 * (1 - gk)); }
+          gl.uniform1f(P.u.u_wk, 3.4); gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
+        }
+        gl.blendFunc(gl.ONE, gk > 0.5 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, 1); gl.uniform1f(P.u.u_a, gk > 0.5 ? 1 : 0.95); gl.uniform1f(P.u.u_wk, 1);
+        gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
+      }
+      for (const k of on) gl.disableVertexAttribArray(A[k]);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
     /** Sofort zeichnen (für Clips, die das Bild gleich weiterverwenden). */
-    renderNow(dt = 0) { if (this._dead || this._gone) return; this.time += dt; if (this.orbit) this.cam.az += this.orbit * dt; this._ov.mix = 1; if (this._drape.ok) this._drape.a = 1; this._cloudStep(true); this._draw(); }
+    renderNow(dt = 0) { if (this._dead || this._gone) return; this.time += dt; this._sdt = dt; this._glow = this.glow; if (this.orbit) this.cam.az += this.orbit * dt; this._ov.mix = 1; if (this._drape.ok) this._drape.a = 1; this._cloudStep(true); this._draw(); }
 
     destroy() {
       this._dead = true; cancelAnimationFrame(this._raf); this._ro?.disconnect();
