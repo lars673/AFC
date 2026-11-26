@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AFC Motion – Prototyp</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07041a; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; color: #e8f6ff; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+  #hud { pointer-events: none; }
+  .bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom)); display: flex; gap: 8px; z-index: 3; }
+  .bar button { font: 600 13px/1 inherit; color: #dff; background: rgba(20, 12, 60, .62); border: 1px solid rgba(43, 240, 255, .28); border-radius: 999px; padding: 10px 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .bar button.on { background: rgba(43, 240, 255, .22); border-color: rgba(43, 240, 255, .8); color: #fff; }
+  body.film .bar { display: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="hud"></canvas>
+<div class="bar">
+  <button id="bWind" class="on">Wind</button>
+  <button id="bTherm" class="on">Thermik</button>
+  <button id="bBise">Bise-Bispil</button>
+  <button id="bCalm">Ruhig</button>
+</div>
+<script>
+// AFC Motion-Prototyp: Wind als leuchtender Partikelstrom über dem Gelände, Thermik als aufsteigende Glow-Säulen.
+// Reines WebGL2 ohne Zusatzpakete (wie view3d.js), damit es später in die 3D-Ansicht passt.
+// Daten: /api/thermal (Wind Boden / 2000 m / 3000 m und Thermikstärke je Rasterpunkt). Ohne Server: zwei Bispiel-Lagen.
+// ?film=1 spielt die Vorführung ab (für das Vorschau-Video), ?calm=1 startet im Ruhig-Modus.
+(() => {
+'use strict';
+const Q = new URLSearchParams(location.search);
+const FILM = Q.has('film');
+if (FILM) document.body.classList.add('film');
+const D2R = Math.PI / 180;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const mix = (a, b, t) => a + (b - a) * t;
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+/* ---------- Ort: Bödeli (Interlaken) als Mitte, Koordinaten in km (x Ost, y Nord), Höhe in km */
+const LAT0 = 46.686, LON0 = 7.863, KX = 111.32 * Math.cos(LAT0 * D2R), KY = 111.32;
+const toXY = (lat, lon) => [(lon - LON0) * KX, (lat - LAT0) * KY];
+const toLL = (x, y) => [LAT0 + y / KY, LON0 + x / KX];
+const EX = 1.45;                       // Überhöhung des Geländes
+const W = 17, H = 12.5;                // halbe Breite / Höhe des Ausschnitts in km
+
+/* ---------- Kleines Rauschen (für Lee-Wirbel und Unruhe) */
+const PERM = new Uint8Array(512); { const p = [...Array(256).keys()]; let s = 7; for (let i = 255; i > 0; i--) { s = (s * 16807) % 2147483647; const j = s % (i + 1); [p[i], p[j]] = [p[j], p[i]]; } for (let i = 0; i < 512; i++) PERM[i] = p[i & 255]; }
+const G3 = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+function noise3(x, y, z) {
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+  x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+  const u = x * x * (3 - 2 * x), v = y * y * (3 - 2 * y), w = z * z * (3 - 2 * z);
+  const g = (i, j, k, dx, dy, dz) => { const h = G3[PERM[i + PERM[j + PERM[k]]] % 12]; return h[0] * dx + h[1] * dy + h[2] * dz; };
+  const a = mix(g(X, Y, Z, x, y, z), g(X + 1, Y, Z, x - 1, y, z), u), b = mix(g(X, Y + 1, Z, x, y - 1, z), g(X + 1, Y + 1, Z, x - 1, y - 1, z), u);
+  const c = mix(g(X, Y, Z + 1, x, y, z - 1), g(X + 1, Y, Z + 1, x - 1, y, z - 1), u), d = mix(g(X, Y + 1, Z + 1, x, y - 1, z - 1), g(X + 1, Y + 1, Z + 1, x - 1, y - 1, z - 1), u);
+  return mix(mix(a, b, v), mix(c, d, v), w);
+}
+let seed = 12345; const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+/* ---------- Gelände */
+let T = null;   // { nx, ny, x0, y0, dx, dy, h: Float32Array (km), lake: Uint8Array }
+function readGrid(buf) {
+  const dv = new DataView(buf), hl = dv.getUint32(0, true);
+  const g = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  const o = 4 + hl + ((4 + hl) % 2), N = g.ny * g.nx, elev = new Uint16Array(N);
+  for (let i = 0; i < N; i++) elev[i] = dv.getUint16(o + 2 * i, true);
+  return { ...g, elev };
+}
+function buildTerrain(g) {
+  const c0 = Math.floor((LON0 - W / KX - g.lo0) / g.dlo), c1 = Math.ceil((LON0 + W / KX - g.lo0) / g.dlo);
+  const r0 = Math.floor((LAT0 - H / KY - g.la0) / g.dla), r1 = Math.ceil((LAT0 + H / KY - g.la0) / g.dla);
+  const nx = c1 - c0 + 1, ny = r1 - r0 + 1, h = new Float32Array(nx * ny), raw = new Uint16Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const e = g.elev[(r0 + j) * g.nx + (c0 + i)]; raw[j * nx + i] = e; h[j * nx + i] = e / 1000; }
+  const lake = new Uint8Array(nx * ny);
+  for (let j = 1; j < ny - 1; j++) for (let i = 1; i < nx - 1; i++) {
+    const k = j * nx + i, e = raw[k]; let ok = e < 600;
+    for (let dj = -1; dj <= 1 && ok; dj++) for (let di = -1; di <= 1; di++) if (raw[k + dj * nx + di] !== e) { ok = false; break; }
+    if (ok) for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) lake[k + dj * nx + di] = 1;
+  }
+  const [x0, y0] = toXY(g.la0 + r0 * g.dla, g.lo0 + c0 * g.dlo);
+  return { nx, ny, x0, y0, dx: g.dlo * KX, dy: g.dla * KY, h, lake };
+}
+function fakeGrid() {   // nur falls die Höhendaten fehlen: weiche Berge
+  const nx = 140, ny = 104, h = new Float32Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) h[j * nx + i] = 0.6 + Math.max(0, 1.4 * noise3(i * 0.05, j * 0.05, 1) + 0.5);
+  return { nx, ny, x0: -W, y0: -H, dx: 2 * W / (nx - 1), dy: 2 * H / (ny - 1), h, lake: new Uint8Array(nx * ny) };
+}
+function hAt(x, y) {
+  const fx = clamp((x - T.x0) / T.dx, 0, T.nx - 1.001), fy = clamp((y - T.y0) / T.dy, 0, T.ny - 1.001), i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, k = j * T.nx + i, e = T.h;
+  return (e[k] * (1 - tx) + e[k + 1] * tx) * (1 - ty) + (e[k + T.nx] * (1 - tx) + e[k + T.nx + 1] * tx) * ty;
+}
+
+/* ---------- Wetterlagen: Format wie /api/thermal (u/v in km/h, wohin die Luft strömt) */
+const WG = { la0: 46.22, lo0: 6.98, dla: 0.08, dlo: 0.11, ny: 10, nx: 15 };
+function demoLage(kind) {
+  const N = WG.nx * WG.ny, lv = { '10m': { u: [], v: [] }, '800': { u: [], v: [] }, '700': { u: [], v: [] } }, wstar = [], top = [];
+  const set = (L, i, fromDeg, kmh) => { const to = (fromDeg + 180) * D2R; lv[L].u[i] = Math.sin(to) * kmh; lv[L].v[i] = Math.cos(to) * kmh; };
+  for (let i = 0; i < N; i++) {
+    const x = i % WG.nx, y = (i - x) / WG.nx, n = noise3(x * 0.4, y * 0.4, kind === 'bise' ? 9 : 3);
+    if (kind === 'bise') { set('10m', i, 55 + n * 20, 24 + n * 8); set('800', i, 50 + n * 12, 38 + n * 7); set('700', i, 75 + n * 15, 18 + n * 5); wstar.push(0.6 + n * 0.3); top.push(1700); }
+    else { set('10m', i, 250 + n * 40, 7 + n * 4); set('800', i, 228 + n * 14, 17 + n * 5); set('700', i, 240 + n * 12, 25 + n * 6); wstar.push(2.0 + n * 0.8); top.push(2650 + n * 250); }
+  }
+  return { kind, grid: WG, wind: lv, wstar, top, demo: true };
+}
+
+/* Abgeleitete Felder je Lage: Wind je Rasterpunkt (Boden / frei), Lee-Stärke und Exposition je Geländezelle */
+const FX = { nx: 0, ny: 0 };     // Feldraster (500 m)
+function prepLage(L) {
+  const g = L.grid, uv = lv => ({ u: Float32Array.from(L.wind[lv].u), v: Float32Array.from(L.wind[lv].v) });
+  const P = { L, g, w10: uv('10m'), w8: uv('800'), w7: uv('700') };
+  // mittlerer Wind auf 2000 m über dem Ausschnitt -> Richtung für Lee
+  let su = 0, sv = 0, n = 0;
+  for (let y = 0; y < g.ny; y++) for (let x = 0; x < g.nx; x++) { const [px, py] = toXY(g.la0 + y * g.dla, g.lo0 + x * g.dlo); if (Math.abs(px) < W + 5 && Math.abs(py) < H + 5) { su += P.w8.u[y * g.nx + x]; sv += P.w8.v[y * g.nx + x]; n++; } }
+  su /= n || 1; sv /= n || 1;
+  const sp = Math.hypot(su, sv) || 1; P.mean = { u: su, v: sv, kmh: sp, from: (Math.atan2(-su, -sv) / D2R + 360) % 360 };
+  const ex = su / sp, ey = sv / sp, cell = 0.5, nx = Math.ceil(2 * W / cell) + 1, ny = Math.ceil(2 * H / cell) + 1;
+  FX.nx = nx; FX.ny = ny; FX.cell = cell;
+  P.lee = new Float32Array(nx * ny); P.expo = new Float32Array(nx * ny); P.gx = new Float32Array(nx * ny); P.gy = new Float32Array(nx * ny);
+  const strong = sstep(8, 35, sp);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const x = -W + i * cell, y = -H + j * cell, h0 = hAt(x, y), k = j * nx + i;
+    let rise = 0; for (let d = 0.4; d <= 3; d += 0.3) rise = Math.max(rise, hAt(x - ex * d, y - ey * d) - h0);
+    P.lee[k] = sstep(0.12, 0.75, rise) * (0.25 + 0.75 * strong);
+    let avg = 0, c = 0; for (let a = 0; a < 8; a++) { avg += hAt(x + Math.cos(a * Math.PI / 4) * 2, y + Math.sin(a * Math.PI / 4) * 2); c++; }
+    P.expo[k] = sstep(0, 0.45, h0 - avg / c);
+    P.gx[k] = (hAt(x + 0.25, y) - hAt(x - 0.25, y)) / 0.5; P.gy[k] = (hAt(x, y + 0.25) - hAt(x, y - 0.25)) / 0.5;
+  }
+  // Thermik-Quellen: sonnige Hänge bei den Startplätzen, Stärke aus w* des nächsten Rasterpunkts
+  P.therm = HOTSPOTS.map(s => {
+    const [x, y] = toXY(s.lat, s.lon), gi = Math.round((s.lon - g.lo0) / g.dlo), gj = Math.round((s.lat - g.la0) / g.dla), k = clamp(gj, 0, g.ny - 1) * g.nx + clamp(gi, 0, g.nx - 1);
+    const ws = L.wstar?.[k] ?? 0, climb = Math.max(0, +(ws * s.f).toFixed(1)), base = hAt(x, y);
+    const topKm = Math.max(base + 0.25, (L.top?.[k] ?? 2400) / 1000);
+    return { ...s, x, y, base, top: topKm, climb };
+  });
+  return P;
+}
+const HOTSPOTS = [
+  { name: 'Niederhorn', lat: 46.7095, lon: 7.7790, f: 1.15 },
+  { name: 'Amisbühl', lat: 46.7060, lon: 7.8230, f: 0.85 },
+  { name: 'Harder', lat: 46.6990, lon: 7.8640, f: 0.95 },
+  { name: 'Augstmatthorn', lat: 46.7380, lon: 7.9420, f: 1.05 },
+  { name: 'Schynige Platte', lat: 46.6610, lon: 7.9050, f: 0.7 },
+  { name: 'First', lat: 46.6600, lon: 8.0500, f: 1.2 }
+];
+function gridUV(P, W0, x, y) {
+  const [lat, lon] = toLL(x, y), g = P.g;
+  const fx = clamp((lon - g.lo0) / g.dlo, 0, g.nx - 1.001), fy = clamp((lat - g.la0) / g.dla, 0, g.ny - 1.001), i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, k = j * g.nx + i;
+  const b = a => (a[k] * (1 - tx) + a[k + 1] * tx) * (1 - ty) + (a[k + g.nx] * (1 - tx) + a[k + g.nx + 1] * tx) * ty;
+  return [b(W0.u), b(W0.v)];
+}
+function fieldAt(P, arr, x, y) {
+  const fx = clamp((x + W) / FX.cell, 0, FX.nx - 1.001), fy = clamp((y + H) / FX.cell, 0, FX.ny - 1.001), i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, k = j * FX.nx + i;
+  return (arr[k] * (1 - tx) + arr[k + 1] * tx) * (1 - ty) + (arr[k + FX.nx] * (1 - tx) + arr[k + FX.nx + 1] * tx) * ty;
+}
+/** Wind an einem Punkt (km/h): Boden- und Höhenwind nach Höhe über Grund, um steile Hänge gelenkt, über Graten schneller,
+ *  im Lee verwirbelt. -> [u, v, w(Steigen), lee, böe] */
+const OUT = new Float32Array(5);
+function windAt(P, x, y, agl, zAbs, t) {
+  const [u0, v0] = gridUV(P, P.w10, x, y), [u8, v8] = gridUV(P, P.w8, x, y), [u7, v7] = gridUV(P, P.w7, x, y);
+  const f = clamp((zAbs - 1.95) / 1.06, 0, 1), uf = mix(u8, u7, f), vf = mix(v8, v7, f), m = sstep(0.02, 0.55, agl);
+  let u = mix(u0, uf, m), v = mix(v0, vf, m);
+  const gx = fieldAt(P, P.gx, x, y), gy = fieldAt(P, P.gy, x, y), gl = Math.hypot(gx, gy);
+  if (gl > 0.05) { const nx = gx / gl, ny = gy / gl, up = u * nx + v * ny; if (up > 0) { const blk = clamp(gl * 0.9, 0, 0.7) * (1 - m * 0.5); u -= nx * up * blk; v -= ny * up * blk; } }
+  const sp = 1 + 0.45 * fieldAt(P, P.expo, x, y); u *= sp; v *= sp;
+  const lee = fieldAt(P, P.lee, x, y), s = Math.hypot(u, v);
+  let gust = 0;
+  if (lee > 0.02) {
+    const e = 0.08, z = t * 0.3, k = 1.0, n0 = noise3(x * k, y * k + e, z), n1 = noise3(x * k, y * k - e, z), n2 = noise3(x * k + e, y * k, z), n3 = noise3(x * k - e, y * k, z);
+    const cx = (n0 - n1) / (2 * e), cy = -(n2 - n3) / (2 * e), amp = lee * (s + 6) * 0.95;
+    u = u * (1 - lee * 0.55) + cx * amp; v = v * (1 - lee * 0.55) + cy * amp;
+    gust = lee * s * (0.5 + 0.5 * noise3(x * 3, y * 3, t * 1.3));
+  }
+  OUT[0] = u; OUT[1] = v; OUT[2] = (u * gx + v * gy) * 0.002; OUT[3] = lee; OUT[4] = gust;
+  return OUT;
+}
+
+/* ---------- Farbe: cyan ruhig -> hell -> violett stark -> magenta Böen/Lee */
+const STOPS = [[0, [0.10, 0.35, 0.95]], [8, [0.17, 0.85, 1.0]], [18, [0.55, 0.95, 1.0]], [28, [0.62, 0.45, 1.0]], [40, [0.55, 0.22, 1.0]], [55, [1.0, 0.25, 0.80]]];
+function windColor(kmh, out) {
+  let a = STOPS[0], b = STOPS[STOPS.length - 1];
+  for (let i = 0; i < STOPS.length - 1; i++) if (kmh <= STOPS[i + 1][0]) { a = STOPS[i]; b = STOPS[i + 1]; break; }
+  const t = clamp((kmh - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
+  out[0] = mix(a[1][0], b[1][0], t); out[1] = mix(a[1][1], b[1][1], t); out[2] = mix(a[1][2], b[1][2], t);
+}
+
+/* ---------- WebGL */
+const cv = document.getElementById('gl'), hud = document.getElementById('hud'), hx = hud.getContext('2d');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: FILM });
+if (!gl) { document.body.innerHTML = '<p style="padding:24px">WebGL2 fehlt auf diesem Gerät.</p>'; return; }
+const HALF = !!gl.getExtension('EXT_color_buffer_float') || !!gl.getExtension('EXT_color_buffer_half_float');
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + src); return s; }
+function prog(vs, fs) { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, '#version 300 es\nprecision highp float;\n' + vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, '#version 300 es\nprecision highp float;\n' + fs)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(p, i); u[a.name] = gl.getUniformLocation(p, a.name); } return { p, u }; }
+
+const BG = [0.039, 0.020, 0.141];   // #0a0524
+const terrP = prog(`
+layout(location=0) in vec3 aPos; layout(location=1) in vec3 aN; layout(location=2) in float aLake;
+uniform mat4 uMVP; out vec3 vN; out float vH; out float vLake; out vec2 vXY; out vec3 vW;
+void main(){ vN=aN; vH=aPos.y/${EX.toFixed(2)}; vLake=aLake; vXY=vec2(aPos.x,-aPos.z); vW=aPos; gl_Position=uMVP*vec4(aPos,1.); }`, `
+in vec3 vN; in float vH; in float vLake; in vec2 vXY; in vec3 vW; uniform vec3 uSun; uniform vec3 uBg; uniform vec3 uEye; uniform float uCalm; uniform float uTime; out vec4 o;
+float line(float v, float w){ float f=abs(fract(v)-.5); float d=fwidth(v); return 1.-smoothstep(0., d*w, .5-f); }
+void main(){
+  vec3 n=normalize(vN); float l=max(dot(n,uSun),0.); float sky=.5+.5*n.y;
+  vec3 c=mix(vec3(.018,.012,.055), vec3(.10,.075,.24), pow(l,1.3))*(.5+.5*sky);
+  float rim=pow(1.-max(dot(n,normalize(uEye-vW)),0.),3.);
+  c+=vec3(.08,.16,.42)*rim*.45;
+  float c1=line(vH*10.,1.1), c5=line(vH*2.,1.4);
+  c+=vec3(.17,.94,1.)*(c1*.022+c5*.06)*(1.-uCalm*.4);
+  vec2 km=abs(fract(vXY/2.)-.5); float grid=1.-smoothstep(0.,fwidth(vXY.x/2.)*1.2,min(km.x,km.y));
+  c+=vec3(.25,.35,1.)*grid*.018;
+  if(vLake>.5){ c=vec3(.02,.015,.07)+vec3(.05,.20,.35)*pow(rim,1.5)*.6; }
+  float r=length(vXY/vec2(${W.toFixed(1)},${H.toFixed(1)}));
+  float fade=smoothstep(.72,1.0,r); c=mix(c,uBg,fade);
+  o=vec4(c,1.);
+}`);
+
+const strP = prog(`
+layout(location=0) in vec3 aHead; layout(location=1) in vec3 aTail; layout(location=2) in vec4 aCol; layout(location=3) in float aW;
+uniform mat4 uMVP; uniform vec2 uRes; out float vT; out float vS; out vec4 vC;
+void main(){
+  int id=gl_VertexID; bool head=id<2; float side=(id==0||id==2)?-1.:1.;
+  vec4 h=uMVP*vec4(aHead,1.), t=uMVP*vec4(aTail,1.);
+  vec2 hs=h.xy/max(h.w,.001)*uRes, ts=t.xy/max(t.w,.001)*uRes; vec2 d=hs-ts; float L=length(d); d= L>.001 ? d/L : vec2(1.,0.);
+  vec2 pr=vec2(-d.y,d.x);
+  vec4 p= head ? h : t; vec2 off=pr*side*aW + (head? d*aW : -d*aW*.5);
+  p.xy+=off/uRes*p.w;
+  vT= head?0.:1.; vS=side; vC=aCol; gl_Position=p;
+}`, `
+in float vT; in float vS; in vec4 vC; out vec4 o;
+void main(){ float a=vC.a*pow(1.-vT,1.6)*(1.-vS*vS); o=vec4(vC.rgb*a,a); }`);
+
+const quadVS = `layout(location=0) in vec2 aP; out vec2 vUv; void main(){ vUv=aP*.5+.5; gl_Position=vec4(aP,0.,1.); }`;
+const downP = prog(quadVS, `in vec2 vUv; uniform sampler2D uTex; uniform vec2 uHalf; out vec4 o;
+void main(){ vec4 s=texture(uTex,vUv)*4.; s+=texture(uTex,vUv-uHalf); s+=texture(uTex,vUv+uHalf); s+=texture(uTex,vUv+vec2(uHalf.x,-uHalf.y)); s+=texture(uTex,vUv-vec2(uHalf.x,-uHalf.y)); o=s/8.; }`);
+const upP = prog(quadVS, `in vec2 vUv; uniform sampler2D uTex; uniform vec2 uHalf; out vec4 o;
+void main(){ vec4 s=texture(uTex,vUv+vec2(-uHalf.x*2.,0.)); s+=texture(uTex,vUv+vec2(-uHalf.x,uHalf.y))*2.; s+=texture(uTex,vUv+vec2(0.,uHalf.y*2.)); s+=texture(uTex,vUv+vec2(uHalf.x,uHalf.y))*2.;
+ s+=texture(uTex,vUv+vec2(uHalf.x*2.,0.)); s+=texture(uTex,vUv+vec2(uHalf.x,-uHalf.y))*2.; s+=texture(uTex,vUv+vec2(0.,-uHalf.y*2.)); s+=texture(uTex,vUv+vec2(-uHalf.x,-uHalf.y))*2.; o=s/12.; }`);
+const brightP = prog(quadVS, `in vec2 vUv; uniform sampler2D uTex; uniform vec2 uHalf; out vec4 o;
+void main(){ vec3 c=texture(uTex,vUv).rgb; float l=max(c.r,max(c.g,c.b)); o=vec4(c*smoothstep(.18,.6,l),1.); }`);
+const finP = prog(quadVS, `in vec2 vUv; uniform sampler2D uScene; uniform sampler2D uBloom; uniform float uBloomK; uniform vec3 uBg; out vec4 o;
+void main(){ vec3 c=texture(uScene,vUv).rgb + texture(uBloom,vUv).rgb*uBloomK;
+  c=c*(2.51*c+.03)/(c*(2.43*c+.59)+.14);
+  vec2 q=vUv*2.-1.; c*=1.-.28*dot(q*vec2(.8,1.),q*vec2(.8,1.))*.5;
+  o=vec4(pow(clamp(c,0.,1.),vec3(1./1.15)),1.); }`);
+
+const quadBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const quadVao = gl.createVertexArray(); gl.bindVertexArray(quadVao); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+let terr = null;
+function uploadTerrain() {
+  const { nx, ny, x0, y0, dx, dy, h, lake } = T, N = nx * ny, a = new Float32Array(N * 7);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i, x = x0 + i * dx, y = y0 + j * dy;
+    const hl = h[j * nx + Math.max(0, i - 1)], hr = h[j * nx + Math.min(nx - 1, i + 1)], hd = h[Math.max(0, j - 1) * nx + i], hu = h[Math.min(ny - 1, j + 1) * nx + i];
+    let nX = -(hr - hl) * EX / (2 * dx), nY = 1, nZ = (hu - hd) * EX / (2 * dy); const l = Math.hypot(nX, nY, nZ);
+    a.set([x, h[k] * EX, -y, nX / l, nY / l, nZ / l, lake[k]], k * 7);
+  }
+  const idx = new Uint32Array((nx - 1) * (ny - 1) * 6); let p = 0;
+  for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) { const k = j * nx + i; idx.set([k, k + 1, k + nx, k + 1, k + nx + 1, k + nx], p); p += 6; }
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 28, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 28, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 28, 24);
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  terr = { vao, n: idx.length };
+}
+
+/* Streifen (Wind + Thermik) als Instanzen: Kopf xyz, Schwanz xyz, Farbe rgba, Breite */
+const MAXW = 26000, MAXT = 6 * 1500, MAXI = MAXW + MAXT, STRIDE = 11;
+const inst = new Float32Array(MAXI * STRIDE);
+const instBuf = gl.createBuffer(), strVao = gl.createVertexArray();
+gl.bindVertexArray(strVao); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+[[0, 3, 0], [1, 3, 12], [2, 4, 24], [3, 1, 40]].forEach(([loc, n, off]) => { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, STRIDE * 4, off); gl.vertexAttribDivisor(loc, 1); });
+
+/* Render-Ziele */
+let RT = null;
+function tex(w, h) { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, HALF ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, HALF ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; }
+function fbo(w, h, depth) { const t = tex(w, h), f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); if (depth) { const r = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, r); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, r); } return { f, t, w, h }; }
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
+  if (RT && RT.w === w && RT.h === h) return;
+  cv.width = hud.width = w; cv.height = hud.height = h;
+  const chain = []; let cw = w >> 1, ch = h >> 1; for (let i = 0; i < 5 && cw > 8 && ch > 8; i++) { chain.push(fbo(cw, ch)); cw >>= 1; ch >>= 1; }
+  const ups = chain.slice(0, -1).map(c => fbo(c.w, c.h));
+  RT = { w, h, dpr, scene: fbo(w, h, true), chain, ups };
+}
+
+/* ---------- Kamera */
+function persp(fov, asp, n, f) { const t = 1 / Math.tan(fov / 2), o = new Float32Array(16); o[0] = t / asp; o[5] = t; o[10] = (f + n) / (n - f); o[11] = -1; o[14] = 2 * f * n / (n - f); return o; }
+function look(e, c) { let zx = e[0] - c[0], zy = e[1] - c[1], zz = e[2] - c[2], l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l; let xx = zz, xz = -zx; l = Math.hypot(xx, xz) || 1; xx /= l; xz /= l; const yx = zy * xz, yy = zz * xx - zx * xz, yz = -zy * xx; return new Float32Array([xx, yx, zx, 0, 0, yy, zy, 0, xz, yz, zz, 0, -(xx * e[0] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]); }
+function mul(a, b) { const o = new Float32Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3]; return o; }
+const cam = { x: 0, y: 0.5, z: 1.2, dist: 30, yaw: -20, pitch: 38 }, camGoal = { ...cam };
+let MVP = null, EYE = [0, 0, 0];
+function updateCam() {
+  const p = cam.pitch * D2R, y = cam.yaw * D2R, c = [cam.x, cam.z * EX, -cam.y];
+  EYE = [c[0] + cam.dist * Math.cos(p) * Math.sin(y), c[1] + cam.dist * Math.sin(p), c[2] + cam.dist * Math.cos(p) * Math.cos(y)];
+  MVP = mul(persp(40 * D2R, RT.w / RT.h, 0.2, 200), look(EYE, c));
+}
+function project(x, y, z) { const X = x, Y = z * EX, Z = -y, m = MVP; const cw = m[3] * X + m[7] * Y + m[11] * Z + m[15]; if (cw <= 0.01) return null; return [((m[0] * X + m[4] * Y + m[8] * Z + m[12]) / cw * 0.5 + 0.5) * RT.w, (1 - ((m[1] * X + m[5] * Y + m[9] * Z + m[13]) / cw * 0.5 + 0.5)) * RT.h, cw]; }
+
+/* ---------- Zustand */
+const S = { wind: true, therm: true, calm: Q.has('calm') ? 1 : 0, calmGoal: Q.has('calm') ? 1 : 0, blend: 0, blendGoal: 0, time: 0, live: null, autoRot: !FILM };
+let PA = null, PB = null;    // Lage A (gewählt/live) und B (Bise-Bispil)
+
+/* Windpartikel */
+const NW = MAXW, pw = { x: new Float32Array(NW), y: new Float32Array(NW), agl: new Float32Array(NW), age: new Float32Array(NW), life: new Float32Array(NW), hx: new Float32Array(NW * 6) };
+function spawn(i, randomAge) {
+  pw.x[i] = -W + rnd() * 2 * W; pw.y[i] = -H + rnd() * 2 * H; pw.agl[i] = 0.03 + Math.pow(rnd(), 1.7) * 0.75;
+  pw.life[i] = 2.5 + rnd() * 3.5; pw.age[i] = randomAge ? rnd() * pw.life[i] : 0;
+  const z = hAt(pw.x[i], pw.y[i]) + pw.agl[i]; for (let k = 0; k < 6; k += 3) { pw.hx[i * 6 + k] = pw.x[i]; pw.hx[i * 6 + k + 1] = pw.y[i]; pw.hx[i * 6 + k + 2] = z; }
+}
+/* Thermikpartikel: Höhenanteil f, Winkel, Radiusfaktor */
+const NT = 1500, pt = HOTSPOTS.map(() => ({ f: new Float32Array(NT), a: new Float32Array(NT), r: new Float32Array(NT), s: new Float32Array(NT) }));
+pt.forEach(c => { for (let i = 0; i < NT; i++) { c.f[i] = rnd(); c.a[i] = rnd() * Math.PI * 2; c.r[i] = 0.5 + rnd() * 0.7; c.s[i] = 0.7 + rnd() * 0.6; } });
+
+const TIMESCALE = 90;   // 1 s Bildschirmzeit = 90 s Wetter
+const col = [0, 0, 0];
+let nInst = 0, labels = [];
+function simulate(dt) {
+  S.calm += (S.calmGoal - S.calm) * Math.min(1, dt * 2.2); S.blend += (S.blendGoal - S.blend) * Math.min(1, dt * 1.1);
+  const tsc = TIMESCALE * mix(1, 0.55, S.calm), kmPerKmh = tsc / 3600, t = S.time;
+  const activeW = S.wind ? Math.round(mix(window.__N || 16000, 7000, S.calm)) : 0;
+  const tailS = 1.5 * tsc / 3600, wScale = RT.dpr * mix(0.62, 0.55, S.calm);
+  let o = 0;
+  const bl = S.blend, PBb = PB || PA;
+  for (let i = 0; i < activeW; i++) {
+    pw.age[i] += dt;
+    if (pw.age[i] > pw.life[i] || Math.abs(pw.x[i]) > W || Math.abs(pw.y[i]) > H) spawn(i, false);
+    const x = pw.x[i], y = pw.y[i], g = hAt(x, y), z = g + pw.agl[i];
+    let w = windAt(PA, x, y, pw.agl[i], z, t); let u = w[0], v = w[1], lee = w[3], gust = w[4];
+    if (bl > 0.001) { const u1 = u, v1 = v, l1 = lee, g1 = gust; w = windAt(PBb, x, y, pw.agl[i], z, t); u = mix(u1, w[0], bl); v = mix(v1, w[1], bl); lee = mix(l1, w[3], bl); gust = mix(g1, w[4], bl); }
+    pw.x[i] = x + u * kmPerKmh * dt; pw.y[i] = y + v * kmPerKmh * dt;
+    const sp = Math.hypot(u, v), eff = sp + gust;
+    const nz = hAt(pw.x[i], pw.y[i]) + pw.agl[i] + (lee > 0.05 ? Math.sin(t * 3 + i) * 0.04 * lee : 0);
+    const r = Math.hypot(pw.x[i] / W, pw.y[i] / H), edge = 1 - sstep(0.62, 0.95, r);
+    const life = Math.min(1, pw.age[i] / 0.6, (pw.life[i] - pw.age[i]) / 0.8);
+    windColor(eff, col);
+    if (lee > 0.06) { const m = Math.min(0.92, (lee - 0.06) * 2.6); col[0] = mix(col[0], 1.0, m); col[1] = mix(col[1], 0.22, m); col[2] = mix(col[2], 0.72, m); }
+    const bright = mix(0.36, 0.24, S.calm) * (0.55 + 0.5 * Math.min(1, eff / 30)) * edge * Math.max(0, life) * (1 + 0.6 * clamp(lee * 2, 0, 1));
+    const base = o * STRIDE, tl = tailS * clamp(sp, 4, 20) * (1 - 0.7 * clamp(lee * 1.4, 0, 1));
+    inst[base] = pw.x[i]; inst[base + 1] = nz * EX; inst[base + 2] = -pw.y[i];
+    inst[base + 3] = pw.x[i] - u / (sp || 1) * tl; inst[base + 4] = (nz - (nz - z) * 0.5) * EX; inst[base + 5] = -(pw.y[i] - v / (sp || 1) * tl);
+    inst[base + 6] = col[0]; inst[base + 7] = col[1]; inst[base + 8] = col[2]; inst[base + 9] = bright; inst[base + 10] = wScale * (0.9 + Math.min(1, eff / 40));
+    o++;
+  }
+  // Thermik
+  labels = [];
+  if (S.therm) {
+    const nPer = Math.round(mix(window.__NT || 1100, 400, S.calm));
+    HOTSPOTS.forEach((hs, hi) => {
+      const A = PA.therm[hi], B = PBb.therm[hi], climb = mix(A.climb, B.climb, bl), top = mix(A.top, B.top, bl), base = A.base, Hh = Math.max(0.2, top - base);
+      const vis = sstep(0.3, 1.0, climb); if (vis <= 0.01) return;
+      const [wu, wv] = gridUV(PA, PA.w8, A.x, A.y), [bu, bv] = gridUV(PBb, PBb.w8, A.x, A.y), du = mix(wu, bu, bl), dv = mix(wv, bv, bl);
+      const riseSec = Hh * 1000 / Math.max(climb, 0.3), drift = riseSec / 3600;  // km je km/h Wind bis oben
+      const rate = climb / (Hh * 1000) * tsc * 0.55, omega = (0.9 + climb * 0.35) * mix(1, 0.6, S.calm), c = pt[hi];
+      const heat = clamp(climb / 3, 0, 1);
+      for (let i = 0; i < nPer; i++) {
+        c.f[i] += rate * dt * c.s[i]; if (c.f[i] > 1) { c.f[i] -= 1; c.a[i] = rnd() * Math.PI * 2; }
+        c.a[i] += omega * dt * (1.2 - c.f[i] * 0.5);
+        const f = c.f[i], tear = 1 + bl * 1.5;
+        const rad = (0.06 + 0.26 * Math.pow(f, 0.7) + (f > 0.85 ? (f - 0.85) * 3.2 : 0)) * c.r[i] * tear;
+        const cx = A.x + du * drift * f * f * 0.9, cy = A.y + dv * drift * f * f * 0.9;
+        const ang = c.a[i], z = base + f * Hh;
+        const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad;
+        const a2 = ang - 0.75, rad2 = rad * 0.97, z2 = z - Hh * rate * 0.6;
+        const fade = sstep(0, 0.08, f) * (1 - sstep(0.86, 1, f)) * vis;
+        if (o >= MAXI) break;
+        const b = o * STRIDE;
+        inst[b] = px; inst[b + 1] = z * EX; inst[b + 2] = -py;
+        inst[b + 3] = cx + Math.cos(a2) * rad2; inst[b + 4] = z2 * EX; inst[b + 5] = -(cy + Math.sin(a2) * rad2);
+        const core = 1 - clamp(rad / 0.28, 0, 1);
+        inst[b + 6] = 1.0; inst[b + 7] = mix(0.42, 0.72, core); inst[b + 8] = mix(0.10, 0.35, core * heat);
+        inst[b + 9] = fade * mix(0.28, 0.55, heat) * mix(1, 0.6, S.calm); inst[b + 10] = RT.dpr * mix(0.75, 0.6, S.calm);
+        o++;
+      }
+      labels.push({ x: A.x + du * drift * 0.81, y: A.y + dv * drift * 0.81, z: top + 0.08, climb, name: hs.name, vis, bx: A.x, by: A.y, bz: base });
+    });
+  }
+  nInst = o;
+}
+
+/* ---------- Zeichnen */
+function draw() {
+  resize(); updateCam();
+  const R = RT;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, R.scene.f); gl.viewport(0, 0, R.w, R.h);
+  gl.clearColor(BG[0], BG[1], BG[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
+  if (terr) {
+    gl.useProgram(terrP.p); gl.uniformMatrix4fv(terrP.u.uMVP, false, MVP);
+    const sa = 200 * D2R, se = 24 * D2R; gl.uniform3f(terrP.u.uSun, Math.sin(sa) * Math.cos(se), Math.sin(se), -Math.cos(sa) * Math.cos(se));
+    gl.uniform3f(terrP.u.uBg, ...BG); gl.uniform3f(terrP.u.uEye, ...EYE); gl.uniform1f(terrP.u.uCalm, S.calm); gl.uniform1f(terrP.u.uTime, S.time);
+    gl.bindVertexArray(terr.vao); gl.drawElements(gl.TRIANGLES, terr.n, gl.UNSIGNED_INT, 0);
+  }
+  if (nInst) {
+    gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(strP.p); gl.uniformMatrix4fv(strP.u.uMVP, false, MVP); gl.uniform2f(strP.u.uRes, R.w / 2, R.h / 2);
+    gl.bindVertexArray(strVao); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst, 0, nInst * STRIDE);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nInst);
+    gl.depthMask(true);
+  }
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.bindVertexArray(quadVao);
+  const bloomK = mix(1.15, 0.0, S.calm);
+  let src = R.scene;
+  if (bloomK > 0.01) {
+    const pass = (P, from, to) => { gl.bindFramebuffer(gl.FRAMEBUFFER, to.f); gl.viewport(0, 0, to.w, to.h); gl.useProgram(P.p); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, from.t); gl.uniform1i(P.u.uTex, 0); gl.uniform2f(P.u.uHalf, 0.5 / from.w, 0.5 / from.h); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); };
+    pass(brightP, R.scene, R.chain[0]);
+    for (let i = 1; i < R.chain.length; i++) pass(downP, R.chain[i - 1], R.chain[i]);
+    let cur = R.chain[R.chain.length - 1];
+    for (let i = R.chain.length - 2; i >= 0; i--) {
+      // hochrechnen und das gleich grosse Downsample-Bild dazugeben
+      pass(upP, cur, R.ups[i]);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); pass({ p: downP.p, u: downP.u }, { t: R.chain[i].t, w: R.chain[i].w * 4, h: R.chain[i].h * 4 }, R.ups[i]); gl.disable(gl.BLEND);
+      cur = R.ups[i];
+    }
+    src = cur;
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, R.w, R.h);
+  gl.useProgram(finP.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, R.scene.t); gl.uniform1i(finP.u.uScene, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, src.t); gl.uniform1i(finP.u.uBloom, 1);
+  gl.uniform1f(finP.u.uBloomK, bloomK * 0.5); gl.uniform3f(finP.u.uBg, ...BG);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); gl.activeTexture(gl.TEXTURE0);
+  drawHud();
+}
+
+/* ---------- Beschriftung */
+let caption = null;
+function drawHud() {
+  const R = RT, d = R.dpr, c = hx; c.clearRect(0, 0, R.w, R.h);
+  const P = S.blend > 0.5 && PB ? PB : PA, m = P.mean, dirs = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'], dname = dirs[Math.round(m.from / 45) % 8];
+  // oben: Titel + Lage
+  c.save(); c.scale(d, d);
+  const W_ = R.w / d, top = 18 + (FILM ? 34 : 0);
+  c.fillStyle = 'rgba(232,246,255,.95)'; c.font = '700 13px -apple-system, system-ui, sans-serif'; c.textBaseline = 'top';
+  c.fillText('AFC · Wind & Thermik', 18, top);
+  c.font = '600 22px -apple-system, system-ui, sans-serif'; c.fillStyle = '#fff';
+  const lage = S.blend > 0.5 ? 'Bise' : (PA.L.demo ? 'Südwest, guete Thermiktag' : 'Jetzt');
+  c.fillText(lage, 18, top + 20);
+  c.font = '500 14px -apple-system, system-ui, sans-serif'; c.fillStyle = 'rgba(200,235,255,.8)';
+  c.fillText(`Wind 2000 m: ${dname} ${Math.round(m.kmh)} km/h${PA.L.demo ? ' · Bispil-Date' : ''}`, 18, top + 50);
+  // Legende
+  const lx = 18, ly = top + 76, lw = Math.min(190, W_ - 36);
+  const gr = c.createLinearGradient(lx, 0, lx + lw, 0); [[0, 0], [10, .18], [20, .36], [30, .55], [42, .76], [55, 1]].forEach(([k, p]) => { windColor(k, col); gr.addColorStop(p, `rgb(${col.map(v => Math.round(v * 255)).join(',')})`); });
+  c.fillStyle = gr; c.globalAlpha = 0.9; roundRect(c, lx, ly, lw, 5, 3); c.fill(); c.globalAlpha = 1;
+  c.font = '500 10px -apple-system, system-ui, sans-serif'; c.fillStyle = 'rgba(200,235,255,.7)';
+  c.fillText('ruhig', lx, ly + 9); c.textAlign = 'center'; c.fillText('30 km/h', lx + lw * 0.55, ly + 9); c.textAlign = 'right'; c.fillText('Böe / Lee', lx + lw, ly + 9); c.textAlign = 'left';
+  // Thermik-Etiketten
+  for (const L of labels) {
+    const p = project(L.x, L.y, L.z); if (!p || p[2] > 60) continue;
+    const a = clamp(L.vis * (1 - sstep(30, 60, p[2])), 0, 1); if (a < 0.05) continue;
+    const x = p[0] / d, y = p[1] / d;
+    c.globalAlpha = a;
+    const txt = `↑ ${L.climb.toFixed(1)} m/s`; c.font = '700 13px -apple-system, system-ui, sans-serif'; const tw = c.measureText(txt).width;
+    c.fillStyle = 'rgba(30,14,40,.62)'; roundRect(c, x - tw / 2 - 9, y - 30, tw + 18, 22, 11); c.fill();
+    c.strokeStyle = 'rgba(255,190,90,.65)'; c.lineWidth = 1; c.stroke();
+    c.fillStyle = '#ffe2b0'; c.textAlign = 'center'; c.fillText(txt, x, y - 25);
+    c.font = '500 10px -apple-system, system-ui, sans-serif'; c.fillStyle = 'rgba(255,230,200,.75)'; c.fillText(L.name, x, y - 42);
+    c.textAlign = 'left'; c.globalAlpha = 1;
+  }
+  if (S.calm > 0.5) { c.font = '600 11px -apple-system, system-ui, sans-serif'; c.fillStyle = 'rgba(200,235,255,.75)'; c.textAlign = 'right'; c.fillText('Ruhig-Modus', W_ - 18, top + 4); c.textAlign = 'left'; }
+  if (caption && caption.a > 0.01) {
+    c.globalAlpha = caption.a; c.textAlign = 'center';
+    const H_ = R.h / d, y = H_ - 120;
+    c.font = '700 21px -apple-system, system-ui, sans-serif'; c.fillStyle = '#fff'; c.fillText(caption.t1, W_ / 2, y);
+    c.font = '500 15px -apple-system, system-ui, sans-serif'; c.fillStyle = 'rgba(210,240,255,.85)'; wrap(c, caption.t2, W_ / 2, y + 30, W_ - 60, 20);
+    c.textAlign = 'left'; c.globalAlpha = 1;
+  }
+  c.restore();
+}
+function roundRect(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function wrap(c, s, x, y, mw, lh) { const words = s.split(' '); let line = ''; for (const w of words) { const t = line ? line + ' ' + w : w; if (c.measureText(t).width > mw && line) { c.fillText(line, x, y); y += lh; line = w; } else line = t; } if (line) c.fillText(line, x, y); }
+
+/* ---------- Vorführung (Film) */
+const KEYS = [
+  { t: 0, x: 0.5, y: 0.8, z: 1.1, dist: 34, yaw: -28, pitch: 42 },
+  { t: 6, x: -1.0, y: 1.6, z: 1.3, dist: 22, yaw: -8, pitch: 30 },
+  { t: 11.5, x: -5.6, y: 2.6, z: 1.6, dist: 9.5, yaw: -48, pitch: 15 },
+  { t: 16.5, x: -3.5, y: 0.0, z: 0.8, dist: 17, yaw: -25, pitch: 54 },
+  { t: 21.5, x: -1.5, y: -0.5, z: 0.8, dist: 19, yaw: -5, pitch: 50 },
+  { t: 24, x: 0.6, y: 0.8, z: 1.0, dist: 21, yaw: 40, pitch: 34 },
+  { t: 29.5, x: 0.6, y: 0.8, z: 1.0, dist: 26, yaw: 52, pitch: 40 }
+];
+const CAPS = [
+  { a: 0.6, b: 5.6, t1: 'Wind als Partikelstrom', t2: 'Tempo und Farb chömed us em Modell: cyan = ruhig, violett = starch.' },
+  { a: 6.4, b: 13.2, t1: 'Thermik als Glow-Säule', t2: 'Je stercher s Stiige, desto heller und schneller. Si chippt mit em Höhewind.' },
+  { a: 14.4, b: 21.6, t1: 'Bise: Lee-Wirbel sichtbar', t2: 'Hinter de Grät wirbleds magenta. D Thermik wird verrisse.' },
+  { a: 22.6, b: 29.2, t1: 'Ruhig-Modus', t2: 'Weniger Pünkt, kein Glow, langsamer. Gliichi Date.' }
+];
+function filmAt(t) {
+  let i = 0; while (i < KEYS.length - 2 && t > KEYS[i + 1].t) i++;
+  const a = KEYS[i], b = KEYS[i + 1], f = ease(clamp((t - a.t) / (b.t - a.t), 0, 1));
+  for (const k of ['x', 'y', 'z', 'dist', 'yaw', 'pitch']) cam[k] = mix(a[k], b[k], f);
+  if (window.__camOverride) Object.assign(cam, window.__camOverride);
+  S.blendGoal = t > 14 && t < 29 ? 1 : 0;
+  S.calmGoal = t > 22.5 ? 1 : 0;
+  if (t > 27) S.blendGoal = 0;
+  const C = CAPS.find(c => t >= c.a - 0.5 && t <= c.b + 0.5);
+  caption = C ? { t1: C.t1, t2: C.t2, a: Math.min(sstep(C.a - 0.5, C.a, t), 1 - sstep(C.b, C.b + 0.5, t)) } : null;
+}
+
+/* ---------- Bedienung */
+let drag = null, pinch = null;
+cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, id: e.pointerId }; S.autoRot = false; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => { if (!drag || e.pointerId !== drag.id || pinch) return; camGoal.yaw -= (e.clientX - drag.x) * 0.3; camGoal.pitch = clamp(camGoal.pitch + (e.clientY - drag.y) * 0.2, 8, 80); drag.x = e.clientX; drag.y = e.clientY; });
+cv.addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('wheel', e => { e.preventDefault(); camGoal.dist = clamp(camGoal.dist * Math.exp(e.deltaY * 0.001), 5, 45); }, { passive: false });
+cv.addEventListener('touchstart', e => { if (e.touches.length === 2) { const [a, b] = e.touches; pinch = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); } }, { passive: true });
+cv.addEventListener('touchmove', e => { if (pinch && e.touches.length === 2) { const [a, b] = e.touches, d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); camGoal.dist = clamp(camGoal.dist * pinch / d, 5, 45); pinch = d; } }, { passive: true });
+cv.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; });
+const btn = (id, fn) => document.getElementById(id).addEventListener('click', e => { fn(); e.currentTarget.classList.toggle('on'); });
+btn('bWind', () => { S.wind = !S.wind; });
+btn('bTherm', () => { S.therm = !S.therm; });
+btn('bBise', () => { S.blendGoal = S.blendGoal ? 0 : 1; });
+btn('bCalm', () => { S.calmGoal = S.calmGoal ? 0 : 1; });
+if (S.calmGoal) document.getElementById('bCalm').classList.add('on');
+
+/* ---------- Start */
+async function init() {
+  resize();
+  try { const r = await fetch('/terrain-grid.bin'); if (!r.ok) throw 0; T = buildTerrain(readGrid(await r.arrayBuffer())); } catch { T = fakeGrid(); }
+  uploadTerrain();
+  let live = null;
+  if (!FILM && !Q.has('demo')) { try { const r = await fetch('/api/thermal'); if (r.ok) { const j = await r.json(); if (j?.wind?.['800']) live = { kind: 'live', grid: j.grid, wind: j.wind, wstar: j.wstar, top: j.top, t: j.t }; } } catch {} }
+  PA = prepLage(live || demoLage('sw'));
+  PB = prepLage(demoLage('bise'));
+  for (let i = 0; i < NW; i++) spawn(i, true);
+  // vorwärmen, damit die Streifen schon fliessen
+  for (let k = 0; k < 20; k++) { S.time += 1 / 30; simulate(1 / 30); }
+  window.__ready = true;
+}
+let last = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - (last || now)) / 1000); last = now;
+  step(dt);
+  requestAnimationFrame(frame);
+}
+function step(dt) {
+  if (!PA) return;
+  S.time += dt;
+  if (!FILM) {
+    if (S.autoRot) camGoal.yaw += dt * 2.2;
+    for (const k of ['x', 'y', 'z', 'dist', 'yaw', 'pitch']) cam[k] += (camGoal[k] - cam[k]) * Math.min(1, dt * 5);
+  }
+  simulate(dt); draw();
+}
+// Für die Aufnahme: Bild für Bild mit fester Zeit
+window.__filmFrame = (t, dt = 1 / 30, noDraw = false) => { filmAt(t); if (noDraw) { S.time += dt; simulate(dt); } else step(dt); };
+init().then(() => { if (!FILM || !Q.has('manual')) requestAnimationFrame(frame); if (FILM && !Q.has('manual')) { const t0 = performance.now(); const loop = () => { filmAt((performance.now() - t0) / 1000 % 30); requestAnimationFrame(loop); }; loop(); } });
+})();
+</script>
+</body>
+</html>
