@@ -202,11 +202,11 @@
       vec4 ov = mix(texture2D(u_ov0, v_uv), texture2D(u_ov1, v_uv), u_ovMix)*u_ovA;
       lit = lit*(1. - ov.a) + ov.rgb*(.72 + .28*dif);
       if (u_glow > .001) {
-        // Glow-Look: Nacht-Indigo, Helligkeit aus dem Tageslicht, feine Höhenlinien in Cyan (Wind und Thermik leuchten darauf)
-        float lum = dot(lit, vec3(.3, .55, .15));
-        vec3 nt = (vec3(.035, .026, .10) + vec3(.15, .13, .38)*pow(lum, 1.05)*2.1)*(1. + v_cv*.7);
-        ${d ? 'float g5 = h/500., gw = fwidth(g5), g1 = h/100., gw1 = fwidth(g1); nt += vec3(.17, .94, 1.)*((1. - smoothstep(0., 1.4*gw, abs(fract(g5 - .5) - .5)))*.10 + (1. - smoothstep(0., 1.2*gw1, abs(fract(g1 - .5) - .5)))*.035*clamp(1. - gw1*2.5, 0., 1.));' : ''}
-        nt = mix(nt, vec3(.012, .01, .045), smoothstep(.35, .65, v_w));
+        // Glow-Look: wie in der Dämmerung. Die Kartenfarben (Wald, Wiese, Fels, Schnee) bleiben erkennbar, nur dunkler und
+        // kühler, damit Wind und Thermik darauf leuchten; feine Höhenlinien in Cyan
+        vec3 nt = lit*vec3(.50, .54, .72)*(1. + v_cv*.35) + vec3(.012, .010, .040);
+        ${d ? 'float g5 = h/500., gw = fwidth(g5), g1 = h/100., gw1 = fwidth(g1); nt += vec3(.17, .94, 1.)*((1. - smoothstep(0., 1.4*gw, abs(fract(g5 - .5) - .5)))*.07 + (1. - smoothstep(0., 1.2*gw1, abs(fract(g1 - .5) - .5)))*.035*clamp(1. - gw1*2.5, 0., 1.));' : ''}
+        nt = mix(nt, vec3(.03, .06, .13), smoothstep(.35, .65, v_w));
         lit = mix(lit, nt, u_glow);
       }
       float fd = length(v_pos - u_eye);
@@ -736,10 +736,10 @@
       const stop = () => { this._fly = null; this.orbit = 0; this.onUser?.(); };
       const spin = !!this.o.spin, held = () => { if (this.pov) { this.pov.held = pts.size; this.pov.rel = performance.now(); } };
       c.style.touchAction = spin ? 'pan-y' : 'none';
-      const down = e => { c.setPointerCapture?.(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = null; moved = 0; this._vel = [0, 0]; stop(); held(); };
+      const down = e => { c.setPointerCapture?.(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = null; moved = 0; this._vel = [0, 0]; this._pvel = [0, 0]; this._glide = false; this._pt = performance.now(); stop(); held(); };
       const move = e => {
         if (!pts.has(e.pointerId)) return;
-        const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
+        const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); this._pt = performance.now();
         const cam = this.cam, pv = this.pov;
         if (pv) {
           // Pilotensicht: ziehen heisst umschauen
@@ -748,17 +748,21 @@
           const dx = e.clientX - prev[0]; moved += Math.abs(dx) + Math.abs(e.clientY - prev[1]);
           if (pts.size === 1) { cam.az -= dx * 0.45; this._vel = [-dx * 0.45, 0]; }
         } else if (pts.size === 1) {
+          // wie auf einer Karte: ein Finger (oder die Maus) verschiebt das Gelände und gleitet nach.
+          // Drehen und Neigen: rechte Maustaste oder Shift/Alt/Ctrl beim Ziehen, auf dem Handy zwei Finger.
           const dx = e.clientX - prev[0], dy = e.clientY - prev[1]; moved += Math.abs(dx) + Math.abs(dy);
-          if (e.shiftKey || e.buttons === 2) this._pan(dx, dy);
-          else { cam.az -= dx * 0.35; cam.el += dy * 0.28; this._vel = [-dx * 0.35, dy * 0.28]; }
+          if (e.shiftKey || e.altKey || e.ctrlKey || e.buttons === 2) { cam.az -= dx * 0.35; cam.el += dy * 0.28; this._vel = [-dx * 0.35, dy * 0.28]; }
+          else { this._pan(dx, dy); this._pvel = [dx, dy]; }
         } else if (pts.size === 2) {
+          // zwei Finger: auseinander zoomt, drehen dreht, beide zusammen hoch oder runter neigt
           const [a, b] = [...pts.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
-          if (last) { cam.dist *= clamp(last.d / Math.max(20, d), 0.8, 1.25); this._pan(mx - last.mx, my - last.my); cam.az -= ((ang - last.ang + 3 * Math.PI) % (2 * Math.PI) - Math.PI) / D2R; }
+          if (last) { cam.dist *= clamp(last.d / Math.max(20, d), 0.8, 1.25); cam.el += (my - last.my) * 0.3; this._pan((mx - last.mx), 0); cam.az -= ((ang - last.ang + 3 * Math.PI) % (2 * Math.PI) - Math.PI) / D2R; }
           last = { d: Math.max(20, d), mx, my, ang };
+          this._pvel = [0, 0];
         }
         this._clampCam(); this.invalidate();
       };
-      const up = e => { const had = pts.delete(e.pointerId); last = null; held(); if (had && e.type === 'pointerup' && pts.size === 0 && moved < 6) this.onTap?.(e); this.invalidate(); };
+      const up = e => { const had = pts.delete(e.pointerId); last = null; held(); if (pts.size || performance.now() - (this._pt || 0) > 80) this._pvel = [0, 0]; else this._glide = true; if (had && e.type === 'pointerup' && pts.size === 0 && moved < 6) this.onTap?.(e); this.invalidate(); };
       c.addEventListener('pointerdown', down); c.addEventListener('pointermove', move); c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
       c.addEventListener('contextmenu', e => e.preventDefault());
       if (spin) { c.addEventListener('keydown', e => { const k = { ArrowLeft: 10, ArrowRight: -10 }[e.key]; if (k) { e.preventDefault(); stop(); this.cam.az += k; this.invalidate(); } }); return; }
@@ -794,6 +798,11 @@
       } else if (Math.abs(this._vel[0]) + Math.abs(this._vel[1]) > 0.02) {
         c.az += this._vel[0]; c.el += this._vel[1]; this._vel[0] *= 0.92; this._vel[1] *= 0.86; this._clampCam(); busy = true;
       }
+      const pvv = this._pvel;
+      if (this._glide && pvv && !this._fly && Math.abs(pvv[0]) + Math.abs(pvv[1]) > 0.3) {
+        // Verschieben gleitet nach dem Loslassen weich aus
+        const k = Math.min(2, dt / 16); this._pan(pvv[0] * k, pvv[1] * k); pvv[0] *= Math.pow(0.9, k); pvv[1] *= Math.pow(0.9, k); this._clampCam(); busy = true;
+      } else this._glide = false;
       if (this.orbit) { c.az += this.orbit * dt / 1000; busy = true; }
       const pv = this.pov;
       if (pv && !pv.held && (pv.look[0] || pv.look[1])) {
@@ -967,7 +976,7 @@
         // Schein: im Glow-Look farbig und addiert, bei Tag ein dunkler Saum (lesbar auf hellem Gelände)
         if (!calm) {
           if (gk > 0.5) { gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_core, 0); gl.uniform1f(P.u.u_a, 0.22 * gk); }
-          else { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, -1); gl.uniform3f(P.u.u_tint, 0.02, 0.03, 0.08); gl.uniform1f(P.u.u_a, 0.32 * (1 - gk)); }
+          else { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, -1); gl.uniform3f(P.u.u_tint, 0.02, 0.03, 0.08); gl.uniform1f(P.u.u_a, 0.2 * (1 - gk)); }
           gl.uniform1f(P.u.u_wk, 3.4); gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
         }
         gl.blendFunc(gl.ONE, gk > 0.5 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, 1); gl.uniform1f(P.u.u_a, gk > 0.5 ? 1 : 0.95); gl.uniform1f(P.u.u_wk, 1);

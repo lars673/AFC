@@ -47,3 +47,12 @@ test('Farben: ruhig cyan, stark violett bis magenta', () => {
   assert.ok(b1 > r1, 'schwacher Wind ist bläulich');
   assert.ok(r2 > g2, 'starker Wind ist rot-violett');
 });
+
+test('2D-Karte: Teilchen bleiben im Kartenausschnitt und nehmen die Farben der Legende', () => {
+  const sim = M.wind(sc, () => ({ g: [25, 0], a: [25, 0] }), { n: 600, map: true, box: [3000, 1500] });
+  const cols = new Set();
+  let n = 0;
+  for (let k = 0; k < 20; k++) n = sim.step(0.05, (i, h, t, r, g, b) => { assert.ok(Math.abs(h[0]) < 3300 && Math.abs(h[2]) < 1700, 'im Rechteck'); cols.add(`${r.toFixed(2)},${g.toFixed(2)},${b.toFixed(2)}`); });
+  assert.ok(n > 300);
+  assert.ok([...cols].some(c => c.startsWith('0.85,0.70')), 'gelb wie 20-30 km/h in der Legende');
+});

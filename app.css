@@ -41,7 +41,7 @@ a { color: var(--accent); }
 .fine { color: var(--muted); font-size: 13px; margin-top: 10px; }
 
 /* Kopf */
-.top { background: var(--top); color: var(--top-ink); padding-top: env(safe-area-inset-top); position: sticky; top: 0; z-index: 30; }
+header.top { background: var(--top); color: var(--top-ink); padding-top: env(safe-area-inset-top); position: sticky; top: 0; z-index: 30; }
 .top-in { max-width: 1120px; margin: 0 auto; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand img { border-radius: 8px; }
@@ -1311,8 +1311,8 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 
 /* ---- 12.10 Fliessend: was beim Scrollen und beim Auf- und Zuklappen passiert, gleitet. Nur Deckkraft und Verschiebung
    (das rechnet die Grafikkarte, auch auf älteren Handys), im Tempo der übrigen App, und aus bei «Bewegung reduzieren». */
-.top { transition: box-shadow var(--t2) var(--ease); }
-.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
+header.top { transition: box-shadow var(--t2) var(--ease); }
+header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .toast.out { animation: toast-out .2s ease-in forwards; }
 @keyframes toast-out { to { opacity: 0; transform: translate(-50%, 8px); } }
 /* Zeilen und Karten tauchen beim Scrollen weich von unten auf. Der Stand hängt nur an der Scroll-Position:
@@ -1449,7 +1449,7 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 @media (max-width: 759px) { :root:not([data-theme="sun"]) { --tabs-h: 74px; } }
 :root:not([data-theme="sun"]) body { background: var(--bg); }
 :root:not([data-theme="sun"]) body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--sky-bg); pointer-events: none; }
-:root:not([data-theme="sun"]) .top { background: var(--glass-top); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); }
+:root:not([data-theme="sun"]) header.top { background: var(--glass-top); -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4); }
 :root:not([data-theme="sun"]) .top .av { border-color: currentColor; background: var(--glass2); color: var(--ink); }
 :root:not([data-theme="sun"]) .icon-btn:hover, :root:not([data-theme="sun"]) .src-dot:hover { background: var(--glass2); }
 :root:not([data-theme="sun"]) main .card, :root:not([data-theme="sun"]) main .panel, :root:not([data-theme="sun"]) .headline, :root:not([data-theme="sun"]) .day { background: var(--glass); border-color: var(--glass-line); }
@@ -1531,14 +1531,12 @@ dialog.dlg.tilt-in.tilt-show[open]::backdrop { opacity: 1; }
 .use-never .chip { opacity: .75; font-size: .82em; padding: 2px 8px; border-radius: 999px; background: var(--line, rgba(127,127,127,.14)); }
 
 /* ---- Motion (13.x Prototyp): Glow-Warnung bei Föhn und Bise, Anflug ins Tal, Ruhig-Modus */
-.gw { position: relative; overflow: hidden; isolation: isolate; border-radius: 12px; margin: 10px 0 12px; padding: 12px 14px; color: #f3eaff; background: linear-gradient(135deg, #0f0830, #1d0f4a 60%, #24104f); border: 1px solid rgba(150, 110, 255, .5); box-shadow: 0 0 0 1px rgba(122, 60, 255, .2), 0 0 22px rgba(122, 60, 255, .32); animation: gwPulse 2.8s ease-in-out infinite; }
-.gw.danger { border-color: rgba(255, 70, 200, .65); box-shadow: 0 0 0 1px rgba(255, 60, 200, .25), 0 0 26px rgba(255, 60, 200, .38); }
-.gw-c { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; opacity: .9; }
-.gw-t { position: relative; display: block; font-size: 15px; line-height: 1.35; text-shadow: 0 1px 6px rgba(10, 4, 36, .9); }
-.gw-t b { display: block; font: 700 18px/1.15 var(--f-num); letter-spacing: .01em; margin-bottom: 2px; color: #fff; }
-@keyframes gwPulse { 50% { box-shadow: 0 0 0 1px rgba(122, 60, 255, .35), 0 0 34px rgba(122, 60, 255, .55); } }
-.gw.danger { animation-name: gwPulseD; }
-@keyframes gwPulseD { 50% { box-shadow: 0 0 0 1px rgba(255, 60, 200, .4), 0 0 38px rgba(255, 60, 200, .6); } }
+.gw { --gwc: var(--wait); position: relative; overflow: hidden; isolation: isolate; border-radius: 12px; margin: 10px 0 12px; padding: 11px 14px 11px 16px; color: var(--ink); background: color-mix(in srgb, var(--gwc) 16%, var(--panel)); border: 1px solid color-mix(in srgb, var(--gwc) 55%, transparent); border-left: 4px solid var(--gwc); animation: gwPulse 2.8s ease-in-out infinite; }
+.gw.danger { --gwc: var(--no); }
+.gw-c { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; opacity: .55; }
+.gw-t { position: relative; display: block; font-size: 15px; line-height: 1.35; }
+.gw-t b { display: block; font: 700 18px/1.15 var(--f-num); letter-spacing: .01em; margin-bottom: 2px; color: var(--ink); }
+@keyframes gwPulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--gwc) 22%, transparent); } }
 .ruhig .gw, .ruhig .gw.danger { animation: none; }
 @media (prefers-reduced-motion: reduce) { .gw, .gw.danger { animation: none; } }
 .intro3d { position: fixed; inset: 0; z-index: 9990; background: #07041a; opacity: 0; transition: opacity .45s var(--ease); }

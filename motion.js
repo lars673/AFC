@@ -25,6 +25,8 @@
   /* Farben. Glow: cyan ruhig -> hell -> violett stark -> magenta Böen. Tag: kräftigere Töne, die auf hellem Gelände lesbar bleiben. */
   const GLOW = [[0, [0.10, 0.35, 0.95]], [8, [0.17, 0.85, 1.0]], [18, [0.55, 0.95, 1.0]], [28, [0.62, 0.45, 1.0]], [40, [0.55, 0.22, 1.0]], [55, [1.0, 0.25, 0.80]]];
   const DAY = [[0, [0.15, 0.45, 0.85]], [10, [0.10, 0.62, 0.95]], [20, [0.16, 0.70, 0.40]], [30, [0.90, 0.70, 0.05]], [40, [0.95, 0.45, 0.10]], [55, [0.88, 0.18, 0.20]]];
+  // 2D-Karte: dieselben Stufen wie die Legende der Windkarte (<10 blau, 10-20 grün, 20-30 gelb, 30-40 orange, 40+ rot), weich ineinander
+  const MAP = [[0, [0.16, 0.50, 0.83]], [8, [0.16, 0.50, 0.83]], [13, [0.18, 0.66, 0.31]], [18, [0.18, 0.66, 0.31]], [23, [0.85, 0.70, 0.0]], [28, [0.85, 0.70, 0.0]], [33, [0.94, 0.54, 0.12]], [38, [0.94, 0.54, 0.12]], [43, [0.85, 0.23, 0.20]]];
   function ramp(stops, v, out) {
     let a = stops[0], b = stops[stops.length - 1];
     for (let i = 0; i < stops.length - 1; i++) if (v <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break; }
@@ -80,8 +82,10 @@
     };
     const N = Math.min(16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
     const R2 = R * 0.95;
+    const box = o.box || null;                                   // 2D-Karte: Rechteck [halbe Breite, halbe Höhe] statt Kreis
+    const out = (x, z) => (box ? Math.abs(x) > box[0] || Math.abs(z) > box[1] : x * x + z * z > R2 * R2);
     const spawn = (i, randomAge) => {
-      let x, z; do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
+      let x, z; if (box) { x = (rnd() * 2 - 1) * box[0]; z = (rnd() * 2 - 1) * box[1]; } else do { x = (rnd() * 2 - 1) * R2; z = (rnd() * 2 - 1) * R2; } while (x * x + z * z > R2 * R2);
       X[i] = x; Z[i] = z; AGL[i] = 30 + Math.pow(rnd(), 1.7) * Math.min(750, R * 0.09);
       LIFE[i] = 2.5 + rnd() * 3.5; AGE[i] = randomAge ? rnd() * LIFE[i] : 0;
     };
@@ -92,13 +96,13 @@
       max: N, mean: () => F.mean,
       setField(smp) { field(smp); },
       step(dt, put) {
-        const calm = !!sim.calm, glow = !!sim.glow, ts = calm ? 50 : 90, n = calm ? Math.round(N * 0.38) : N;
+        const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = calm ? Math.round(N * 0.38) : N;
         t += dt;
-        const kmToM = ts / 3.6, tailK = R * (calm ? 0.0036 : 0.0045), wpx = calm ? 0.9 : 1.15;
+        const kmToM = ts / 3.6, tailK = R * (calm ? 0.0036 : 0.0045) * (glow ? 1 : 0.7), wpx = (calm ? 0.9 : 1.15) * (glow ? 1 : 0.8);   // bei Tag kürzer und feiner: die Karte bleibt sichtbar
         let c = 0;
         for (let i = 0; i < n; i++) {
           AGE[i] += dt;
-          if (AGE[i] > LIFE[i] || X[i] * X[i] + Z[i] * Z[i] > R2 * R2) spawn(i, false);
+          if (AGE[i] > LIFE[i] || out(X[i], Z[i])) spawn(i, false);
           const x = X[i], z = Z[i], agl = AGL[i];
           if (!bil(F.ok, x, z)) { AGE[i] = LIFE[i] + 1; continue; }
           const m = sstep(20, 500, agl);
@@ -116,9 +120,9 @@
           const sp = Math.hypot(u, v), eff = sp + gust;
           if (sp < 1) continue;
           const y = (hAt(X[i], Z[i]) + agl) * ex;
-          const r = Math.hypot(X[i], Z[i]) / R, edge = 1 - sstep(0.78, 0.95, r);
+          const edge = box ? 1 : 1 - sstep(0.78, 0.95, Math.hypot(X[i], Z[i]) / R);
           const life = Math.max(0, Math.min(1, AGE[i] / 0.6, (LIFE[i] - AGE[i]) / 0.8));
-          ramp(glow ? GLOW : DAY, eff, col);
+          ramp(glow ? GLOW : sim.map ? MAP : DAY, eff, col);
           if (lee > 0.06) { const mm = Math.min(0.92, (lee - 0.06) * 2.6); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.22 : 0.15, mm); col[2] = mix(col[2], glow ? 0.72 : 0.65, mm); }
           const a = (glow ? (calm ? 0.24 : 0.36) : (calm ? 0.55 : 0.75)) * (0.55 + 0.5 * Math.min(1, eff / 30)) * edge * life * (1 + 0.6 * clamp(lee * 2, 0, 1));
           if (a < 0.01) continue;
@@ -130,7 +134,7 @@
         return c;
       }
     };
-    sim.calm = !!o.calm; sim.glow = !!o.glow;
+    sim.calm = !!o.calm; sim.glow = !!o.glow; sim.map = !!o.map; sim.speed = o.speed || 1;
     return sim;
   }
 

@@ -526,16 +526,16 @@ function gwTick(ts) {
       // Föhn strömt nach Norden (oben), Bise nach Südwesten (links unten); leicht schräg, damit es nach Wind aussieht
       const ang = foehn ? -Math.PI / 2 + 0.25 : Math.PI * 0.78, vx = Math.cos(ang), vy = Math.sin(ang), sp = (danger ? 120 : 80) * (slow ? 0.45 : 1);
       ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = `rgba(0,0,0,${still ? 0 : 0.82})`; ctx.fillRect(0, 0, w, h);
-      ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+      ctx.globalCompositeOperation = 'source-over'; ctx.lineCap = 'round';
+      const rgb = st.rgb ||= (getComputedStyle(c).getPropertyValue('--gwc').trim() || '#dc8426');
       for (const p of st.P) {
         const len = (still ? 26 : 14) * p.s, wob = Math.sin(ts / 600 + p.l * 9) * 0.25;
         const dx = (vx - vy * wob) * len, dy = (vy + vx * wob) * len;
-        const col = danger ? (p.l > 0.5 ? '255,70,200' : '160,90,255') : (p.l > 0.5 ? '120,90,255' : '60,200,255');
-        ctx.strokeStyle = `rgba(${col},${0.35 + 0.4 * p.l})`; ctx.lineWidth = 1.2 + p.s * 0.6;
+        ctx.strokeStyle = rgb; ctx.globalAlpha = 0.3 + 0.45 * p.l; ctx.lineWidth = 1.2 + p.s * 0.6;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + dx, p.y + dy); ctx.stroke();
         if (!still) { p.x += vx * sp * p.s * dt; p.y += vy * sp * p.s * dt; if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) { if (Math.abs(vx) > Math.abs(vy)) { p.x = vx > 0 ? -20 : w + 20; p.y = Math.random() * h; } else { p.y = vy > 0 ? -20 : h + 20; p.x = Math.random() * w; } } }
       }
-      ctx.globalCompositeOperation = 'source-over'; st.drawn = true;
+      ctx.globalAlpha = 1; st.drawn = true;
     }
   }
   GW.raf = requestAnimationFrame(gwTick);
@@ -2065,6 +2065,7 @@ function showIntro(i = 0, list = INTRO) {
     if (/^\d+$/.test(v)) return showIntro(Number(v), L);
     d.onclick = null; store.set('intro', INTRO_VER); closeDlg(d);
     if (L === INTRO_FIRST) useAdd('flow', last ? 'intro-done' : 'intro-skip');
+    if (INTRO3D.after && v !== 'profile') { INTRO3D.after = false; INTRO3D.want = true; setTimeout(introFlight, 450); }   // nach der Einführung einmal ins Tal fliegen
     if (v === 'profile') { if (ME.user) setTimeout(quickStart, 300); else setTab('profile'); }
   };
   d.onclose = () => store.set('intro', INTRO_VER);
@@ -3227,6 +3228,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     const had = this._d; this._d = d;
     if (this._moving) return;                                   // nach dem Verschieben baut sich die Ebene selbst neu auf
     if (!had || (!this._raf && !this._still)) return this._reset();
+    if (this._sim) { const t = performance.now(); if (t - (this._fieldAt || 0) > 180) { this._fieldAt = t; this._sim.setField(this._sample); } return; }
     if (this._still && performance.now() - (this._stillAt || 0) > 400) { this._stillAt = performance.now(); this._ctx.clearRect(0, 0, this._w, this._h); this._drawArrows(); }
   },
   /** Geländeraster für den Bodenwind: an steilen Hängen strömt die Luft dem Hang entlang statt durch den Berg. */
@@ -3244,12 +3246,59 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     // Bildschirm -> Geo linear (bei dieser Kartengrösse genau genug)
     const nw = map.containerPointToLatLng([0, 0]), se = map.containerPointToLatLng([size.x, size.y]);
     this._geo = (x, y) => [nw.lat + (se.lat - nw.lat) * y / size.y, nw.lng + (se.lng - nw.lng) * x / size.x];
+    this._sim = null;
     if (!this._d) return;
     if (this._still) return this._drawArrows();
+    if (window.AFCMotion) return this._motion(size, nw, se);
     const n = Math.round(Math.min(2200, size.x * size.y / 260));
     this._p = Array.from({ length: n }, () => this._spawn({}));
     this._last = 0;
     this._raf = requestAnimationFrame(t => this._frame(t));
+  },
+  /* Motion (wie in 3D): Teilchen mit leuchtendem Kopf, über Graten schneller, hinter Graten (Lee) verwirbelt und magenta.
+     Eine kleine Szene über dem sichtbaren Kartenausschnitt: Meter um die Mitte, Höhe aus dem Geländeraster. */
+  _motion(size, nw, se) {
+    const cLat = (nw.lat + se.lat) / 2, cLon = (nw.lng + se.lng) / 2, mLat = 111320, mLon = 111320 * Math.cos(cLat * D2R);
+    const hw = (se.lng - nw.lng) / 2 * mLon, hh = (nw.lat - se.lat) / 2 * mLat, g = T.grid;
+    if (!g && !this._gridAsked) { this._gridAsked = true; thermalGrid().then(() => this._map && this._reset()).catch(() => {}); }
+    const toGeo = (x, z) => [cLat - z / mLat, cLon + x / mLon];
+    const flat = W.level === '700' || !g;                         // auf 3000 m strömt die Luft frei über die Berge
+    const hAt = (x, z) => { if (flat) return 0; const [la, lo] = toGeo(x, z), i = Math.round((lo - g.lo0) / g.dlo), j = Math.round((la - g.la0) / g.dla); return i < 0 || j < 0 || i >= g.nx || j >= g.ny ? 0 : g.elev[j * g.nx + i] || 0; };
+    const sc = { R: Math.max(hw, hh) * 1.02, ex: 1, toGeo, _meshH: hAt };
+    this._sample = (lat, lon) => { const w = windSample(this._d, lat, lon); if (!w) return null; return { g: this._g ? terrainFlow(w, this._g, lat, lon) || w : w, a: w }; };
+    const n = Math.round(Math.min(innerWidth < 700 ? 1600 : 2600, size.x * size.y / 150));
+    this._sim = AFCMotion.wind(sc, this._sample, { n, calm: calmOn(), map: true, box: [hw, hh], speed: Math.min(6, Math.max(0.35, sc.R / 4200)) });
+    this._kx = size.x / (2 * hw); this._kz = size.y / (2 * hh);
+    this._buf = { seg: [], col: [] }; this._last = 0;
+    this._raf = requestAnimationFrame(t => this._mframe(t));
+  },
+  _mframe(t) {
+    this._raf = requestAnimationFrame(tt => this._mframe(tt));
+    if (t - this._last < 33 || document.hidden) return;          // ca. 30 Bilder pro Sekunde
+    const dt = this._last ? Math.min(0.06, (t - this._last) / 1000) : 0.033; this._last = t;
+    const ctx = this._ctx, w2 = this._w / 2, h2 = this._h / 2, kx = this._kx, kz = this._kz, B = new Map();
+    this._sim.calm = calmOn();
+    this._sim.step(dt, (i, h, tl, r, g, b, a, wd) => {
+      // nach Farbe und Deckkraft bündeln: wenige Striche pro Bild, auch auf dem Handy flüssig
+      const key = ((r * 7 + 0.5) | 0) * 64 + ((g * 7 + 0.5) | 0) * 8 + ((b * 7 + 0.5) | 0) + ((Math.min(1, a) * 3.99) | 0) * 512;
+      let q = B.get(key); if (!q) B.set(key, q = { c: `rgba(${(r * 255) | 0},${(g * 255) | 0},${(b * 255) | 0},`, a: (((Math.min(1, a) * 3.99) | 0) + 1) / 4, s: [], w: 0, n: 0 });
+      q.s.push(w2 + tl[0] * kx, h2 + tl[2] * kz, w2 + h[0] * kx, h2 + h[2] * kz); q.w += wd; q.n++;
+    });
+    ctx.clearRect(0, 0, this._w, this._h);
+    ctx.lineCap = 'round';
+    // heller Saum für Wald, Fels und Schnee, dann die Spur in Farbe, dann ein heller Kopf: so sieht es nach strömenden Punkten aus
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 3; ctx.beginPath();
+    for (const q of B.values()) for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k], q.s[k + 1]); ctx.lineTo(q.s[k + 2], q.s[k + 3]); }
+    ctx.stroke();
+    for (const q of B.values()) {
+      const wd = 1.25 * q.w / q.n;
+      ctx.strokeStyle = q.c + Math.min(1, q.a * 1.15) + ')'; ctx.lineWidth = wd; ctx.beginPath();
+      for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k], q.s[k + 1]); ctx.lineTo(q.s[k + 2], q.s[k + 3]); }
+      ctx.stroke();
+      ctx.lineWidth = wd + 1.6; ctx.beginPath();
+      for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k + 2], q.s[k + 3]); ctx.lineTo(q.s[k + 2] + 0.01, q.s[k + 3]); }
+      ctx.stroke();
+    }
   },
   _spawn(p) { p.x = Math.random() * this._w; p.y = Math.random() * this._h; p.age = Math.floor(Math.random() * 80); return p; },
   _frame(t) {
@@ -3322,7 +3371,7 @@ function syncWindBar() {
   $('#windBar .thermal-legend.th-legend').hidden = !T.modes.has('thermal'); $('#windBar .soar-legend').hidden = !T.modes.has('soar'); $('#windBar .lee-legend').hidden = !T.modes.has('lee');
   const nw = nowMode();
   if (nw && nowHourToday() != null) W.hour = Math.min(20, Math.max(6, nowHourToday()));
-  if (!FILM.playing) { $('#windHour').step = '1'; $('#windHour').value = W.hour; $('#windHourT').textContent = nw ? 'Jetzt' : `${W.hour} Uhr`; sunArc(T.data?.sunPos); }
+  if (!FILM.playing && !mapBetween()) { $('#windHour').step = 'any'; $('#windHour').value = W.hour; $('#windHourT').textContent = nw ? 'Jetzt' : `${W.hour} Uhr`; sunArc(T.data?.sunPos); }
   const nb = $('#windNowBtn'); nb.setAttribute('aria-pressed', String(nw)); nb.hidden = !(S.day === 0 && isToday());
   $('#windHour').disabled = nw;
   const nt = $('#windNowT'), ms = nw ? W.meas || T.data?.measured : null;
@@ -3340,6 +3389,7 @@ function syncWindBar() {
   $('#barSum').textContent = parts.length ? parts.join(' · ') : 'Wind und Aufwind: aus';
 }
 async function updateWind() {
+  W.ft = null;
   syncWindBar();
   if (!M.map || !WindLayer) return;
   if (W.level === 'off') { if (W.layer) { M.map.removeLayer(W.layer); W.layer = null; } return; }
@@ -3859,6 +3909,10 @@ const lerpArr = (a, b, f) => (!b || f <= 0 ? a : a.map((x, i) => (x == null || b
 const lerpDeg = (a, b, f) => a + ((((b - a) % 360) + 540) % 360 - 180) * f;
 
 /** Alle Stunden des gewählten Tages laden (einmal je Tag und Datenstand). */
+/** Zeitregler der Karte zwischen zwei Stunden: nur wenn der Tag als Film geladen ist (und nicht «Wind jetzt»). */
+function mapBetween() { return W.ft != null && !FILM.playing && !nowMode() && !!FILM.frames && FILM.date === S.plan?.dates?.[S.day] && (W.level !== 'off' || T.modes.size > 0); }
+/** Den Tag im Hintergrund laden, damit der Zeitregler stufenlos gleitet. */
+function filmPreload() { if (FILM.pre || (FILM.frames && FILM.date === S.plan?.dates?.[S.day])) return; FILM.pre = filmLoad().catch(() => {}).finally(() => { FILM.pre = null; }); }
 async function filmLoad() {
   const date = S.plan?.dates?.[S.day];
   if (!date) throw new Error('noch keine Wetterdaten');
@@ -4208,7 +4262,7 @@ document.addEventListener('click', async e => {
     case 'obstmap': store.set('ov', { ...store.get('ov', {}), obst: true }); syncLayerPanel(); closeDlg($('#siteDlg')); setTab('map'); setTimeout(() => { const s = siteById(id); if (M.map && s) { M.map.setView([s.lat, s.lon], 14); updateObst(); } }, 200); break;
     case 'layers': { const p = $('#layerPanel'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); break; }
     case 'locate': locate(); break;
-    case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); break;
+    case 'wind': W.level = b.dataset.lvl; store.set('wind', W.level); updateWind(); if (W.level !== 'off') setTimeout(filmPreload, 1500); break;
     case 'windnow': W.now = !nowMode(); store.set('windNow', W.now); if (W.now && FILM.playing) filmStop(); if (W.now && W.level === 'off') { W.level = '10m'; store.set('wind', W.level); } if (!W.now) { W.meas = null; W.measAt = null; drawStationsNow(); } updateWind(); updateThermal(); break;
     case 'brief': briefOpen([id]); break;
     case 'briefall': briefOpen([...S.fav]); break;
@@ -4225,7 +4279,7 @@ document.addEventListener('click', async e => {
     case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
-    case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
+    case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow2', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
     case 'v3dcalm': case 'motion': MO.calm = a === 'motion' ? b.dataset.v === 'calm' : !MO.calm; store.set('ruhig', MO.calm); $$('[data-act="v3dcalm"]').forEach(x => x.setAttribute('aria-pressed', String(MO.calm))); motionSync(); if (a === 'motion') render(); break;
     case 'v3dtog': {
       const k = ['wind', 'clouds'].includes(b.dataset.v) ? b.dataset.v : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k]));
@@ -4406,9 +4460,18 @@ document.addEventListener('input', e => {
   }
   if (e.target.id === 'duelScrub') { duelPlay(false); duelShow(Number(e.target.value)); }
   if (e.target.id === 'v3dScrub' && V3.fl) { const F = V3.fl; F.drag = true; F.now = F.tA + Number(e.target.value) / 1000 * (F.tB - F.tA); v3dFlightPose(); V3.scene?.invalidate(); }
-  if (e.target.id === 'windHour') { if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = Number(e.target.value); filmStop(); } W.hour = Math.round(Number(e.target.value)); $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150); }
+  if (e.target.id === 'windHour') {
+    const v = Number(e.target.value);
+    if (FILM.playing || FILM.busy || FILM.starting) { FILM.t = v; filmStop(); }
+    const was = W.hour; W.hour = Math.round(v); W.ft = v;
+    // stufenlos: ist der Tag geladen, gleiten Wind, Sonne und Ebenen zwischen den Stunden; sonst springt es auf die volle Stunde
+    if (mapBetween()) { FILM.t = v; filmDraw(); if (W.hour !== was && RT.res) { clearTimeout(W.t); W.t = setTimeout(computeRoute, 250); } return; }
+    filmPreload();
+    $('#windHourT').textContent = `${W.hour} Uhr`; clearTimeout(W.t); W.t = setTimeout(() => { updateWind(); updateThermal(); if (RT.res) computeRoute(); }, 150);
+  }
 });
 document.addEventListener('change', e => { if (e.target.id === 'v3dScrub' && V3.fl) V3.fl.drag = false; });
+document.addEventListener('pointerdown', e => { if (e.target.id === 'windHour') filmPreload(); }, { passive: true });
 // Scroll = Zeit: Mausrad oder Wischen (hoch/runter) über der Zeitleiste gleitet durch den Tag
 document.addEventListener('wheel', e => {
   if (!e.target.closest?.('#v3dBar .v3d-time') || !$('#v3dHour') || V3.fl) return;
@@ -4839,7 +4902,7 @@ function noflyForm(siteId) {
 const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, clouds: store.get('v3dClouds', true), tour: true, reg: null, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* Motion-Grafik (motion.js): Glow-Look in 3D und Ruhig-Modus (weniger Teilchen, kein Schein, langsamer, kein Intro-Flug). */
-const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow', true) !== false };
+const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow2', false) === true };   // Glow ist ein Extra: Standard ist die normale, gut erkennbare Karte
 const calmOn = () => MO.calm || noMotion();
 function motionSync() {
   document.documentElement.classList.toggle('ruhig', MO.calm);
@@ -4902,7 +4965,8 @@ function v3dScene(g, area) {
   sc.still = noMotion(); sc.cloudsOn = !!V3.clouds;
   sc.glow = sc._glow = MO.glow ? 1 : 0; sc.calm = calmOn();
   sc.setArea(area);
-  sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen dreht, zwei Finger zoomen und verschieben. Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
+  sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen verschiebt, zwei Finger zoomen, drehen und neigen (Maus: rechte Taste dreht). Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
+  { const k = store.get('v3dHint', 0) || 0; if (k < 2) { store.set('v3dHint', k + 1); setTimeout(() => toast(matchMedia('(pointer: coarse)').matches ? 'Ein Finger verschiebt, zwei Finger zoomen, drehen und neigen.' : 'Ziehen verschiebt, rechte Maustaste dreht, Mausrad zoomt.'), 900); } }
   sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.heading).toFixed(1)}deg)`; };
   // Luftbild von swisstopo über das Relief; ohne Netz bleibt das gezeichnete Relief stehen
   sc.drapeOn = !!V3.base;
@@ -5046,7 +5110,7 @@ async function v3dApply() {
   try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + errTxt(e) + ').'; }
   if (tok !== V3.tok || V3.scene !== sc) return;
   V3.d = d;
-  if (!V3.playing) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
+  if (!V3.playing && !v3dBetween()) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
   sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
   if (!reg) v3dHourData();
   sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
@@ -5144,14 +5208,14 @@ function windLines3d(sc, d) {
 const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
-const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 7000 : 11000) * k);
+const motionBudget = (k = 1) => Math.round((innerWidth < 700 ? 4200 : 6500) * k);   // so viel, dass der Wind lebt, so wenig, dass die Karte erkennbar bleibt
 /** Wind in 3D als leuchtender Partikelstrom (motion.js): Tempo und Farbe aus dem Modell, Lee-Wirbel hinter den Graten. */
 function v3dWind(d) {
   const sc = V3.scene;
   if (!sc) return;
   sc.setLines('wind', null);
   if (!V3.wind || !d || !window.AFCMotion) { sc.setStreaks('wind', null); V3.wsim = null; return; }
-  if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
+  if (V3.wsim && sc.streaks.get('wind')?.sim === V3.wsim) { if (!v3dBetween()) V3.wsim.setField(windSampler(d)); sc.invalidate(); return; }
   V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: motionBudget(), calm: calmOn(), glow: MO.glow });
   sc.setStreaks('wind', V3.wsim);
 }
@@ -5272,6 +5336,8 @@ function v3dSiteFrame(ts, dt) {
   return busy;
 }
 /** Zeitregler stufenlos (Scroll = Zeit): Sonne, Schatten und Windströmung gleiten zwischen den Stunden, Thermik und Wolken je volle Stunde. */
+/** Steht der Zeitregler zwischen zwei vollen Stunden (und der Tagesfilm ist geladen), mischt v3dScrub Sonne und Wind; v3dApply springt dann nicht zurück. */
+function v3dBetween() { const date = S.plan?.dates?.[S.day]; return Math.abs((V3.t ?? V3.hour) - V3.hour) > 0.02 && !!FILM.frames && FILM.date === date; }
 function v3dScrub(t) {
   const sc = V3.scene;
   if (!sc || (V3.mode !== 'site' && V3.mode !== 'region')) return;
@@ -6523,21 +6589,21 @@ async function introFlight() {
   try {
     const R = 9000;
     sc = new AFC3D.Scene(host.firstChild, g, { interactive: false });
-    sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = 1;
+    sc.still = false; sc.cloudsOn = false; sc.glow = sc._glow = MO.glow ? 1 : 0;
     sc.setArea({ lat: s.lat, lon: s.lon, radius: R, n: 121 });
     if (d?.sunPos) sc.setSun(d.sunPos);
-    if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: motionBudget(0.35), glow: true }));
+    if (d) sc.setStreaks('wind', AFCMotion.wind(sc, windSampler(d), { n: motionBudget(0.6), glow: MO.glow }));
     const face = num(s.aspects?.[0]) ? s.aspects[0] : 180, az = (face + 162) % 360, alt = sc.ground(s.lat, s.lon);
     sc.flyTo({ lat: s.lat, lon: s.lon, alt, az: az - 120, el: 72, dist: R * 3.4 }, 0);
     sc.setMarkers([{ id: 's', lat: s.lat, lon: s.lon, cls: 'top', html: `<span class="v3d-pin s-${cls(top.best.score)}">${num(top.best.score) ? top.best.score : ''}</span>` }]);
     requestAnimationFrame(() => host.classList.add('on'));
-    sc.flyTo({ lat: s.lat, lon: s.lon, alt: alt - 150, az, el: 24, dist: R * 0.95 }, 2300);
+    sc.flyTo({ lat: s.lat, lon: s.lon, alt: alt - 150, az, el: 24, dist: R * 0.95 }, 3300);
   } catch { host.remove(); return; }
   let gone = false;
   const end = () => { if (gone) return; gone = true; host.classList.add('out'); setTimeout(() => { sc?.destroy(); host.remove(); }, 520); };
   host.addEventListener('pointerdown', end, { once: true });
-  setTimeout(() => host.classList.add('label'), 1500);
-  setTimeout(end, 3100);
+  setTimeout(() => host.classList.add('label'), 2300);
+  setTimeout(end, 4600);
 }
 
 (async function init() {
@@ -6564,7 +6630,8 @@ async function introFlight() {
   lbLoad().then(async () => { if (await lbAlignBefore()) toast('Deine Flüge aus dem Profil stehen jetzt auch im Flugbuch.'); lbSyncProfile(); if (S.tab === 'decide') renderDecide(); }).catch(() => {});
   loadStatus(); setInterval(() => { if (!document.hidden) loadStatus(); }, 15 * 60000);
   myLoad(); useInit();
-  if ((store.get('intro') ?? 0) < INTRO_VER) { INTRO3D.want = false; setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150)); }
+  if (new URLSearchParams(location.search).has('anflug')) INTRO3D.want = true;   // zum Ansehen: /?anflug=1 zeigt den Anflug jedes Mal
+  if ((store.get('intro') ?? 0) < INTRO_VER) { INTRO3D.after = INTRO3D.want; INTRO3D.want = false; setTimeout(() => { if (!$('#msgDlg').open && !$('#siteDlg').open) showIntro(0, INTRO_FIRST); }, Math.max(600, openerUntil - performance.now() + 150)); }
   setInterval(() => { if (!document.hidden) { loadPlan(); loadWatch(); } }, 5 * 60000);
   setTimeout(() => groupLoad().catch(() => {}), 2500); setInterval(() => { if (!document.hidden && ME.user) groupLoad().catch(() => {}); }, 10 * 60000);
   if ('serviceWorker' in navigator) {
