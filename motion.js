@@ -92,10 +92,10 @@
     const box = o.box || null;                                   // 2D-Karte: Rechteck [halbe Breite, halbe Höhe] statt Kreis
     const f3 = !box;                                             // 3D: Fluss am Gelände mit echter Spur (zwei Abschnitte je Teilchen)
     const N = Math.min(f3 ? 40000 : 16000, o.n || 8000), X = new Float32Array(N), Z = new Float32Array(N), AGL = new Float32Array(N), AGE = new Float32Array(N), LIFE = new Float32Array(N);
-    const A0 = new Float32Array(N), HX = new Float32Array(N * 3), HY = new Float32Array(N * 3), HZ = new Float32Array(N * 3), HT = new Float32Array(N), HN = new Uint8Array(N);
+    const A0 = new Float32Array(N), HX = new Float32Array(N * 4), HY = new Float32Array(N * 4), HZ = new Float32Array(N * 4), HT = new Float32Array(N), HN = new Uint8Array(N), PH = new Float32Array(N);
     const R2 = R * 0.95, INT = clamp(0.1 * R / 2400, 0.07, 0.7);   // Abstand der Spurpunkte: grössere Szene, längere Spur
     // 3D: feines Höhenraster (Mesh abgetastet), damit die Fäden dem Gelände genau folgen, ohne das Mesh je Teilchen zu fragen
-    const MF = f3 ? 160 : 2, cf = 2 * R / (MF - 1), HF = new Float32Array(MF * MF);
+    const MF = f3 ? Math.round(clamp(R / 30, 160, 256)) : 2, cf = 2 * R / (MF - 1), HF = new Float32Array(MF * MF);
     if (f3) for (let j = 0; j < MF; j++) for (let i = 0; i < MF; i++) HF[j * MF + i] = sc._meshH(-R + i * cf, -R + j * cf);
     const hF = (x, z) => {
       const fx = clamp((x + R) / cf, 0, MF - 1.001), fz = clamp((z + R) / cf, 0, MF - 1.001), i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j, k = j * MF + i;
@@ -115,7 +115,7 @@
       X[i] = x; Z[i] = z;
       // 3D: dicht am Boden wie Wasser, ein paar Fäden etwas höher; 2D wie bisher
       AGL[i] = A0[i] = f3 ? 5 + Math.pow(rnd(), 2.4) * Math.min(160, Math.max(60, R * 0.02)) : 30 + Math.pow(rnd(), 1.7) * Math.min(750, R * 0.09);
-      LIFE[i] = f3 ? 3.5 + rnd() * 5 : 2.5 + rnd() * 3.5; AGE[i] = randomAge ? rnd() * LIFE[i] : 0; HN[i] = 0; HT[i] = 0;
+      LIFE[i] = f3 ? 3.5 + rnd() * 5 : 2.5 + rnd() * 3.5; AGE[i] = randomAge ? rnd() * LIFE[i] : 0; HN[i] = 0; HT[i] = 0; PH[i] = rnd() * 6.283;
     };
     for (let i = 0; i < N; i++) spawn(i, true);
     const col = [0, 0, 0], head = [0, 0, 0], tail = [0, 0, 0], mid = [0, 0, 0], ex = sc.ex;
@@ -136,8 +136,11 @@
         CX[k] = (noise3(X0, Z0 + e, q) - noise3(X0, Z0 - e, q)) / (2 * e); CZ[k] = -(noise3(X0 + e, Z0, q) - noise3(X0 - e, Z0, q)) / (2 * e);
       }
     };
+    let nA = N, dtE = 1 / 60;
     function step3(dt, put) {
-      const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = calm ? Math.round(N * 0.45) : N;
+      // ruckelt es (unter ~28 Bildern pro Sekunde), werden es nach und nach weniger Fäden, damit es flüssig bleibt
+      if (dt > 0) { dtE = dtE * 0.94 + dt * 0.06; if (dtE > 1 / 28 && nA > N * 0.35) nA = Math.round(nA * 0.985); else if (dtE < 1 / 50 && nA < N) nA = Math.min(N, nA + 150); }
+      const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = Math.min(nA, calm ? Math.round(N * 0.45) : N);
       t += dt;
       if (cT < 0 || t - cT > 0.12) { cT = t; curl(); }
       const kmToM = ts / 3.6, mean = F.mean || { u: 1, v: 0, kmh: 1 }, ms = Math.hypot(mean.u, mean.v) || 1, mex = mean.u / ms, mez = -mean.v / ms;
@@ -177,47 +180,55 @@
         }
         // Turbulenz: im Rotor und wo sich der Wind am Hang aufstellt, wirbeln die Teilchen wie Staub durcheinander
         const tq = Math.max(sstep(0.12, 0.6, lee), soar * 0.8);
-        if (tq > 0.05) { const jk = tq * (s0 + 8) * kmToM * dt * 0.9; X[i] += (rnd() - 0.5) * jk; Z[i] += (rnd() - 0.5) * jk; AGL[i] += (rnd() - 0.5) * jk * 0.6; }
+        if (tq > 0.03) {
+          // kleine Rotoren: jedes Korn kreist weich (Walze quer zum Wind, dazu seitlich), je stärker die Turbulenz, desto enger und schneller
+          PH[i] += dt * (1.6 + 3.2 * tq) * (i & 1 ? 1 : -1);
+          const ok = tq * (s0 + 7) * kmToM * dt * 0.75, cph = Math.cos(PH[i]), sph = Math.sin(PH[i]);
+          X[i] += (ex * cph - ez * sph * 0.6) * ok; Z[i] += (ez * cph + ex * sph * 0.6) * ok; AGL[i] += sph * ok * 0.8 / ex3;
+        }
         // Höhe über Grund: gehoben am Luv, im Lee runter und im Rotor auf und ab; kehrt langsam zur eigenen Höhe zurück
         AGL[i] = clamp(AGL[i] + (w * ts * 0.9 + (A0[i] - agl) * (soar > 0.1 ? 0.15 : 0.5)) * dt, 3, A0[i] + 380);
         // Spur merken
         HT[i] += dt;
         if (HN[i] === 0 || HT[i] >= INT) {
-          const o3 = i * 3; HX[o3 + 2] = HX[o3 + 1]; HY[o3 + 2] = HY[o3 + 1]; HZ[o3 + 2] = HZ[o3 + 1]; HX[o3 + 1] = HX[o3]; HY[o3 + 1] = HY[o3]; HZ[o3 + 1] = HZ[o3];
-          HX[o3] = x; HY[o3] = (hF(x, z) + agl) * ex3; HZ[o3] = z; HT[i] = HN[i] === 0 ? 0 : HT[i] - INT; HN[i] = Math.min(3, HN[i] + 1);
+          const o4 = i * 4; for (let q = 3; q > 0; q--) { HX[o4 + q] = HX[o4 + q - 1]; HY[o4 + q] = HY[o4 + q - 1]; HZ[o4 + q] = HZ[o4 + q - 1]; }
+          HX[o4] = x; HY[o4] = (hF(x, z) + agl) * ex3; HZ[o4] = z; HT[i] = HN[i] === 0 ? 0 : HT[i] - INT; HN[i] = Math.min(4, HN[i] + 1);
         }
-        if (s0 < 0.8) continue;
+        if (s0 < 0.3) continue;
         const y = (hF(X[i], Z[i]) + AGL[i]) * ex3;
         const edge = 1 - sstep(0.8, 0.95, Math.hypot(X[i], Z[i]) / R);
-        const life = Math.min(1, AGE[i] / 0.5, (LIFE[i] - AGE[i]) / 0.7);
+        const life = Math.min(1, AGE[i] / 0.9, (LIFE[i] - AGE[i]) / 1.2) * sstep(0.3, 2.5, s0);   // weich ein- und ausblenden, auch bei wenig Wind
         if (life <= 0) continue;
         const eff = Math.abs(along) + swirl * 10;
         ramp(glow ? GLOW : DAY, eff, col);
         if (soar > 0.05) { const mm = Math.min(0.9, soar * 1.1); col[0] = mix(col[0], glow ? 0.5 : 0.12, mm); col[1] = mix(col[1], glow ? 1.0 : 0.7, mm); col[2] = mix(col[2], glow ? 0.45 : 0.2, mm); }
         if (lee > 0.06) { const mm = Math.min(0.95, (lee - 0.06) * 2.4); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
-        const dust = sstep(0.25, 0.7, tq);   // 0 = Faden, 1 = Staubkorn
-        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 0.6 * dust);
+        const dust = sstep(0.15, 0.75, tq);   // 0 = Faden, 1 = Staubkorn: fliessender Übergang
+        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 1.3 * dust);
         if (a < 0.01) continue;
-        const o3 = i * 3, f = clamp(HT[i] / INT, 0, 1);
         head[0] = X[i]; head[1] = y; head[2] = Z[i];
-        if (dust > 0.5) {   // Staub: nur ein winziges Korn in Flugrichtung, keine Linie
-          const L3 = Math.max(cf * 0.06, Math.abs(along) * kmToM * INT * 0.12); tail[0] = X[i] - ex * L3; tail[1] = y - (w > 0 ? L3 * 0.3 * ex3 : 0); tail[2] = Z[i] - ez * L3;
-          put(c++, head, tail, col[0], col[1], col[2], a, a * 0.6); continue;
+        // Spur: drei Abschnitte, vorn hell, hinten auslaufend; in Turbulenz schrumpft die Spur stufenlos zum Staubkorn
+        const lk = 1 - 0.88 * dust, o4 = i * 4, f = clamp(HT[i] / INT, 0, 1);
+        if (HN[i] < 4) {   // frisch geboren: kurzer Faden nach hinten, bis die Spur steht
+          const L2 = Math.max(cf * 0.05, Math.abs(along) * kmToM * INT * 1.5 * lk); tail[0] = X[i] - ex * L2; tail[1] = y; tail[2] = Z[i] - ez * L2;
+          put(c++, head, tail, col[0], col[1], col[2], a * Math.min(1, AGE[i] / (INT * 4)), 0); continue;
         }
-        if (HN[i] < 3) {   // frisch geboren: kurzer Faden nach hinten, bis die Spur steht
-          const L2 = along * kmToM * INT * 1.5; tail[0] = X[i] - ex * L2; tail[1] = y; tail[2] = Z[i] - ez * L2;
-          put(c++, head, tail, col[0], col[1], col[2], a * Math.min(1, AGE[i] / (INT * 3)), 0); continue;
+        let px = head[0], py = head[1], pz = head[2], pa = a;
+        for (let q = 0; q < 3; q++) {
+          const qx = mix(HX[o4 + q], HX[o4 + q + 1], f), qy = mix(HY[o4 + q], HY[o4 + q + 1], f), qz = mix(HZ[o4 + q], HZ[o4 + q + 1], f);
+          mid[0] = head[0] + (qx - head[0]) * lk; mid[1] = head[1] + (qy - head[1]) * lk; mid[2] = head[2] + (qz - head[2]) * lk;
+          if (q > 0 && lk < 0.3) break;   // Staub: nur das vorderste Stück
+          tail[0] = px; tail[1] = py; tail[2] = pz;
+          const na = q === 2 ? 0 : pa * 0.5;
+          put(c++, tail, mid, col[0], col[1], col[2], pa, lk < 0.3 ? pa * 0.6 : na);
+          px = mid[0]; py = mid[1]; pz = mid[2]; pa = na;
         }
-        mid[0] = mix(HX[o3], HX[o3 + 1], f); mid[1] = mix(HY[o3], HY[o3 + 1], f); mid[2] = mix(HZ[o3], HZ[o3 + 1], f);
-        tail[0] = mix(HX[o3 + 1], HX[o3 + 2], f); tail[1] = mix(HY[o3 + 1], HY[o3 + 2], f); tail[2] = mix(HZ[o3 + 1], HZ[o3 + 2], f);
-        put(c++, head, mid, col[0], col[1], col[2], a, a * 0.45);
-        put(c++, mid, tail, col[0], col[1], col[2], a * 0.45, 0);
       }
       return c;
     }
     const ex3 = sc.ex;
     const sim = {
-      max: f3 ? N * 2 : N, mean: () => F.mean, lines: f3,
+      max: f3 ? N * 3 : N, mean: () => F.mean, lines: f3,
       setField(smp) { field(smp); },
       step(dt, put) {
         if (f3) return step3(dt, put);

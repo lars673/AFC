@@ -609,7 +609,7 @@
       if (!sim) { this.streaks.delete(key); return this.invalidate(); }
       if (sim.lines) {
         // Linienmodus: 2 Ecken je Stück (Position + Farbe), vorn Deckkraft a, hinten fast null
-        const max = Math.min(80000, sim.max), data = new Float32Array(max * 14);
+        const max = Math.min(130000, sim.max), data = new Float32Array(max * 14);
         const put = (i, h, t, r, g, b, a, tailA) => {
           if (i >= max) return;
           const o = i * 14;
