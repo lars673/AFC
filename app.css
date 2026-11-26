@@ -1550,3 +1550,12 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .intro3d-t b { font: 700 26px/1.1 var(--f-num); }
 /* Windkarte im Motion-Look: die Karte wird leicht abgedunkelt, damit die Wind-Punkte leuchten */
 .leaflet-wind-pane canvas.wind-glow { background: rgba(10, 8, 34, .36); }
+
+/* Drei Ansichten (Luft, Sonne & Thermik, Sicherheit) vorne, einzelne Ebenen unter «Einzeln wählen» */
+.view-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.view-row .vseg { justify-content: center; text-align: center; font-weight: 700; }
+.map-more > summary, .v3d-more > summary { cursor: pointer; font-size: 13px; color: var(--ink2, inherit); opacity: .8; padding: 4px 2px; list-style: none; }
+.map-more > summary::-webkit-details-marker, .v3d-more > summary::-webkit-details-marker { display: none; }
+.map-more > summary::before, .v3d-more > summary::before { content: "▸ "; } .map-more[open] > summary::before, .v3d-more[open] > summary::before { content: "▾ "; }
+.v3d-more > summary { color: #b6c5ba; }
+.v3d-views .v3d-chip.view { font-weight: 700; }

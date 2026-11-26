@@ -1342,7 +1342,9 @@ function renderProfile() {
       <div class="seg" role="group" aria-label="Darstellung">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel'], ['sun', 'Sonne']].map(([k, n]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${S.theme === k}">${n}</button>`).join('')}</div>
       <p class="fine">«Sonne»: grössere Schrift und starker Kontrast, gut lesbar draussen am Startplatz. Schnell ein- und ausschalten mit dem Sonnen-Knopf oben.</p>
       <div class="seg" role="group" aria-label="Bewegung" style="margin-top:10px">${[['full', 'Volle Bewegung'], ['calm', 'Ruhig']].map(([k, n]) => `<button type="button" data-act="motion" data-v="${k}" aria-pressed="${(k === 'calm') === MO.calm}">${n}</button>`).join('')}</div>
-      <p class="fine">«Ruhig»: weniger leuchtende Teilchen in 3D, kein Schein, langsamer und ohne Anflug ins Tal beim Öffnen. Die Daten bleiben gleich.</p></div>
+      <p class="fine">«Ruhig»: weniger leuchtende Teilchen in 3D, kein Schein, langsamer und ohne Anflug ins Tal beim Öffnen. Die Daten bleiben gleich.</p>
+      <div class="seg" role="group" aria-label="3D-Look" style="margin-top:10px">${[['glow', 'Leuchtend (Glow)'], ['day', 'Taglicht']].map(([k, n]) => `<button type="button" data-act="glowset" data-v="${k}" aria-pressed="${(k === 'glow') === MO.glow}">${n}</button>`).join('')}</div>
+      <p class="fine">3D-Look: «Leuchtend» dunkelt das Gelände ab, damit Wind und Thermik leuchten. «Taglicht» zeigt die Karte in normalen Farben.</p></div>
     <div class="panel"><h3>Hilfe</h3><div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn sec" type="button" data-act="intro">Einführung nochmals ansehen</button>${ME.user ? '<button class="btn sec" type="button" data-act="feedback">Rückmeldung an Lars</button>' : ''}</div></div>
     ${accountPanel()}
     <details class="prof-tech" ${S.techOpen ? 'open' : ''}><summary><span class="prof-h">Technik und Daten</span><span class="fine">Verbrauch, was AFC gelernt hat, Datenquellen, Datenschutz</span></summary>
@@ -3374,6 +3376,7 @@ function windTimeIso() {
 function syncWindBar() {
   $$('#windBar .wseg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === W.level)));
   $$('#windBar .tseg').forEach(b => b.setAttribute('aria-pressed', String(T.modes.has(b.dataset.mode))));
+  { const cur = mapViewNow(); $$('#windBar [data-act="view"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === cur))); }
   const on = W.level !== 'off';
   $('#windBar .wind-legend').hidden = !on;
   $('#windBar .wind-legend .fine').hidden = W.level !== '10m';
@@ -4290,15 +4293,19 @@ document.addEventListener('click', async e => {
     case 'v3drot': if (V3.scene && !V3.scene.pov) { V3.scene.orbit = 0; v3dCam({ az: V3.scene.cam.az + Number(b.dataset.v) }, 450); } break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
+    case 'glowset': MO.glow = b.dataset.v === 'glow'; store.set('v3dGlow3', MO.glow); motionSync(); render(); break;
+    case 'v3dview': v3dView(b.dataset.v); break;
+    case 'view': mapView(b.dataset.v); break;
     case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow3', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
     case 'v3dcalm': case 'motion': MO.calm = a === 'motion' ? b.dataset.v === 'calm' : !MO.calm; store.set('ruhig', MO.calm); $$('[data-act="v3dcalm"]').forEach(x => x.setAttribute('aria-pressed', String(MO.calm))); motionSync(); if (a === 'motion') render(); break;
     case 'v3dtog': {
       const k = ['wind', 'clouds'].includes(b.dataset.v) ? b.dataset.v : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k]));
+      v3dViewSync();
       if (k === 'wind') v3dWind(V3.d); else if (k === 'clouds') { store.set('v3dClouds', V3.clouds); if (V3.scene) { V3.scene.cloudsOn = V3.clouds; V3.scene.invalidate(); } } else v3dCables();
       if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud();
       break;
     }
-    case 'v3dlayer': V3.layer = V3.layer === b.dataset.v ? null : b.dataset.v; $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer))); v3dApply(); break;
+    case 'v3dlayer': V3.layer = V3.layer === b.dataset.v ? null : b.dataset.v; $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer))); v3dViewSync(); v3dApply(); break;
     case 'region3d': if (S.tab === 'map' && M.map) open3dMap(); else open3dRegion(); break;
     case 'v3dtour': V3.tour = !V3.tour; b.setAttribute('aria-pressed', String(V3.tour)); if (V3.tour && !V3.playing) v3dPlay(true); break;
     case 'v3dvolte': v3dVolte(!V3.volte).then(() => b.setAttribute('aria-pressed', String(!!V3.volte))); break;
@@ -4929,6 +4936,35 @@ const V3_LAYERS = {
 };
 const PLAY_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i-play" d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z"/><path class="i-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
 const GLIDER_SVG = '<svg class="v3d-gl" viewBox="0 0 40 34" width="40" height="34" aria-hidden="true"><path d="M3 12C8 3 32 3 37 12c-5-3.5-29-3.5-34 0z" fill="#ff5a36" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 12l14 15M35 12L21 27M14 9.6l5.4 17M26 9.6l-5.4 17" stroke="#fff" stroke-width="1" fill="none" opacity=".9"/><circle cx="20" cy="28.5" r="3.6" fill="#101c15" stroke="#fff" stroke-width="1.6"/></svg>';
+/* ---- Drei Ansichten statt vieler Schalter (Lars 2026-11-26): man wählt, was man wissen will, nicht welche Ebene.
+   Luft: der Wind fliesst übers Gelände, grün wo er am Hang hochsteigt (Soaring), magenta wo er hinter Kreten wirbelt (Lee).
+   Sonne & Thermik: Sonne und Schatten, Thermik-Karte und Thermik-Säulen. Sicherheit: Lee, Wind und Kabel.
+   Einzelne Ebenen gibt es weiter unter «Einzeln wählen». Gleiche Ansichten auf der Karte (mapView) und in 3D (v3dView). */
+const VIEW_3D = { luft: { wind: true, layer: null }, sonne: { wind: false, layer: 'thermal' }, sicher: { wind: true, layer: 'lee', cables: true } };
+const view3dStart = () => ({ ...(VIEW_3D[store.get('view', 'luft')] || VIEW_3D.luft) });
+const VIEWS = { luft: 'Luft', sonne: 'Sonne & Thermik', sicher: 'Sicherheit' };
+const VIEW_TIP = { luft: 'Wind fliesst übers Gelände: grün steigt er am Hang (Soaring), magenta wirbelt er hinter Kreten (Lee).', sonne: 'Sonne, Schatten und wo die Thermik am besten steigt.', sicher: 'Lee hinter den Kreten, Wind und Kabel.' };
+function v3dViewNow() { return V3.wind && !V3.layer ? 'luft' : !V3.wind && V3.layer === 'thermal' ? 'sonne' : V3.wind && V3.layer === 'lee' ? 'sicher' : ''; }
+function v3dViewSync() { const cur = v3dViewNow(); $$('#v3dBar [data-act="v3dview"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === cur))); }
+function v3dViews(extra = '') { const cur = v3dViewNow(); return `<div class="v3d-chips v3d-views" role="group" aria-label="Ansicht">${Object.entries(VIEWS).map(([k, n]) => `<button type="button" class="v3d-chip view" data-act="v3dview" data-v="${k}" aria-pressed="${cur === k}" title="${esc(VIEW_TIP[k])}">${n}</button>`).join('')}${extra}</div>`; }
+function v3dView(v) {
+  const want = VIEW_3D[v]; if (!want) return;
+  const cab = want.cables && !V3.cables;
+  Object.assign(V3, want); store.set('view', v);
+  v3dViewSync();
+  $$('#v3dBar [data-act="v3dlayer"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === V3.layer)));
+  $$('#v3dBar [data-act="v3dtog"]').forEach(x => x.setAttribute('aria-pressed', String(!!V3[x.dataset.v])));
+  if (cab) v3dCables();
+  v3dApply();
+}
+/** Dieselben drei Ansichten auf der Karte. */
+function mapViewNow() { const m = [...T.modes].sort().join(); return W.level === '10m' && !m ? 'luft' : W.level === 'off' && m === 'sun,thermal' ? 'sonne' : W.level === '10m' && m === 'lee' ? 'sicher' : ''; }
+function mapView(v) {
+  const want = { luft: ['10m', []], sonne: ['off', ['sun', 'thermal']], sicher: ['10m', ['lee']] }[v]; if (!want) return;
+  W.level = want[0]; T.modes = new Set(want[1]); store.set('wind', W.level); store.set('thermal', want[1]); store.set('view', v);
+  updateWind(); updateThermal();
+  if (W.level !== 'off') setTimeout(filmPreload, 1500);
+}
 const v3dChip = (act, v, label, on) => `<button type="button" class="v3d-chip" data-act="${act}" data-v="${v}" aria-pressed="${!!on}">${label}</button>`;
 
 function v3dShell(title, sub, bar) {
@@ -5055,7 +5091,7 @@ async function miniMount(hr = null) {
 
 /* ---- Startplatz in 3D */
 function v3dSiteBar() {
-  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${v3dChip('v3dglow', '', 'Glow', MO.glow)}${v3dChip('v3dcalm', '', 'Ruhig', MO.calm)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : ''}</div>
+  return `${v3dViews(V3.land ? v3dChip('v3dvolte', '', 'Landevolte', V3.volte) : '')}<details class="v3d-more"><summary>Einzeln wählen</summary><div class="v3d-chips" role="group" aria-label="Einzelne Ebenen">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${v3dChip('v3dtog', 'cables', 'Kabel', V3.cables)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div></details>
     <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit in der 3D-Ansicht"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
@@ -5066,7 +5102,7 @@ async function open3dSite(id) {
   v3dEnd(); setTimeout(miniWake, 0);
   const tok = V3.tok, l = nearestLanding(s)?.l || null;
   const hour = Math.min(20, Math.max(6, S.site === id && num(S.hour) ? S.hour : W.hour));
-  Object.assign(V3, { mode: 'site', site: s, land: l, hour, t: hour, layer: null });
+  Object.assign(V3, { mode: 'site', site: s, land: l, hour, t: hour }, view3dStart());
   dlg('#v3dDlg', v3dShell(`${s.name} in 3D`, `${s.alt} m · ${dayName(S.day)} ${dayDate(S.day)}`, v3dSiteBar()));
   try {
     const g = await thermalGrid();
@@ -5398,7 +5434,7 @@ async function v3dPlay(on) {
 
 /* ---- Tagesfilm in 3D: Überflug über die Region; Sonne und Schatten, Wolken, Wind und Thermik laufen durch den Tag */
 function v3dRegionBar() {
-  return `<div class="v3d-chips" role="group" aria-label="Was im Gelände gezeigt wird">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}${v3dChip('v3dtour', '', 'Überflug', V3.tour)}${v3dChip('v3dglow', '', 'Glow', MO.glow)}${v3dChip('v3dcalm', '', 'Ruhig', MO.calm)}</div>
+  return `${v3dViews(v3dChip('v3dtour', '', 'Überflug', V3.tour))}<details class="v3d-more"><summary>Einzeln wählen</summary><div class="v3d-chips" role="group" aria-label="Einzelne Ebenen">${v3dChip('v3dtog', 'wind', 'Wind', V3.wind)}${v3dChip('v3dtog', 'clouds', 'Wolken', V3.clouds)}${Object.entries(V3_LAYERS).map(([k, v]) => v3dChip('v3dlayer', k, v[0], V3.layer === k)).join('')}</div></details>
     <div class="v3d-time"><button type="button" class="film-btn" id="v3dPlay" data-act="v3dplay" aria-pressed="false" aria-label="Tag abspielen" title="Tag abspielen">${PLAY_SVG}</button><b id="v3dHourT">${V3.hour} Uhr</b><input id="v3dHour" type="range" min="6" max="20" step="any" value="${V3.hour}" aria-label="Uhrzeit im Tagesfilm"></div>
     <p class="fine v3d-note" id="v3dNote"></p>`;
 }
@@ -5409,7 +5445,7 @@ async function open3dRegion() {
   v3dEnd();
   const tok = V3.tok, all = S.plan.sites.filter(x => !x.blocked && num(x.lat) && num(x.lon)), fav = all.filter(x => S.fav.has(x.id)), pts = fav.length ? fav : all;
   if (!pts.length) { toast('Für den Tagesfilm fehlen Startplätze.'); return; }
-  Object.assign(V3, { mode: 'region', site: null, land: null, hour: 9, t: 9, layer: 'thermal', tour: true });
+  Object.assign(V3, { mode: 'region', site: null, land: null, hour: 9, t: 9, tour: true }, view3dStart());
   dlg('#v3dDlg', v3dShell('Tagesfilm in 3D', `${dayName(S.day)} ${dayDate(S.day)} · ${fav.length ? 'rund um deine Startplätze' : 'Berner Oberland'}`, v3dRegionBar()));
   try {
     const g = await thermalGrid();
