@@ -5157,7 +5157,7 @@ function v3dSiteHud(err = '') {
   const cab = V3.cables && V3.obstN != null ? (V3.obstN ? `${V3.obstN} Kabel und Seilbahnen im Ausschnitt (BAZL, nur meldepflichtige). ` : 'Keine erfassten Kabel im Ausschnitt (BAZL, nur meldepflichtige). ') : '';
   const cw = V3.clouds ? V3.scene?.clouds : null;
   const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. ` : '';
-  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? (V3.d?.measured ? `Wind jetzt: an ${V3.d.measured.stations.length} Messstationen angepasst, dazwischen geschätzt. ` : 'Wind am Boden folgt dem Gelände (Schätzung). ') : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
+  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? (V3.d?.measured ? `Wind jetzt: an ${V3.d.measured.stations.length} Messstationen angepasst, dazwischen geschätzt. ` : `${WN_NOTE()} `) : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
   const m = V3.scene?.markers.find(x => x.id === 'start');
   if (m) V3.scene.moveMarker('start', V3.site.lat, V3.site.lon, null, `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(V3.site.name)}</span>`);
 }
@@ -5264,8 +5264,44 @@ function windLines3d(sc, d) {
   }
   return lines;
 }
-/** Wind für die Teilchen: Bodenwind dem Gelände entlang und Höhenwind (ca. 2000 m) an einem Punkt, in km/h. */
-const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
+/* ---- WindNinja (US Forest Service): Bodenwind im Gelände, für 16 Richtungen im Voraus gerechnet (tools/windninja.py, lib/wn.js).
+   Je Zelle und Richtung ein Faktor und eine Ablenkung; zwischen den Richtungen weich gemischt, linear im Tempo der Prognose. */
+const WN = { f: null, key: '', p: null };
+const WN_NOTE = () => (WN.f && V3.scene && wnCovers(V3.scene.c.lat, V3.scene.c.lon, V3.scene.R * 0.5) ? 'Wind am Boden mit WindNinja im Gelände gerechnet (100 m).' : 'Wind am Boden folgt dem Gelände (Schätzung).');
+function wnCovers(lat, lon, R) {
+  const F = WN.f; if (!F) return false;
+  const dLa = R / 111320, dLo = R / (111320 * Math.cos(lat * D2R));
+  return lat - dLa >= F.la0 && lat + dLa <= F.la0 + (F.ny - 1) * F.dla && lon - dLo >= F.lo0 && lon + dLo <= F.lo0 + (F.nx - 1) * F.dlo;
+}
+function wnEnsure(lat, lon, R) {
+  if (wnCovers(lat, lon, R)) return Promise.resolve(true);
+  const dLa = R / 111320, dLo = R / (111320 * Math.cos(lat * D2R)), b = [lat - dLa, lon - dLo, lat + dLa, lon + dLo].map(v => v.toFixed(3)).join(',');
+  if (WN.key === b && WN.p) return WN.p;
+  WN.key = b;
+  return (WN.p = fetch(`/api/wn?b=${b}&n=${R > 15000 ? 280 : 200}`).then(r => (r.ok ? r.arrayBuffer() : null)).then(buf => {
+    if (!buf) return false;
+    const hl = new DataView(buf).getUint32(0, true), h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+    h.u8 = new Uint8Array(buf, 4 + hl); h.i8 = new Int8Array(buf, 4 + hl); WN.f = h;
+    return true;
+  }).catch(() => false));
+}
+/** Bodenwind w = [u, v] km/h an einem Punkt nach WindNinja; null ausserhalb des gerechneten Gebiets. */
+function wnFlow(w, lat, lon) {
+  const F = WN.f;
+  if (!F || !w) return null;
+  const fx = (lon - F.lo0) / F.dlo, fy = (lat - F.la0) / F.dla;
+  if (fx < 0 || fy < 0 || fx > F.nx - 1 || fy > F.ny - 1) return null;
+  const s = Math.hypot(w[0], w[1]);
+  if (s < 0.05) return w;
+  const from = (Math.atan2(-w[0], -w[1]) / D2R + 360) % 360, dr = from / (360 / F.dirs), d0 = Math.floor(dr) % F.dirs, d1 = (d0 + 1) % F.dirs, t = dr - Math.floor(dr);
+  const N = F.nx * F.ny, x0 = Math.min(F.nx - 2, Math.floor(fx)), y0 = Math.min(F.ny - 2, Math.floor(fy)), tx = fx - x0, ty = fy - y0, k = y0 * F.nx + x0;
+  const bil = (A, o) => (A[o + k] * (1 - tx) + A[o + k + 1] * tx) * (1 - ty) + (A[o + k + F.nx] * (1 - tx) + A[o + k + F.nx + 1] * tx) * ty;
+  const fA = bil(F.u8, d0 * 2 * N), fB = bil(F.u8, d1 * 2 * N), aA = bil(F.i8, d0 * 2 * N + N), aB = bil(F.i8, d1 * 2 * N + N);
+  const sp = s * (fA + (fB - fA) * t) / F.fScale, to = (from + aA + (aB - aA) * t + 180) * D2R;
+  return [Math.sin(to) * sp, Math.cos(to) * sp];
+}
+/** Wind für die Teilchen: Bodenwind im Gelände (WindNinja, sonst Schätzung) und Höhenwind (ca. 2000 m) an einem Punkt, in km/h. */
+const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = wnFlow(lv[0], lat, lon) || terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
 /** 3D-Wind als feine Lichtfäden: viele Teilchen wie im Tunnel-Vorbild (ein Faden kostet wenig) */
@@ -5281,6 +5317,8 @@ function v3dWind(d) {
   V3.wsim = AFCMotion.wind(sc, windSampler(d), { n: windBudget(), calm: calmOn(), glow: MO.glow });
   V3.wsim.leeLight = V3.layer === 'lee';
   sc.setStreaks('wind', V3.wsim);
+  // WindNinja-Feld nachladen; sobald es da ist, fliessen die Teilchen im gerechneten Geländewind
+  if (!wnCovers(sc.c.lat, sc.c.lon, sc.R)) wnEnsure(sc.c.lat, sc.c.lon, sc.R).then(ok => { if (ok && V3.scene === sc && V3.wsim && V3.d) { V3.wsim.setField(windSampler(V3.d)); sc.invalidate(); } });
 }
 /** Kabel, Seilbahnen und hohe Hindernisse des BAZL im Ausschnitt. */
 async function v3dCables() {
@@ -5616,7 +5654,7 @@ function v3dRegionHud(err = '') {
   el.innerHTML = `<div class="v3d-box">${top ? `<span class="mini-pill s-${cls(at(top))}">${at(top)}</span><span>${V3.hour} Uhr: am besten <b>${esc(top.name)}</b></span>` : `<span>${V3.hour} Uhr: keine Bewertung</span>`}</div>${err ? `<div class="v3d-box warn" role="status">${esc(err)}</div>` : ''}`;
   const cw = V3.clouds ? V3.scene?.clouds : null;
   const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}Die einzelnen Wolken sind nur angedeutet. ` : '';
-  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? 'Wind am Boden folgt dem Gelände (Schätzung). ' : ''}${cld}Zahlen: Bewertung der Startplätze zur gezeigten Stunde. ${RELIEF_NOTE(V3.scene?.dem)}`;
+  $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? WN_NOTE() + ' ' : ''}${cld}Zahlen: Bewertung der Startplätze zur gezeigten Stunde. ${RELIEF_NOTE(V3.scene?.dem)}`;
 }
 
 /* ---- Flug-Replay in 3D: Spur aus dem Flugbuch im Gelände, daneben was AFC vorhergesagt hat */
@@ -6165,6 +6203,8 @@ async function dayClipLoad() {
     if (tok !== BR.tok || V3.mode !== 'brief') return;
     const R = 14000, lat = c.lat, lon = c.lon;
     const dem = g ? await AFC3D.loadDem(DEM_URL, { lat, lon, radius: R }, { ...DEM_O, grid: g, timeout: 5000 }).catch(() => null) : null;
+    if (tok !== BR.tok || V3.mode !== 'brief') return;
+    await Promise.race([wnEnsure(lat, lon, R), new Promise(r => setTimeout(r, 4000))]);
     if (tok !== BR.tok || V3.mode !== 'brief') return;
     const sites = all.filter(o => haversineKm(lat, lon, o.lat, o.lon) * 1000 < R * 0.9);
     const face = num(c.aspects?.[0]) ? c.aspects[0] : 180;

@@ -13,6 +13,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { toIsoTime, isNum, circularMean, windDiff, mean, zurichParts, haversineKm } from './lib/util.js';
 import { spawn, execFile } from 'node:child_process';
 import { LEVELS, DEFAULT_LEVEL } from './lib/scoring.js';
+import * as WN from './lib/wn.js';
 import { fetchForecast, fetchPressureLevels, fetchSecondModel } from './lib/openmeteo.js';
 import { loadStationList, fetchObservations, fetchFoehnIndex, PRESSURE_STATIONS } from './lib/stations.js';
 import { regionalFromObs } from './lib/regional.js';
@@ -1524,6 +1525,16 @@ const server = http.createServer(async (req, res) => {
         const pk = thermalResponse(t);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/wn') {
+        // Wind im Gelände (WindNinja, im Voraus gerechnet): Ausschnitt der 3D-Szene als Binärdaten
+        const b = (u.searchParams.get('b') || '').split(',').map(Number);
+        if (b.length !== 4 || b.some(v => !Number.isFinite(v)) || b[2] - b[0] > 1 || b[3] - b[1] > 1.5) return sendJson(req, res, 400, { error: 'b=süd,west,nord,ost fehlt oder Ausschnitt zu gross' });
+        const out = WN.slice(ROOT, b, Math.min(320, Math.max(40, Number(u.searchParams.get('n')) || 200)));
+        if (!out) return sendJson(req, res, 404, { error: 'kein WindNinja-Feld für diesen Ausschnitt' });
+        const gz = /\bgzip\b/.test(req.headers['accept-encoding'] || ''), body = gz ? zlib.gzipSync(out) : out;
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'public, max-age=86400', Vary: 'Accept-Encoding', 'Content-Length': body.length, ...(gz ? { 'Content-Encoding': 'gzip' } : {}), ...SEC });
+        return res.end(body);
       }
       if (req.method === 'GET' && p === '/api/obstacles') {
         if (!state.obstacles) return sendJson(req, res, 202, { warming: true, error: ingest.obstacles.error });
