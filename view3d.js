@@ -274,6 +274,9 @@
   /* Feine Lichtfäden (Wind in 3D): je Teilchen ein bis zwei Linienstücke, ein Pixel breit, vorn hell, hinten auslaufend */
   const VS_FL = 'attribute vec3 a_p; attribute vec4 a_c; uniform mat4 u_mvp; varying vec4 v_c; void main(){ v_c = a_c; vec4 p = u_mvp*vec4(a_p, 1.); p.z -= .0008*p.w; gl_Position = p; }';
   const FS_FL = HI + 'varying vec4 v_c; uniform float u_a; void main(){ float a = v_c.a*u_a; gl_FragColor = vec4(v_c.rgb*a, a); }';
+  /* Wind als einzelne Körner: jeder Punkt rund und weich, hellere Körner etwas grösser (Grösse in Pixeln, u_ps je Gerät) */
+  const VS_DOT = 'attribute vec3 a_p; attribute vec4 a_c; uniform mat4 u_mvp; uniform float u_ps; varying vec4 v_c; void main(){ v_c = a_c; vec4 p = u_mvp*vec4(a_p, 1.); p.z -= .0008*p.w; gl_Position = p; gl_PointSize = u_ps*(.7 + 1.5*sqrt(clamp(a_c.a, 0., 1.)))*clamp(2400./p.w, .55, 1.6); }';
+  const FS_DOT = HI + 'varying vec4 v_c; uniform float u_a; void main(){ vec2 q = gl_PointCoord*2. - 1.; float r = dot(q, q); if (r > 1.) discard; float a = v_c.a*u_a*(1. - r)*(1. - r)*1.6; vec3 c = mix(v_c.rgb, vec3(1.), .35*(1. - r)*clamp(v_c.a*1.4, 0., 1.)); gl_FragColor = vec4(c*a, a); }';
   /* Bloom (Schein um die Wind- und Thermik-Teilchen, wie im Prototyp): Teilchen in halber Auflösung, mit der Tiefe des Geländes
      (hinter Bergen leuchtet nichts durch), weichgezeichnet und aufaddiert */
   const VS_Q = 'attribute vec2 a_p; varying vec2 v_uv; void main(){ v_uv = a_p*.5 + .5; gl_Position = vec4(a_p, 0., 1.); }';
@@ -362,7 +365,7 @@
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
       this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR), fl: this._prog(VS_FL, FS_FL), pil: this._prog(VS_PIL, FS_PIL) };
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR), fl: this._prog(VS_FL, FS_FL), dot: this._prog(VS_DOT, FS_DOT), pil: this._prog(VS_PIL, FS_PIL) };
       this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
@@ -1089,14 +1092,17 @@
         if (!st.lines || !st.n) continue;
         if (!st.buf) { st.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); gl.bufferData(gl.ARRAY_BUFFER, st.data, gl.DYNAMIC_DRAW); st.dirty = false; }
         else { gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); if (st.dirty) { gl.bufferSubData(gl.ARRAY_BUFFER, 0, st.data.subarray(0, st.n * 14)); st.dirty = false; } }
-        gl.vertexAttribPointer(P.a.a_p, 3, gl.FLOAT, false, 28, 0); gl.vertexAttribPointer(P.a.a_c, 4, gl.FLOAT, false, 28, 12);
-        gl.blendFunc(gl.ONE, gk > 0.75 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_a, 1);   // heller Look: deckend statt additiv, sonst verschwinden die Fäden auf Schnee
-        gl.drawArrays(gl.LINES, 0, st.n * 2);
+        const dots = !!st.sim?.dots, Q = dots ? this.P.dot : P, mode = dots ? gl.POINTS : gl.LINES;
+        if (dots) { gl.useProgram(Q.p); gl.uniformMatrix4fv(Q.u.u_mvp, false, mvp); gl.uniform1f(Q.u.u_ps, 1.9 * this.canvas.width / Math.max(1, this.w)); gl.enableVertexAttribArray(Q.a.a_p); gl.enableVertexAttribArray(Q.a.a_c); }
+        gl.vertexAttribPointer(Q.a.a_p, 3, gl.FLOAT, false, 28, 0); gl.vertexAttribPointer(Q.a.a_c, 4, gl.FLOAT, false, 28, 12);
+        gl.blendFunc(gl.ONE, gk > 0.75 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(Q.u.u_a, 1);   // heller Look: deckend statt additiv, sonst verschwinden die Fäden auf Schnee
+        gl.drawArrays(mode, 0, st.n * 2);
         if (this._bloomOn) {
           const b = this._bl; gl.bindFramebuffer(gl.FRAMEBUFFER, b.f0); gl.viewport(0, 0, b.w, b.h);
-          gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_a, 0.9); gl.drawArrays(gl.LINES, 0, st.n * 2);
+          gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(Q.u.u_a, 0.9); gl.drawArrays(mode, 0, st.n * 2);
           gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         }
+        if (dots) { gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.u_mvp, false, mvp); }
       }
       gl.disableVertexAttribArray(P.a.a_p); gl.disableVertexAttribArray(P.a.a_c);
     }

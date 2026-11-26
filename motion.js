@@ -138,6 +138,7 @@
       }
     };
     let nA = N, dtE = 1 / 60;
+    const DP = new Float32Array(12);
     function step3(dt, put) {
       // ruckelt es (unter ~28 Bildern pro Sekunde), werden es nach und nach weniger Fäden, damit es flüssig bleibt
       if (dt > 0) { dtE = dtE * 0.94 + dt * 0.06; if (dtE > 1 / 28 && nA > N * 0.35) nA = Math.round(nA * 0.985); else if (dtE < 1 / 50 && nA < N) nA = Math.min(N, nA + 150); }
@@ -218,6 +219,19 @@
         if (HN[i] < 4) {   // frisch geboren: kurzer Faden nach hinten, bis die Spur steht
           const L2 = Math.max(cf * 0.05, Math.abs(along) * kmToM * INT * 1.5 * lk); tail[0] = X[i] - ex * L2; tail[1] = y; tail[2] = Z[i] - ez * L2;
           put(c++, head, tail, col[0], col[1], col[2], a * Math.min(1, AGE[i] / (INT * 4)), 0); continue;
+        }
+        if (sim.dots) {
+          // Partikel statt Linie: eine Kette einzelner Körner entlang der Spur, vorn hell und gross, hinten klein und blass
+          const P = DP; P[0] = head[0]; P[1] = head[1]; P[2] = head[2];
+          for (let q = 0; q < 3; q++) { const k3 = (q + 1) * 3; P[k3] = head[0] + (mix(HX[o4 + q], HX[o4 + q + 1], f) - head[0]) * lk; P[k3 + 1] = head[1] + (mix(HY[o4 + q], HY[o4 + q + 1], f) - head[1]) * lk; P[k3 + 2] = head[2] + (mix(HZ[o4 + q], HZ[o4 + q + 1], f) - head[2]) * lk; }
+          const K = lk < 0.3 ? 2 : 6;
+          for (let k = 0; k < K; k += 2) {
+            const sp = (j, o) => { const u = j / (K - 1) * 3, q = Math.min(2, u | 0), r = u - q; o[0] = mix(P[q * 3], P[q * 3 + 3], r); o[1] = mix(P[q * 3 + 1], P[q * 3 + 4], r); o[2] = mix(P[q * 3 + 2], P[q * 3 + 5], r); };
+            sp(k, tail); sp(k + 1, mid);
+            const fa = j => a * Math.pow(1 - j / K, 1.6) * (lk < 0.3 ? 1.4 : 1);
+            put(c++, tail, mid, col[0], col[1], col[2], fa(k), fa(k + 1));
+          }
+          continue;
         }
         let px = head[0], py = head[1], pz = head[2], pa = a;
         for (let q = 0; q < 3; q++) {
@@ -302,7 +316,7 @@
         return c;
       }
     };
-    sim.calm = !!o.calm; sim.glow = !!o.glow; sim.map = !!o.map; sim.speed = o.speed || 1;
+    sim.calm = !!o.calm; sim.glow = !!o.glow; sim.map = !!o.map; sim.speed = o.speed || 1; sim.dots = f3 && o.dots !== false;
     return sim;
   }
 
