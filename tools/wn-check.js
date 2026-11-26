@@ -41,8 +41,10 @@ for (const r of rows) {
   const hr = hourCH(r.target); if (hr < 8 || hr > 18) continue;
   const w = WN.at(ROOT, s.lat, s.lon, r.fd); if (!w) continue;
   const p = per[r.code] ??= { name: s.name, alt: s.alt, foam: inFoam(s), n: 0, e0: 0, e1: 0, b0: 0, b1: 0, d0: 0, d1: 0, nd: 0, f: 0 };
-  const after = r.fw * Math.min(2, Math.max(0.25, w.f)), dirA = (r.fd + w.dev + 360) % 360;
-  p.n++; p.e0 += Math.abs(r.fw - r.ow); p.e1 += Math.abs(after - r.ow); p.b0 += r.fw - r.ow; p.b1 += after - r.ow; p.f += w.f;
+  // wie lib/plan.js: Faktor gegenüber der Modellmasche, im Lee nichts ändern
+  const lee = w.rel < 0.6 || Math.abs(w.dev) > 60, fx = lee ? 1 : Math.min(1.6, Math.max(0.6, w.rel));
+  const after = r.fw * fx, dirA = lee ? r.fd : (r.fd + w.dev + 360) % 360;
+  p.n++; p.e0 += Math.abs(r.fw - r.ow); p.e1 += Math.abs(after - r.ow); p.b0 += r.fw - r.ow; p.b1 += after - r.ow; p.f += fx;
   if (r.ow >= 5 && Number.isFinite(r.od) && Number.isFinite(r.fd)) { p.nd++; p.d0 += dd(r.fd, r.od); p.d1 += dd(dirA, r.od); }
 }
 const list = Object.entries(per).filter(([, p]) => p.n >= 10).sort((a, b) => b[1].n - a[1].n);

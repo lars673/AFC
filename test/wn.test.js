@@ -40,3 +40,13 @@ test('ohne Datei: null', () => {
   assert.equal(WN.slice(path.join(root, 'fehlt'), [46.5, 7.5, 46.52, 7.53]), null);
   WN._reset();
 });
+
+test('Punkt: Faktor, Richtungsmischung und Faktor gegenüber der Modellmasche', () => {
+  WN._reset();
+  const w = WN.at(root, 46.52, 7.53, 22.5 * 3 + 11.25);     // genau zwischen Richtung 3 und 4
+  assert.ok(Math.abs(w.f - (64 + 3.5) / 64) < 1e-9);
+  assert.ok(Math.abs(w.rel - 1) < 1e-9);                     // überall gleich: nichts anders als die Masche
+  assert.ok(Math.abs(w.dev - 20) < 1e-9);                    // Spalte 20
+  assert.equal(WN.at(root, 47, 9, 0), null);
+  WN._reset();
+});
