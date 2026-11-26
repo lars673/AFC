@@ -208,6 +208,9 @@
         ${d ? 'float g5 = h/500., gw = fwidth(g5), g1 = h/100., gw1 = fwidth(g1); nt += vec3(.17, .94, 1.)*((1. - smoothstep(0., 1.4*gw, abs(fract(g5 - .5) - .5)))*.07 + (1. - smoothstep(0., 1.2*gw1, abs(fract(g1 - .5) - .5)))*.035*clamp(1. - gw1*2.5, 0., 1.));' : ''}
         nt = mix(nt, vec3(.03, .06, .13), smoothstep(.35, .65, v_w));
         lit = mix(lit, nt, u_glow);
+        // Schnee und helle Felsen gedämpft, damit Wind und Wirbel auch dort sichtbar bleiben
+        float lum = dot(lit, vec3(.3, .55, .15));
+        lit *= 1. - .42*smoothstep(.45, .95, lum)*clamp(u_glow*2., 0., 1.);
       }
       float fd = length(v_pos - u_eye);
       lit = mix(lit, u_fog, clamp((fd - u_f.y)/(u_f.z - u_f.y), 0., .6));
@@ -991,7 +994,7 @@
         if (sdt > 0 || st.fresh) { st.n = Math.min(st.max, st.sim.step(st.fresh ? 0 : Math.min(sdt, 0.08), st.put) | 0); st.dirty = true; st.fresh = false; }
         if (!st.lines) need = Math.max(need, st.n);
       }
-      if (!need) { this._drawLines(mvp, this._glow); if (this._bloomOn) this._bloomRun(); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); return; }
+      if (!need) { this._drawLines(mvp, this._glow * (this.dusk ?? 1)); if (this._bloomOn) this._bloomRun(); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); return; }
       if (!this._strIdx || this._strIdx.n < need) {
         const n = Math.max(need, 4096), I = new Uint16Array(n * 6);
         for (let i = 0; i < n; i++) { const v = i * 4, o = i * 6; I[o] = v; I[o + 1] = v + 1; I[o + 2] = v + 2; I[o + 3] = v + 1; I[o + 4] = v + 3; I[o + 5] = v + 2; }
@@ -1025,7 +1028,7 @@
         }
       }
       for (const k of on) gl.disableVertexAttribArray(A[k]);
-      this._drawLines(mvp, gk);
+      this._drawLines(mvp, gk * (this.dusk ?? 1));
       if (this._bloomOn) this._bloomRun();
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
@@ -1041,7 +1044,7 @@
         if (!st.buf) { st.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); gl.bufferData(gl.ARRAY_BUFFER, st.data, gl.DYNAMIC_DRAW); st.dirty = false; }
         else { gl.bindBuffer(gl.ARRAY_BUFFER, st.buf); if (st.dirty) { gl.bufferSubData(gl.ARRAY_BUFFER, 0, st.data.subarray(0, st.n * 14)); st.dirty = false; } }
         gl.vertexAttribPointer(P.a.a_p, 3, gl.FLOAT, false, 28, 0); gl.vertexAttribPointer(P.a.a_c, 4, gl.FLOAT, false, 28, 12);
-        gl.blendFunc(gl.ONE, gk > 0.5 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_a, 1);
+        gl.blendFunc(gl.ONE, gk > 0.75 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_a, 1);   // heller Look: deckend statt additiv, sonst verschwinden die Fäden auf Schnee
         gl.drawArrays(gl.LINES, 0, st.n * 2);
         if (this._bloomOn) {
           const b = this._bl; gl.bindFramebuffer(gl.FRAMEBUFFER, b.f0); gl.viewport(0, 0, b.w, b.h);

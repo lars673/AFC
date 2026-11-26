@@ -110,7 +110,7 @@
         // 3D: an Luv-Kanten und im Lee dichter, damit Soaring und Wirbel von selbst ins Auge fallen
         if (!f3) break;
         const fx = clamp((x + R) / cell, 0, M - 1.001), fz = clamp((z + R) / cell, 0, M - 1.001), kk = (fz | 0) * M + (fx | 0);
-        if (rnd() < 0.6 + 0.4 * Math.max(F.lee[kk], F.soar[kk])) break;   // Wind ist überall: nur leicht dichter an Luv und Lee
+        if (rnd() < 0.4 + 0.6 * Math.max(F.lee[kk] * 1.3, F.soar[kk])) break;   // Wind ist überall: nur leicht dichter an Luv und Lee
       }
       X[i] = x; Z[i] = z;
       // 3D: dicht am Boden wie Wasser, ein paar Fäden etwas höher; 2D wie bisher
@@ -164,9 +164,9 @@
         if (lee > 0.05) {
           // Rotor: Walze mit waagrechter Achse quer zum Wind (Stromfunktion sin·sin), wandert langsam mit, dazu Querwirbel
           const Hr = 110 + 300 * lee, L = 2.3 * Hr, sa = (x * mex + z * mez) / L - t * 0.06, ph = sa - Math.floor(sa), hn = Math.min(1.25, agl / Hr);
-          const A = lee * (s0 + 6) * 1.25, cp = Math.cos(Math.PI * ph), sp = Math.sin(Math.PI * ph), ch = Math.cos(Math.PI * hn), sh = Math.sin(Math.PI * hn);
+          const A = lee * (s0 + 8) * 2.1, cp = Math.cos(Math.PI * ph), sp = Math.sin(Math.PI * ph), ch = Math.cos(Math.PI * hn), sh = Math.sin(Math.PI * hn);
           along = along * (1 - 0.75 * lee) - A * sp * ch;            // am Boden zurück, oben weiter
-          w += A / 3.6 * (Hr / L) * cp * sh * 2.2;                   // dazwischen auf und ab
+          w += A / 3.6 * (Hr / L) * cp * sh * 3.2;                   // dazwischen auf und ab
           const fx = clamp((x + R) / cc, 0, MC - 1.001), fz = clamp((z + R) / cc, 0, MC - 1.001), ci = fx | 0, cj = fz | 0, tx = fx - ci, tz = fz - cj, ck = cj * MC + ci;
           const cx = (CX[ck] * (1 - tx) + CX[ck + 1] * tx) * (1 - tz) + (CX[ck + MC] * (1 - tx) + CX[ck + MC + 1] * tx) * tz;
           const cz = (CZ[ck] * (1 - tx) + CZ[ck + 1] * tx) * (1 - tz) + (CZ[ck + MC] * (1 - tx) + CZ[ck + MC + 1] * tx) * tz;
@@ -179,7 +179,7 @@
           X[i] = x + ex * along * kmToM * dt; Z[i] = z + ez * along * kmToM * dt;
         }
         // Turbulenz: im Rotor und wo sich der Wind am Hang aufstellt, wirbeln die Teilchen wie Staub durcheinander
-        const tq = Math.max(sstep(0.12, 0.6, lee), soar * 0.8);
+        const tq = Math.max(sstep(0.06, 0.4, lee), soar * 0.8);
         if (tq > 0.03) {
           // kleine Rotoren: jedes Korn kreist weich (Walze quer zum Wind, dazu seitlich), je stärker die Turbulenz, desto enger und schneller
           PH[i] += dt * (1.6 + 3.2 * tq) * (i & 1 ? 1 : -1);
@@ -202,9 +202,9 @@
         const eff = Math.abs(along) + swirl * 10;
         ramp(glow ? GLOW : DAY, eff, col);
         if (soar > 0.05) { const mm = Math.min(0.9, soar * 1.1); col[0] = mix(col[0], glow ? 0.5 : 0.12, mm); col[1] = mix(col[1], glow ? 1.0 : 0.7, mm); col[2] = mix(col[2], glow ? 0.45 : 0.2, mm); }
-        if (lee > 0.06) { const mm = Math.min(0.95, (lee - 0.06) * 2.4); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
+        if (lee > 0.04) { const mm = Math.min(1, (lee - 0.04) * 3.5); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.24 : 0.15, mm); col[2] = mix(col[2], glow ? 0.75 : 0.65, mm); }
         const dust = sstep(0.15, 0.75, tq);   // 0 = Faden, 1 = Staubkorn: fliessender Übergang
-        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 1.3 * dust);
+        const a = aK * (0.55 + 0.45 * Math.min(1, eff / 25)) * edge * life * (1 + 0.5 * soar + 0.4 * swirl) * (1 + 1.3 * dust) * (1 + 0.9 * sstep(0.05, 0.5, lee));
         if (a < 0.01) continue;
         head[0] = X[i]; head[1] = y; head[2] = Z[i];
         // Spur: drei Abschnitte, vorn hell, hinten auslaufend; in Turbulenz schrumpft die Spur stufenlos zum Staubkorn
