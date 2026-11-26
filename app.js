@@ -3246,7 +3246,7 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     // Bildschirm -> Geo linear (bei dieser Kartengrösse genau genug)
     const nw = map.containerPointToLatLng([0, 0]), se = map.containerPointToLatLng([size.x, size.y]);
     this._geo = (x, y) => [nw.lat + (se.lat - nw.lat) * y / size.y, nw.lng + (se.lng - nw.lng) * x / size.x];
-    this._sim = null;
+    this._sim = null; this._c.classList.remove('wind-glow');
     if (!this._d) return;
     if (this._still) return this._drawArrows();
     if (window.AFCMotion) return this._motion(size, nw, se);
@@ -3255,8 +3255,10 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     this._last = 0;
     this._raf = requestAnimationFrame(t => this._frame(t));
   },
-  /* Motion (wie in 3D): Teilchen mit leuchtendem Kopf, über Graten schneller, hinter Graten (Lee) verwirbelt und magenta.
-     Eine kleine Szene über dem sichtbaren Kartenausschnitt: Meter um die Mitte, Höhe aus dem Geländeraster. */
+  /* Motion wie im Prototyp: einzelne leuchtende Punkte, die mit dem Wind fliessen und einen weichen Schweif hinter sich
+     herziehen (das Bild klingt Bild für Bild aus), dazu ein Schein (Bloom). Über Graten schneller, hinter Graten (Lee)
+     verwirbelt und magenta. Die Karte darunter wird leicht abgedunkelt, damit die Punkte leuchten, bleibt aber erkennbar.
+     Eine kleine Szene über dem sichtbaren Ausschnitt: Meter um die Mitte, Höhe aus dem Geländeraster. */
   _motion(size, nw, se) {
     const cLat = (nw.lat + se.lat) / 2, cLon = (nw.lng + se.lng) / 2, mLat = 111320, mLon = 111320 * Math.cos(cLat * D2R);
     const hw = (se.lng - nw.lng) / 2 * mLon, hh = (nw.lat - se.lat) / 2 * mLat, g = T.grid;
@@ -3266,38 +3268,46 @@ const WindLayer = typeof L === 'undefined' ? null : L.Layer.extend({
     const hAt = (x, z) => { if (flat) return 0; const [la, lo] = toGeo(x, z), i = Math.round((lo - g.lo0) / g.dlo), j = Math.round((la - g.la0) / g.dla); return i < 0 || j < 0 || i >= g.nx || j >= g.ny ? 0 : g.elev[j * g.nx + i] || 0; };
     const sc = { R: Math.max(hw, hh) * 1.02, ex: 1, toGeo, _meshH: hAt };
     this._sample = (lat, lon) => { const w = windSample(this._d, lat, lon); if (!w) return null; return { g: this._g ? terrainFlow(w, this._g, lat, lon) || w : w, a: w }; };
-    const n = Math.round(Math.min(innerWidth < 700 ? 1600 : 2600, size.x * size.y / 150));
-    this._sim = AFCMotion.wind(sc, this._sample, { n, calm: calmOn(), map: true, box: [hw, hh], speed: Math.min(6, Math.max(0.35, sc.R / 4200)) });
+    const n = Math.round(Math.min(innerWidth < 700 ? 2600 : 4200, size.x * size.y / 115));
+    this._sim = AFCMotion.wind(sc, this._sample, { n, calm: calmOn(), glow: true, box: [hw, hh], speed: Math.min(6, Math.max(0.35, sc.R / 4200)) });
     this._kx = size.x / (2 * hw); this._kz = size.y / (2 * hh);
-    this._buf = { seg: [], col: [] }; this._last = 0;
+    const dpr = Math.min(2, window.devicePixelRatio || 1), mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+    this._tr = mk(this._c.width, this._c.height); this._trx = this._tr.getContext('2d'); this._trx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._bl = mk(Math.max(2, this._c.width >> 2), Math.max(2, this._c.height >> 2)); this._blx = this._bl.getContext('2d');
+    this._c.classList.add('wind-glow');
+    this._last = 0;
     this._raf = requestAnimationFrame(t => this._mframe(t));
   },
   _mframe(t) {
     this._raf = requestAnimationFrame(tt => this._mframe(tt));
-    if (t - this._last < 33 || document.hidden) return;          // ca. 30 Bilder pro Sekunde
-    const dt = this._last ? Math.min(0.06, (t - this._last) / 1000) : 0.033; this._last = t;
-    const ctx = this._ctx, w2 = this._w / 2, h2 = this._h / 2, kx = this._kx, kz = this._kz, B = new Map();
-    this._sim.calm = calmOn();
+    if (document.hidden) { this._last = 0; return; }
+    const dt = this._last ? Math.min(0.05, (t - this._last) / 1000) : 0.016; this._last = t;
+    const tx = this._trx, w2 = this._w / 2, h2 = this._h / 2, kx = this._kx, kz = this._kz, B = new Map(), calm = calmOn();
+    this._sim.calm = calm;
     this._sim.step(dt, (i, h, tl, r, g, b, a, wd) => {
-      // nach Farbe und Deckkraft bündeln: wenige Striche pro Bild, auch auf dem Handy flüssig
-      const key = ((r * 7 + 0.5) | 0) * 64 + ((g * 7 + 0.5) | 0) * 8 + ((b * 7 + 0.5) | 0) + ((Math.min(1, a) * 3.99) | 0) * 512;
-      let q = B.get(key); if (!q) B.set(key, q = { c: `rgba(${(r * 255) | 0},${(g * 255) | 0},${(b * 255) | 0},`, a: (((Math.min(1, a) * 3.99) | 0) + 1) / 4, s: [], w: 0, n: 0 });
-      q.s.push(w2 + tl[0] * kx, h2 + tl[2] * kz, w2 + h[0] * kx, h2 + h[2] * kz); q.w += wd; q.n++;
+      // nach Farbe und Helligkeit bündeln: wenige Zeichenaufrufe pro Bild, auch auf dem Handy flüssig
+      const qa = Math.min(3, (a * 6) | 0), key = ((r * 7 + 0.5) | 0) * 64 + ((g * 7 + 0.5) | 0) * 8 + ((b * 7 + 0.5) | 0) + qa * 512;
+      let q = B.get(key); if (!q) B.set(key, q = { c: `rgba(${(r * 255) | 0},${(g * 255) | 0},${(b * 255) | 0},${(0.3 + qa * 0.19).toFixed(2)})`, s: [] });
+      const hx = w2 + h[0] * kx, hy = h2 + h[2] * kz;
+      q.s.push(hx - (h[0] - tl[0]) * kx * 0.18, hy - (h[2] - tl[2]) * kz * 0.18, hx, hy);
     });
-    ctx.clearRect(0, 0, this._w, this._h);
-    ctx.lineCap = 'round';
-    // heller Saum für Wald, Fels und Schnee, dann die Spur in Farbe, dann ein heller Kopf: so sieht es nach strömenden Punkten aus
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 3; ctx.beginPath();
-    for (const q of B.values()) for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k], q.s[k + 1]); ctx.lineTo(q.s[k + 2], q.s[k + 3]); }
-    ctx.stroke();
+    // Schweif: das alte Bild klingt aus (im Ruhig-Modus schneller, also kürzer)
+    tx.globalCompositeOperation = 'destination-out'; tx.fillStyle = `rgba(0,0,0,${calm ? 0.32 : 0.16})`; tx.fillRect(0, 0, this._w, this._h);
+    tx.globalCompositeOperation = 'lighter'; tx.lineCap = 'round'; tx.lineWidth = calm ? 1.7 : 2.1;
     for (const q of B.values()) {
-      const wd = 1.25 * q.w / q.n;
-      ctx.strokeStyle = q.c + Math.min(1, q.a * 1.15) + ')'; ctx.lineWidth = wd; ctx.beginPath();
-      for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k], q.s[k + 1]); ctx.lineTo(q.s[k + 2], q.s[k + 3]); }
-      ctx.stroke();
-      ctx.lineWidth = wd + 1.6; ctx.beginPath();
-      for (let k = 0; k < q.s.length; k += 4) { ctx.moveTo(q.s[k + 2], q.s[k + 3]); ctx.lineTo(q.s[k + 2] + 0.01, q.s[k + 3]); }
-      ctx.stroke();
+      tx.strokeStyle = q.c; tx.beginPath();
+      for (let k = 0; k < q.s.length; k += 4) { tx.moveTo(q.s[k], q.s[k + 1]); tx.lineTo(q.s[k + 2], q.s[k + 3]); }
+      tx.stroke();
+    }
+    // sichtbares Bild: Spuren, dazu ein weicher Schein aus dem verkleinerten Bild (Bloom)
+    const ctx = this._ctx, W = this._c.width, H = this._c.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(this._tr, 0, 0);
+    if (!calm) {
+      const bx = this._blx, bw = this._bl.width, bh = this._bl.height;
+      bx.clearRect(0, 0, bw, bh); bx.drawImage(this._tr, 0, 0, bw, bh);
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.75; ctx.drawImage(this._bl, 0, 0, W, H);
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     }
   },
   _spawn(p) { p.x = Math.random() * this._w; p.y = Math.random() * this._h; p.age = Math.floor(Math.random() * 80); return p; },
@@ -4277,9 +4287,10 @@ document.addEventListener('click', async e => {
     case 'replay': lbLoad().then(() => open3dFlight(id)).catch(err => toast(errTxt(err))); break;
     case 'v3dclose': tiltClose(); break;
     case 'v3dzoom': V3.scene?.zoom(Number(b.dataset.v)); break;
+    case 'v3drot': if (V3.scene && !V3.scene.pov) { V3.scene.orbit = 0; v3dCam({ az: V3.scene.cam.az + Number(b.dataset.v) }, 450); } break;
     case 'v3dnorth': if (V3.scene?.pov) { V3.scene.pov.look = [0, 0]; V3.scene.invalidate(); } else v3dCam({ az: 0 }, 600); break;
     case 'v3dbase': V3.base = !V3.base; store.set('v3dBase', V3.base); b.setAttribute('aria-pressed', String(V3.base)); $('#v3dAttr').hidden = !V3.base; if (V3.scene) { V3.scene.drapeOn = V3.base; V3.scene.invalidate(); } break;
-    case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow2', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
+    case 'v3dglow': MO.glow = !MO.glow; store.set('v3dGlow3', MO.glow); b.setAttribute('aria-pressed', String(MO.glow)); motionSync(); if (V3.mode === 'site') v3dSiteHud(); else if (V3.mode === 'region') v3dRegionHud(); break;
     case 'v3dcalm': case 'motion': MO.calm = a === 'motion' ? b.dataset.v === 'calm' : !MO.calm; store.set('ruhig', MO.calm); $$('[data-act="v3dcalm"]').forEach(x => x.setAttribute('aria-pressed', String(MO.calm))); motionSync(); if (a === 'motion') render(); break;
     case 'v3dtog': {
       const k = ['wind', 'clouds'].includes(b.dataset.v) ? b.dataset.v : 'cables'; V3[k] = !V3[k]; b.setAttribute('aria-pressed', String(V3[k]));
@@ -4902,7 +4913,7 @@ function noflyForm(siteId) {
 const V3 = { scene: null, mode: null, tok: 0, site: null, land: null, hour: 12, t: 12, layer: null, wind: true, cables: true, clouds: store.get('v3dClouds', true), tour: true, reg: null, volte: null, playing: false, base: store.get('v3dBase', true), fl: null, obst: null, d: null, hr: null, home: null, shT: 0 };
 const noMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* Motion-Grafik (motion.js): Glow-Look in 3D und Ruhig-Modus (weniger Teilchen, kein Schein, langsamer, kein Intro-Flug). */
-const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow2', false) === true };   // Glow ist ein Extra: Standard ist die normale, gut erkennbare Karte
+const MO = { calm: !!store.get('ruhig', false), glow: store.get('v3dGlow3', true) !== false };   // Glow wie im ersten Video, aber mit erkennbarer Karte (Farben gedämpft statt einfarbig)
 const calmOn = () => MO.calm || noMotion();
 function motionSync() {
   document.documentElement.classList.toggle('ruhig', MO.calm);
@@ -4929,6 +4940,8 @@ function v3dShell(title, sub, bar) {
       <div class="v3d-tools">
         <button type="button" data-act="v3dzoom" data-v="0.7" aria-label="Näher heran" title="Näher heran">+</button>
         <button type="button" data-act="v3dzoom" data-v="1.43" aria-label="Weiter weg" title="Weiter weg">−</button>
+        <button type="button" data-act="v3drot" data-v="-45" aria-label="Nach links drehen" title="Nach links drehen">⟲</button>
+        <button type="button" data-act="v3drot" data-v="45" aria-label="Nach rechts drehen" title="Nach rechts drehen">⟳</button>
         <button type="button" data-act="v3dnorth" aria-label="Nach Norden ausrichten" title="Nach Norden ausrichten"><svg id="v3dNorth" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 2.5l4.6 9.5H7.4z" fill="#e0453c"/><path d="M12 21.5L7.4 12h9.2z" fill="currentColor" opacity=".5"/></svg></button>
         <button type="button" data-act="v3dbase" id="v3dBaseBtn" aria-pressed="${!!V3.base}" aria-label="Luftbild ein oder aus" title="Luftbild ein oder aus" hidden><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 18l6-9 4 6 2.5-3.5L21 18z" fill="currentColor"/><circle cx="17" cy="6.5" r="2.2" fill="currentColor"/></svg></button>
       </div>
@@ -4966,7 +4979,7 @@ function v3dScene(g, area) {
   sc.glow = sc._glow = MO.glow ? 1 : 0; sc.calm = calmOn();
   sc.setArea(area);
   sc.canvas.setAttribute('aria-label', 'Gelände in 3D. Ziehen verschiebt, zwei Finger zoomen, drehen und neigen (Maus: rechte Taste dreht). Mit der Tastatur: Pfeiltasten drehen, Plus und Minus zoomen.');
-  { const k = store.get('v3dHint', 0) || 0; if (k < 2) { store.set('v3dHint', k + 1); setTimeout(() => toast(matchMedia('(pointer: coarse)').matches ? 'Ein Finger verschiebt, zwei Finger zoomen, drehen und neigen.' : 'Ziehen verschiebt, rechte Maustaste dreht, Mausrad zoomt.'), 900); } }
+  { const k = store.get('v3dHint', 0) || 0; if (k < 2) { store.set('v3dHint', k + 1); setTimeout(() => toast(matchMedia('(pointer: coarse)').matches ? 'Ein Finger verschiebt, zwei Finger zoomen, drehen und neigen.' : 'Ziehen verschiebt, ⟲ ⟳ oder rechte Maustaste dreht, Mausrad zoomt.'), 900); } }
   sc.onDraw = () => { const n = $('#v3dNorth'); if (n) n.style.transform = `rotate(${(-sc.heading).toFixed(1)}deg)`; };
   // Luftbild von swisstopo über das Relief; ohne Netz bleibt das gezeichnete Relief stehen
   sc.drapeOn = !!V3.base;
@@ -6577,9 +6590,9 @@ async function introFlight() {
   const top = S.plan?.days?.[S.day]?.top, s = top && siteById(top.siteId);
   if (!s || document.hidden || $('#msgDlg')?.open || $('#siteDlg')?.open || S.tab !== 'decide') return;
   let g = null, d = null;
-  try { g = await Promise.race([thermalGrid(), new Promise(r => setTimeout(() => r(null), 2500))]); } catch { g = null; }
+  try { g = await Promise.race([thermalGrid(), new Promise(r => setTimeout(() => r(null), 6000))]); } catch { g = null; }
   if (!g) return;
-  try { d = await Promise.race([thermalData(filmIso(S.plan.dates[S.day], Math.min(17, Math.max(10, top.best.from || 12)))), new Promise(r => setTimeout(() => r(null), 900))]); } catch { d = null; }
+  try { d = await Promise.race([thermalData(filmIso(S.plan.dates[S.day], Math.min(17, Math.max(10, top.best.from || 12)))), new Promise(r => setTimeout(() => r(null), 3000))]); } catch { d = null; }
   if ($('#msgDlg')?.open || $('#siteDlg')?.open) return;
   const host = document.createElement('div'); host.className = 'intro3d'; host.setAttribute('aria-hidden', 'true');
   host.innerHTML = '<div class="intro3d-stage"></div><p class="intro3d-t"><small>Bester Start</small><b></b></p>';

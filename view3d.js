@@ -248,7 +248,18 @@
       v_c = a_c; v_q = vec2(a_m.y, a_m.x); gl_Position = p;
     }`;
   const FS_STR = HI + `varying vec4 v_c; varying vec2 v_q; uniform float u_core, u_a; uniform vec3 u_tint;
-    void main(){ float s = abs(v_q.y), a = v_c.a*u_a*pow(1. - v_q.x, 1.5)*(u_core > .5 ? 1. - s*s : (1. - s)*(1. - s)); vec3 c = u_core < -.5 ? u_tint : v_c.rgb; gl_FragColor = vec4(c*a, a); }`;
+    void main(){
+      // leuchtender Punkt vorn, kurzer weicher Schweif dahinter: sieht aus wie fliessende Punkte, nicht wie Striche
+      float s = abs(v_q.y), hd = 1. - smoothstep(0., .3, v_q.x), a = v_c.a*u_a*pow(1. - v_q.x, 2.2)*(u_core > .5 ? 1. - s*s : (1. - s)*(1. - s))*(1. + hd*.9);
+      vec3 c = u_core < -.5 ? u_tint : mix(v_c.rgb, vec3(1.), hd*.45*step(.5, u_core)); gl_FragColor = vec4(c*a, a); }`;
+  /* Bloom (Schein um die Wind- und Thermik-Teilchen, wie im Prototyp): Teilchen in halber Auflösung, mit der Tiefe des Geländes
+     (hinter Bergen leuchtet nichts durch), weichgezeichnet und aufaddiert */
+  const VS_Q = 'attribute vec2 a_p; varying vec2 v_uv; void main(){ v_uv = a_p*.5 + .5; gl_Position = vec4(a_p, 0., 1.); }';
+  const FS_BLUR = HI + `varying vec2 v_uv; uniform sampler2D u_t; uniform vec2 u_d; uniform float u_k;
+    void main(){ vec4 c = texture2D(u_t, v_uv)*.227027;
+      c += (texture2D(u_t, v_uv + u_d*1.3846) + texture2D(u_t, v_uv - u_d*1.3846))*.316216;
+      c += (texture2D(u_t, v_uv + u_d*3.2308) + texture2D(u_t, v_uv - u_d*3.2308))*.070270;
+      gl_FragColor = c*u_k; }`;
   const VS_CLD = 'attribute vec3 a_pos; uniform mat4 u_mvp; uniform float u_lift; varying vec3 v_pos; void main(){ v_pos = vec3(a_pos.x, a_pos.y + u_lift, a_pos.z); gl_Position = u_mvp*vec4(v_pos, 1.); }';
   const FS_CLD = HI + `varying vec3 v_pos; uniform sampler2D u_noise, u_cov; uniform vec4 u_cv; uniform vec2 u_off; uniform vec3 u_lit, u_dim;
     uniform float u_k, u_R, u_sc, u_fog, u_a;
@@ -299,7 +310,7 @@
       this.gl = c.getContext('webgl', opt) || c.getContext('experimental-webgl', opt);
       if (!this.gl) throw new Error('Dieses Gerät unterstützt keine 3D-Darstellung (WebGL).');
       this._lost = e => { e.preventDefault(); this._gone = true; cancelAnimationFrame(this._raf); this._raf = 0; };
-      this._back = () => { this._gone = false; this._initGL(); this._upload(); this.invalidate(); };
+      this._back = () => { this._gone = false; this._bl = null; this._initGL(); this._upload(); this.invalidate(); };
       c.addEventListener('webglcontextlost', this._lost); c.addEventListener('webglcontextrestored', this._back);
       this._initGL();
       if (o.interactive !== false) this._controls();
@@ -329,7 +340,7 @@
     _initGL() {
       const gl = this.gl, deriv = !!gl.getExtension('OES_standard_derivatives');
       this._u32 = !!gl.getExtension('OES_element_index_uint');      // erlaubt ein Relief mit mehr als 65 000 Punkten
-      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR) };
+      this.P = { sky: this._prog(VS_SKY, FS_SKY), ter: this._prog(VS_TER, FS_TER(deriv)), line: this._prog(VS_LINE, FS_LINE), flat: this._prog(VS_FLAT, FS_FLAT), cld: this._prog(VS_CLD, FS_CLD), str: this._prog(VS_STR, FS_STR), blur: this._prog(VS_Q, FS_BLUR) };
       this.B = { sky: gl.createBuffer(), ter: gl.createBuffer(), sh: gl.createBuffer(), idx: gl.createBuffer(), cld: gl.createBuffer(), cldF: gl.createBuffer(), cldI: gl.createBuffer() };
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.sky); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       this.X = { ov0: this._tex(), ov1: this._tex(), dr: this._tex(), cov: this._tex(), noise: gl.createTexture() };
@@ -766,7 +777,8 @@
       c.addEventListener('pointerdown', down); c.addEventListener('pointermove', move); c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
       c.addEventListener('contextmenu', e => e.preventDefault());
       if (spin) { c.addEventListener('keydown', e => { const k = { ArrowLeft: 10, ArrowRight: -10 }[e.key]; if (k) { e.preventDefault(); stop(); this.cam.az += k; this.invalidate(); } }); return; }
-      c.addEventListener('wheel', e => { e.preventDefault(); if (this.pov) return; stop(); this.cam.dist *= Math.exp(clamp(e.deltaY, -120, 120) * 0.0016); this._clampCam(); this.invalidate(); }, { passive: false });
+      // Mausrad zoomt; auf dem Trackpad: zwei Finger seitlich drehen, auf- und zuziehen zoomt
+      c.addEventListener('wheel', e => { e.preventDefault(); if (this.pov) return; stop(); const dy = e.ctrlKey ? e.deltaY * 4 : e.deltaY; this.cam.dist *= Math.exp(clamp(dy, -120, 120) * 0.0016); if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) this.cam.az -= clamp(e.deltaX, -60, 60) * 0.35; this._clampCam(); this.invalidate(); }, { passive: false });
       c.addEventListener('keydown', e => {
         const k = { ArrowLeft: [8, 0, 1], ArrowRight: [-8, 0, 1], ArrowUp: [0, 5, 1], ArrowDown: [0, -5, 1], '+': [0, 0, 0.85], '=': [0, 0, 0.85], '-': [0, 0, 1.18] }[e.key];
         if (!k) return;
@@ -888,6 +900,14 @@
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.X.ov1); gl.uniform1i(P.u.u_ov1, 1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.X.dr); gl.uniform1i(P.u.u_dr, 2);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.idx); gl.drawElements(gl.TRIANGLES, this.I.length, this.I instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
+      this._bloomOn = this.streaks.size > 0 && gk > 0.3 && !this.calm && this.bloom !== false && this._bloomPrep();
+      if (this._bloomOn) {
+        // nur die Tiefe des Geländes in den Bloom-Puffer, damit Teilchen hinter Bergen dort nicht leuchten
+        const b = this._bl; gl.bindFramebuffer(gl.FRAMEBUFFER, b.f0); gl.viewport(0, 0, b.w, b.h);
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.colorMask(false, false, false, false);
+        gl.drawElements(gl.TRIANGLES, this.I.length, this.I instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
+        gl.colorMask(true, true, true, true); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, cv.width, cv.height);
+      }
       for (const k in P.a) if (P.a[k] >= 0) gl.disableVertexAttribArray(P.a[k]);
       // Flächen (durchsichtig, schreiben keine Tiefe)
       gl.depthMask(false);
@@ -975,15 +995,70 @@
         gl.vertexAttribPointer(A.a_m, 3, gl.FLOAT, false, 52, 24); gl.vertexAttribPointer(A.a_c, 4, gl.FLOAT, false, 52, 36);
         // Schein: im Glow-Look farbig und addiert, bei Tag ein dunkler Saum (lesbar auf hellem Gelände)
         if (!calm) {
-          if (gk > 0.5) { gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_core, 0); gl.uniform1f(P.u.u_a, 0.22 * gk); }
+          if (gk > 0.5) { gl.blendFunc(gl.ONE, gl.ONE); gl.uniform1f(P.u.u_core, 0); gl.uniform1f(P.u.u_a, 0.12 * gk); }
           else { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, -1); gl.uniform3f(P.u.u_tint, 0.02, 0.03, 0.08); gl.uniform1f(P.u.u_a, 0.2 * (1 - gk)); }
           gl.uniform1f(P.u.u_wk, 3.4); gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
         }
         gl.blendFunc(gl.ONE, gk > 0.5 ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(P.u.u_core, 1); gl.uniform1f(P.u.u_a, gk > 0.5 ? 1 : 0.95); gl.uniform1f(P.u.u_wk, 1);
         gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
+        if (this._bloomOn) {
+          // dieselben Teilchen etwas breiter in den Bloom-Puffer (Tiefe vom Gelände)
+          const b = this._bl; gl.bindFramebuffer(gl.FRAMEBUFFER, b.f0); gl.viewport(0, 0, b.w, b.h);
+          gl.blendFunc(gl.ONE, gl.ONE); gl.uniform2f(P.u.u_vp, b.w, b.h); gl.uniform1f(P.u.u_a, 0.55); gl.uniform1f(P.u.u_wk, 1.2);
+          gl.drawElements(gl.TRIANGLES, st.n * 6, gl.UNSIGNED_SHORT, 0);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.uniform2f(P.u.u_vp, this.w, this.h);
+        }
       }
       for (const k of on) gl.disableVertexAttribArray(A[k]);
+      if (this._bloomOn) this._bloomRun();
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    _bloomPrep() {
+      const gl = this.gl, w = Math.max(2, this.canvas.width >> 1), h = Math.max(2, this.canvas.height >> 1);
+      if (this._bl?.w === w && this._bl.h === h) return true;
+      if (this._bl === false) return false;
+      try {
+        const tex = (tw, th) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
+        const fb = t => { const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return f; };
+        this._bloomFree();
+        const qw = Math.max(2, w >> 1), qh = Math.max(2, h >> 1), b = { w, h, qw, qh };
+        b.t0 = tex(w, h); b.f0 = fb(b.t0);
+        b.rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, b.rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, b.rb);
+        const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        b.t1 = tex(qw, qh); b.f1 = fb(b.t1); b.t2 = tex(qw, qh); b.f2 = fb(b.t2);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (!b.q) { b.q = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b.q); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW); }
+        this._bl = ok ? b : false;
+        return ok;
+      } catch { gl.bindFramebuffer(gl.FRAMEBUFFER, null); this._bl = false; return false; }
+    }
+    _bloomFree() {
+      const gl = this.gl, b = this._bl; if (!b) return;
+      for (const k of ['t0', 't1', 't2']) gl.deleteTexture(b[k]);
+      for (const k of ['f0', 'f1', 'f2']) gl.deleteFramebuffer(b[k]);
+      gl.deleteRenderbuffer(b.rb); if (b.q) gl.deleteBuffer(b.q); this._bl = null;
+    }
+    /** Weichzeichnen (halbe -> viertel Auflösung, waagrecht und senkrecht, zweimal) und aufs Bild addieren. */
+    _bloomRun() {
+      const gl = this.gl, b = this._bl, P = this.P.blur, gk = this._glow;
+      gl.disable(gl.DEPTH_TEST); gl.useProgram(P.p);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.q); gl.enableVertexAttribArray(P.a.a_p); gl.vertexAttribPointer(P.a.a_p, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0); gl.uniform1i(P.u.u_t, 0);
+      const pass = (src, sw, sh, dst, dw, dh, dx, dy, k, add) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, dst); gl.viewport(0, 0, dw, dh);
+        if (add) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); } else gl.disable(gl.BLEND);
+        gl.bindTexture(gl.TEXTURE_2D, src); gl.uniform2f(P.u.u_d, dx / sw, dy / sh); gl.uniform1f(P.u.u_k, k);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      };
+      pass(b.t0, b.w, b.h, b.f1, b.qw, b.qh, 1, 0, 1, false);
+      pass(b.t1, b.qw, b.qh, b.f2, b.qw, b.qh, 0, 1, 1, false);
+      pass(b.t2, b.qw, b.qh, b.f1, b.qw, b.qh, 2, 0, 1, false);
+      pass(b.t1, b.qw, b.qh, b.f2, b.qw, b.qh, 0, 2, 1, false);
+      const W = this.canvas.width, H = this.canvas.height;
+      pass(b.t2, b.qw, b.qh, null, W, H, 0, 0, 0.8 * gk, true);       // breiter, weicher Schein
+      pass(b.t0, b.w, b.h, null, W, H, 0.7, 0, 0.25 * gk, true);       // enger Schein direkt um die Punkte
+      gl.disableVertexAttribArray(P.a.a_p); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); gl.enable(gl.DEPTH_TEST);
     }
     /** Sofort zeichnen (für Clips, die das Bild gleich weiterverwenden). */
     renderNow(dt = 0) { if (this._dead || this._gone) return; this.time += dt; this._sdt = dt; this._glow = this.glow; if (this.orbit) this.cam.az += this.orbit * dt; this._ov.mix = 1; if (this._drape.ok) this._drape.a = 1; this._cloudStep(true); this._draw(); }

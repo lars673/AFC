@@ -98,7 +98,7 @@
       step(dt, put) {
         const calm = !!sim.calm, glow = !!sim.glow, ts = (calm ? 50 : 90) * (sim.speed || 1), n = calm ? Math.round(N * 0.38) : N;
         t += dt;
-        const kmToM = ts / 3.6, tailK = R * (calm ? 0.0036 : 0.0045) * (glow ? 1 : 0.7), wpx = (calm ? 0.9 : 1.15) * (glow ? 1 : 0.8);   // bei Tag kürzer und feiner: die Karte bleibt sichtbar
+        const kmToM = ts / 3.6, tailK = R * (calm ? 0.0022 : 0.0026) * (glow ? 1 : 0.8), wpx = (calm ? 0.95 : 1.2) * (glow ? 1 : 0.95);   // bei Tag kürzer und feiner: die Karte bleibt sichtbar
         let c = 0;
         for (let i = 0; i < n; i++) {
           AGE[i] += dt;
@@ -124,7 +124,7 @@
           const life = Math.max(0, Math.min(1, AGE[i] / 0.6, (LIFE[i] - AGE[i]) / 0.8));
           ramp(glow ? GLOW : sim.map ? MAP : DAY, eff, col);
           if (lee > 0.06) { const mm = Math.min(0.92, (lee - 0.06) * 2.6); col[0] = mix(col[0], glow ? 1 : 0.85, mm); col[1] = mix(col[1], glow ? 0.22 : 0.15, mm); col[2] = mix(col[2], glow ? 0.72 : 0.65, mm); }
-          const a = (glow ? (calm ? 0.24 : 0.36) : (calm ? 0.55 : 0.75)) * (0.55 + 0.5 * Math.min(1, eff / 30)) * edge * life * (1 + 0.6 * clamp(lee * 2, 0, 1));
+          const a = (glow ? (calm ? 0.26 : 0.38) : (calm ? 0.6 : 0.85)) * (0.55 + 0.5 * Math.min(1, eff / 30)) * edge * life * (1 + 0.6 * clamp(lee * 2, 0, 1));
           if (a < 0.01) continue;
           const tl = tailK * clamp(sp, 4, 20) * (1 - 0.7 * clamp(lee * 1.4, 0, 1));
           head[0] = X[i]; head[1] = y; head[2] = Z[i];
