@@ -26,6 +26,7 @@ import { stationLearn, simplifyLearned, pressureLearn, modelLearn, STATION_DAYS,
 import { existsSync } from 'node:fs';
 import { omTimeToMs, zurichParts, haversineKm, isNum } from '../lib/util.js';
 
+import * as WN from '../lib/wn.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HIST = (process.env.AFC_HISTORY_URL || 'https://historical-forecast-api.open-meteo.com').replace(/\/$/, '');
 const SMN = (process.env.AFC_SMN_URL || 'https://data.geo.admin.ch').replace(/\/$/, '');
@@ -267,7 +268,8 @@ for (let d = from; d <= to; d += DAY) {
   // Föhn-/Bisedruck und Modellwahl nur im vollen Lauf (nicht --lernen-einfach, nicht --ohne-lernen)
   const full = own && !process.argv.includes('--ohne-lernen') && !process.argv.includes('--lernen-einfach');
   const model = new PlanModel({ now: nowMs, raw, obs: mObs, stationMeta: { ...allMeta, ...mMeta, ...(own ? own.ownMeta : {}) }, learned: learnedAt(d), regional, trend: null, sites, fetchedAt: d,
-    pressureLearn: full ? pressureLearn(own.reg, d) : null, modelLearn: full ? modelLearn(own.mod, d) : null });
+    pressureLearn: full ? pressureLearn(own.reg, d) : null, modelLearn: full ? modelLearn(own.mod, d) : null,
+    wn: process.argv.includes('--wn') ? (lat, lon, dir) => WN.at(ROOT, lat, lon, dir) : null });
   if (!model.ok) continue;
   const plan = model.planPayload('normal');
   const di = plan.dates.indexOf(date);
@@ -443,7 +445,7 @@ console.log(`\nGespeichert: ${path.join(OUT, `backtest-${stamp}.txt`)} und .csv`
 const mc = v => mRows.filter(r => r.verdict === v).length;
 const gustErr = mRows.filter(r => isNum(r.fcGust) && isNum(r.obsGust)).map(r => r.fcGust - r.obsGust);
 const summary = {
-  at: new Date().toISOString(), from: ymd(from), to: ymd(to), auto: process.argv.includes('--auto'),
+  at: new Date().toISOString(), from: ymd(from), to: ymd(to), auto: process.argv.includes('--auto'), wn: process.argv.includes('--wn'),
   n, passt: cnt('passt'), gefaehrlich: cnt('GEFÄHRLICH'), zuStreng: cnt('zu streng'),
   berg: mRows.length ? { n: mRows.length, gefaehrlich: mc('GEFÄHRLICH'), zuMild: mc('zu mild'), zuStreng: mc('zu streng'), gustBias: gustErr.length ? Math.round(gustErr.reduce((a, b) => a + b, 0) / gustErr.length * 10) / 10 : null } : null,
   bise: biseDays.length ? { tage: biseDays.filter(x => x.measured).length, verpasst: biseDays.filter(x => x.measured && x.fc === 'ok').length, umsonst: biseDays.filter(x => x.fc === 'danger' && !x.measured).length } : null,

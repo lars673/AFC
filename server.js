@@ -766,7 +766,8 @@ function currentModel() {
       ens: state.ens && Date.now() - state.ens.at < 18 * 3600000 ? { ...state.ens, check: ensCheck() } : null,
       fog: fogNow(),
       feedbackByLevel: siteFeedbackByLevel(feedbackRecords()),
-      sites: SITES, fetchedAt: state.raw.fetchedAt
+      sites: SITES, fetchedAt: state.raw.fetchedAt,
+      wn: process.env.AFC_WN === '1' ? (lat, lon, dir) => WN.at(ROOT, lat, lon, dir) : null   // Geländewind am Startplatz (WindNinja), nach Rückblick-Test einschalten
     });
     state.model.ver = state.version;
     state.modelAt = now;
