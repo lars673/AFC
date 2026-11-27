@@ -44,6 +44,8 @@ import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, too
 import { testProgress, testBreakdown } from './lib/testphase.js';
 import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
+import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, SOURCE as ICH_SOURCE } from './lib/iconch.js';
+import { fetchSonde, compareProfile, PAYERNE } from './lib/sonde.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -137,7 +139,11 @@ const dbRun = (sql, p = []) => db.prepare(sql).run(...p);
 db.exec(`CREATE TABLE IF NOT EXISTS reg_fc (target TEXT PRIMARY KEY, lead REAL, fdp REAL, bdp REAL);
 CREATE TABLE IF NOT EXISTS reg_obs (time TEXT PRIMARY KEY, odp REAL, obdp REAL, foehn REAL, bise REAL);
 CREATE TABLE IF NOT EXISTS model_fc (area TEXT NOT NULL, target TEXT NOT NULL, lead REAL, ig REAL, eg REAL, iw REAL, ew REAL, PRIMARY KEY(area,target));
-CREATE TABLE IF NOT EXISTS ens_fc (time TEXT PRIMARY KEY, made TEXT, n INTEGER, pbise REAL, pfoehn REAL);`);
+CREATE TABLE IF NOT EXISTS ens_fc (time TEXT PRIMARY KEY, made TEXT, n INTEGER, pbise REAL, pfoehn REAL);
+CREATE TABLE IF NOT EXISTS ich_fc (site_id TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, lead REAL, top REAL, base REAL, lcl REAL, wstar REAL, inv REAL, invdt REAL, shf REAL, snow REAL, PRIMARY KEY(site_id,date,hour));
+CREATE TABLE IF NOT EXISTS ich_pay (time TEXT PRIMARY KEY, lead REAL, prof TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sonde (time TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sonde_cmp (time TEXT PRIMARY KEY, lead REAL, mae REAL, bias REAL, inv_s REAL, inv_m REAL, inv_dz REAL);`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
@@ -218,7 +224,9 @@ const ingest = {
   windgrid: { ok: false, at: null, error: null },
   airspace: { ok: false, at: null, error: null, count: 0 },
   msfc: { ok: false, at: null, error: null, run: null, points: 0, active: false },
-  obstacles: { ok: false, at: null, error: null, count: 0, dataAt: null }
+  obstacles: { ok: false, at: null, error: null, count: 0, dataAt: null },
+  iconch: { ok: false, at: null, error: null, run: null, places: 0, secs: null },
+  sonde: { ok: false, at: null, error: null, time: null }
 };
 const state = {
   raw: null, windgrid: null, obs: {}, foehnIndex: {}, regional: null, trend: null,
@@ -396,6 +404,99 @@ function ensCheck() {
     .map(r => ({ p: r.p, hit: (r.b || 0) >= 40 }));
   state.ensCheck = ensembleCheck(rows); state.ensCheckAt = Date.now();
   return state.ensCheck;
+}
+
+/* ------------------------------------------------------------------ Thermiksäule (MeteoSchweiz ICON-CH1) */
+// Höhenprofil direkt von MeteoSchweiz (80 Schichten, 1 km). Nur anzeigen und prüfen, der Score bleibt unverändert,
+// bis die Säule an echten Flügen und am Ballon Payerne besser trifft als die bisherige Rechnung.
+const ICH_ON = process.env.AFC_ICONCH ? process.env.AFC_ICONCH === '1' : !process.env.AFC_OPENMETEO_URL;
+const ICH_FILE = () => path.join(dataDir, 'iconch.json'), ICH_GRID = () => path.join(dataDir, 'iconch-grid.json');
+const ICH_PLACES = [...SITES.filter(s => s.type === 'start' && isNum(s.lat)).map(s => ({ key: s.id, lat: s.lat, lon: s.lon, alt: s.alt })), PAYERNE];
+const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ICH_PLACES)).digest('hex').slice(0, 12);
+async function ichLoadGrid() {
+  if (state.ichGrid) return state.ichGrid;
+  try {
+    const g = JSON.parse(await fs.readFile(ICH_GRID(), 'utf8'));
+    if (g.sig === ichPlacesSig() && Date.now() - g.at < 30 * 86400000) return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)) });
+  } catch { /* noch keiner */ }
+  const g = await ichGrid(ICH_PLACES);
+  await fs.writeFile(ICH_GRID(), JSON.stringify({ ...g, sig: ichPlacesSig(), at: Date.now(), hsurf: [...g.hsurf], hhl: g.hhl.map(a => [...a]) }));
+  return (state.ichGrid = g);
+}
+/** Neuer Lauf fällig? MeteoSchweiz rechnet alle 3 h, die Daten liegen rund 2 h später bereit. */
+function ichDue(now = Date.now()) {
+  const h = zurichParts(now).hour;
+  if (h < 4 || h > 21) return false;
+  const expect = Math.floor((now - 2.25 * 3600000) / 10800000) * 10800000;
+  return !state.ich || state.ich.ref < expect;
+}
+async function collectIconCh(now = Date.now()) {
+  if (!ICH_ON || !ichDue(now)) return;
+  const t0 = Date.now();
+  try {
+    const grid = await ichLoadGrid();
+    const r = await ichThermals(grid, ICH_PLACES, { now });
+    if (state.ich && r.ref <= state.ich.ref) return;
+    state.ich = r;
+    ingest.iconch = { ok: true, at: nowIso(), error: null, run: new Date(r.ref).toISOString(), places: Object.keys(r.byKey).length, secs: Math.round((Date.now() - t0) / 1000) };
+    storeIconCh(r, now);
+    fs.writeFile(ICH_FILE() + '.tmp', JSON.stringify(r)).then(() => fs.rename(ICH_FILE() + '.tmp', ICH_FILE())).catch(() => {});
+  } catch (e) {
+    ingest.iconch = { ...ingest.iconch, ok: !!state.ich, at: nowIso(), error: errMsg(e) };
+  }
+}
+/** Für den späteren Vergleich mit Flügen und Ballon: je Startplatz und Stunde die jüngste Prognose festhalten. */
+function storeIconCh(r, now = Date.now()) {
+  const up = db.prepare('INSERT INTO ich_fc(site_id,date,hour,lead,top,base,lcl,wstar,inv,invdt,shf,snow) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base, lcl=excluded.lcl, wstar=excluded.wstar, inv=excluded.inv, invdt=excluded.invdt, shf=excluded.shf, snow=excluded.snow WHERE excluded.lead<=ich_fc.lead');
+  for (const [id, rows] of Object.entries(r.byKey)) {
+    if (id === PAYERNE.key) continue;
+    for (const x of rows) {
+      if (!x || !isNum(x.top)) continue;
+      const zp = zurichParts(x.t), lead = Math.max(0, (x.t - now) / 3600000);
+      // wie bei site_fc: Thermik endet an der Wolkenbasis
+      up.run(id, zp.date, zp.hour, lead, isNum(x.base) ? Math.min(x.top, x.base) : x.top, x.base, x.lcl, x.wstar, x.inv, x.invDt, x.shf, x.snow);
+    }
+  }
+  // Payerne: das Profil zur Ballonzeit (00/12 UTC), die jüngste Prognose mindestens 3 h vorher
+  for (const pr of r.profiles?.[PAYERNE.key] || []) {
+    const d = new Date(pr.t);
+    if (d.getUTCHours() % 12 || d.getUTCMinutes()) continue;
+    const lead = (pr.t - r.ref) / 3600000;
+    if (lead < 3) continue;
+    dbRun('INSERT INTO ich_pay(time,lead,prof) VALUES(?,?,?) ON CONFLICT(time) DO UPDATE SET lead=excluded.lead, prof=excluded.prof WHERE excluded.lead<ich_pay.lead', [d.toISOString(), lead, JSON.stringify(pr)]);
+  }
+}
+async function collectSonde() {
+  try {
+    const s = await fetchSonde();
+    if (!s) throw new Error('keine Messung in der Datei');
+    const iso = new Date(s.time).toISOString();
+    ingest.sonde = { ok: true, at: nowIso(), error: null, time: iso };
+    if (dbGet('SELECT 1 x FROM sonde WHERE time=?', [iso])) return;
+    dbRun('INSERT INTO sonde(time,data) VALUES(?,?)', [iso, JSON.stringify(s.levels)]);
+    sondeCompare(iso);
+  } catch (e) { ingest.sonde = { ...ingest.sonde, ok: false, at: nowIso(), error: errMsg(e) }; }
+}
+function sondeCompare(iso) {
+  const p = dbGet('SELECT lead, prof FROM ich_pay WHERE time=?', [iso]), s = dbGet('SELECT data FROM sonde WHERE time=?', [iso]);
+  if (!p || !s) return null;
+  const c = compareProfile(JSON.parse(p.prof), { levels: JSON.parse(s.data) });
+  if (c) dbRun('INSERT OR REPLACE INTO sonde_cmp(time,lead,mae,bias,inv_s,inv_m,inv_dz) VALUES(?,?,?,?,?,?,?)', [iso, p.lead, c.mae, c.bias, c.invSonde?.z ?? null, c.invModel?.z ?? null, c.invDz]);
+  return c;
+}
+/** Übersicht für Profil › Technik: Ballonvergleich der letzten 60 Tage und alt gegen neu an den Flügen. */
+function iconchStatus() {
+  const since = new Date(Date.now() - 60 * 86400000).toISOString();
+  const rows = dbAll('SELECT * FROM sonde_cmp WHERE time>=? ORDER BY time DESC', [since]);
+  const avg = k => (rows.length ? Math.round(rows.reduce((a, r) => a + Math.abs(r[k] ?? 0), 0) / rows.length * 100) / 100 : null);
+  const invRows = rows.filter(r => isNum(r.inv_dz));
+  let flights = { n: 0 };
+  try {
+    const fl = allFlights().filter(f => f.track?.thermals?.length), dates = [...new Set(fl.map(f => f.date))];
+    const mk = table => { const m = new Map(); for (const d of dates) for (const r of dbAll(`SELECT site_id, hour, top FROM ${table} WHERE date=?`, [d])) m.set(`${r.site_id}|${d}|${r.hour}`, { top: r.top }); return m; };
+    flights = compareTops(fl, mk('site_fc'), mk('ich_fc'));
+  } catch { /* noch keine Flüge */ }
+  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
 }
 
 /* ------------------------------------------------------------------ MyAFC */
@@ -1527,6 +1628,14 @@ const server = http.createServer(async (req, res) => {
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
       }
+      if (req.method === 'GET' && p === '/api/thermiksaeule') {
+        // Thermiksäule eines Startplatzes aus ICON-CH1 (MeteoSchweiz): Stundenwerte und Profile für die Anzeige
+        const id = u.searchParams.get('site') || '';
+        if (!state.ich) return sendJson(req, res, 202, { warming: true, error: ingest.iconch.error });
+        const rows = state.ich.byKey[id];
+        if (!rows) return sendJson(req, res, 404, { error: 'kein Startplatz mit dieser Kennung' });
+        return sendJson(req, res, 200, { ok: true, site: id, run: new Date(state.ich.ref).toISOString(), source: state.ich.source, hours: rows, profiles: state.ich.profiles[id] || [] });
+      }
       if (req.method === 'GET' && p === '/api/wn') {
         // Wind im Gelände (WindNinja, im Voraus gerechnet): Ausschnitt der 3D-Szene als Binärdaten
         const b = (u.searchParams.get('b') || '').split(',').map(Number);
@@ -1577,7 +1686,7 @@ const server = http.createServer(async (req, res) => {
         // Verbrauch und Update-Stand für die Anzeige unter Profil
         // Piloten ohne Admin-Rechte sehen Version und Gelerntes, aber keine Update- und Betriebsdetails des Macs
         if (!isAdmin(req)) return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: false, hosted: HOSTED, learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck() });
-        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: { ...openMeteoUsage(), plan: omPlanStatus() }, update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), myafc: myafcUsage(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
+        return sendJson(req, res, 200, { ok: true, version: SERVER_VERSION, admin: true, openMeteo: { ...openMeteoUsage(), plan: omPlanStatus() }, update: { ...updater.status(), hosted: HOSTED, canApply: AUTOSTART && canOperate(req) }, backtest: backtestStatus(), learned: learnedList(), learnGuard: learnGuard(), thermal: thermalLearned(), siteFeedback: feedbackSummary(), pressure: pressureLearned(), backfill: backfillInfo(), models: modelLearnedList(), ensCheck: ensCheck(), iconch: iconchStatus(), myafc: myafcUsage(), awake: awakeStatus(), problems: healthProblems().map(p => ({ id: p.id, title: p.title, body: p.body })) });
       }
       if (req.method === 'POST' && p === '/api/backtest') {
         if (!canOperate(req) || req.headers['x-afc-client'] === undefined) return sendJson(req, res, 403, { error: 'nur auf diesem Rechner' });
@@ -2115,6 +2224,7 @@ async function maintenance() {
     dbRun('DELETE FROM reg_fc WHERE target<?', [cut120]); dbRun('DELETE FROM reg_obs WHERE time<?', [cut120]);
     dbRun('DELETE FROM usage_ev WHERE day<?', [new Date(Date.now() - USAGE_KEEP_DAYS * 86400000).toISOString().slice(0, 10)]);
     dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
+    dbRun('DELETE FROM ich_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     for (const f of await fs.readdir(dataDir)) if (f.startsWith('tmp-sicherung-')) await fs.rm(path.join(dataDir, f), { recursive: true, force: true });
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;
     await backup(db, path.join(backupsDir, name));
@@ -2128,6 +2238,7 @@ async function maintenance() {
 const timers = [];
 async function start() {
   await loadSnapshot();
+  try { if (ICH_ON) { state.ich = JSON.parse(await fs.readFile(ICH_FILE(), 'utf8')); ingest.iconch = { ok: true, at: new Date(state.ich.at).toISOString(), error: null, run: new Date(state.ich.ref).toISOString(), places: Object.keys(state.ich.byKey).length, secs: null }; } } catch { /* noch keine */ }
   state.obs = latestObs();
   if (Object.keys(state.obs).length) state.regional = regionalFromObs(state.obs, {});
   await new Promise(r => server.listen(PORT, HOST, r));
@@ -2146,6 +2257,7 @@ async function start() {
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => planTick(), 5 * 60000));   // Prognose, Windraster, Varianten: nach Tagesplan
+  if (ICH_ON) { setTimeout(() => tick('ich', () => collectIconCh()), 90000).unref(); timers.push(setInterval(() => tick('ich', () => collectIconCh()), 20 * 60000)); timers.push(setInterval(() => tick('sonde', collectSonde), 30 * 60000)); setTimeout(() => tick('sonde', collectSonde), 120000).unref(); }
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   timers.push(setInterval(() => tick('obst', collectObstacles), 3 * 3600000));   // prüft alle 3 h, lädt höchstens alle 20 h neu

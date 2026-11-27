@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.20.3';
+const APP_VER = '12.20.4';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -2757,6 +2757,7 @@ function renderSite(fresh = false) {
     <div class="folds">
     ${reasonsFold}
     ${windFold}
+    ${hr ? fold('ich', 'Thermiksäule', 'wird geladen …', '<div id="ichNear"><p class="fine" style="margin:0">Thermiksäule von MeteoSchweiz wird geladen …</p></div>', { sumId: 'ichSum' }) : ''}
     ${landingHtml(s, hr)}
     ${fold('obst', 'Kabel und Hindernisse', 'wird geprüft …', '<div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div>', { sumId: 'obstSum' })}
     ${S.day === 0 && !d._savedAt && ME.src?.radar !== false ? fold('radar', 'Regen jetzt', 'wird geprüft …', '<div id="radarNear"><p class="fine" style="margin:0">Regenradar wird geprüft …</p></div>', { sumId: 'radarSum' }) : ''}
@@ -2771,6 +2772,7 @@ function renderSite(fresh = false) {
   if (kvPrev) morphNums($('#siteDlg'), kvPrev, SCRUB.moved && SCRUB.on ? 140 : 380);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
+  if (hr && day?.date) fillIch(s, day.date, hr.h, hr);
   fillCam(s);
   if (fresh) liveLoad();
 }
@@ -3067,6 +3069,76 @@ function obstNearList(items, what) {
   if (!items.length) return `<p class="fine" style="margin:0 0 6px">${what}: keine erfassten Kabel oder Hindernisse.</p>`;
   return `<p style="margin:0 0 4px"><b>${what}</b></p><ul class="obst-list">${items.map(it => `<li class="ob-${it.k}"><b>${esc(obstTitle(it))}</b> ${it.d < 30 ? 'direkt hier' : fmtM(it.d) + ' ' + DIR8_ADJ[Math.round(it.deg / 45) % 8]}${it.h != null ? ` <span class="fine">· ${it.h} m über Grund</span>` : ''}</li>`).join('')}</ul>`;
 }
+/* Thermiksäule aus ICON-CH1 (MeteoSchweiz, 1 km, 80 Schichten). Nur zum Anschauen, zählt (noch) nicht zum Score. */
+const ICH = new Map();
+const zDay = ms => new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' });
+const zHour = ms => Number(new Date(ms).toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Europe/Zurich' }));
+async function ichData(id) {
+  const c = ICH.get(id);
+  if (c && Date.now() - c.at < 10 * 60000) return c.d;
+  const r = await fetch('/api/thermiksaeule?site=' + encodeURIComponent(id));
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 202) throw new Error('Daten von MeteoSchweiz werden noch geladen');
+  if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  ICH.set(id, { at: Date.now(), d: j });
+  return j;
+}
+function ichSum(x, alt) {
+  if (!x || !(x.wstar > 0.2) || x.top < alt + 50) return x?.base && x.base <= alt ? 'Start in den Wolken' : x?.base && x.base < alt + 300 ? 'Wolken knapp über dem Start, keine Thermik darüber' : x?.wstar > 0.2 && x.top > (x.zs ?? alt) + 50 ? 'Thermik nur unter dem Start' : 'keine Thermik über dem Start';
+  const top = x.base ? Math.min(x.top, x.base) : x.top;
+  return `bis ${Math.round(top / 50) * 50} m (${top - alt >= 0 ? '+' : ''}${Math.round((top - alt) / 50) * 50}), Steigen ca. ${x.wstar.toFixed(1)} m/s`;
+}
+/** Säule als Bild: Höhe nach oben, warme Säule bis zur Obergrenze, Wolke an der Basis, Sperrschicht gestrichelt. */
+function ichSvg(x, pr, alt, oldTop) {
+  const W = 320, H = 230, L = 46, R = 12, T = 10, B = 22;
+  const top = x.base ? Math.min(x.top, x.base) : x.top;
+  const zMin = Math.max(0, Math.floor((Math.min(alt, x.zs ?? alt, top) - 500) / 500) * 500);
+  const zMax = Math.ceil((Math.max(alt + 1200, top + 900, x.inv ? x.inv + 400 : 0, x.base ? x.base + 600 : 0)) / 500) * 500;
+  const Y = z => T + (H - T - B) * (1 - (z - zMin) / (zMax - zMin));
+  const ts = pr.z.map((z, i) => [z, pr.tc[i], pr.td[i]]).filter(([z]) => z >= zMin && z <= zMax);
+  const tMin = Math.floor(Math.min(...ts.map(r => r[2])) / 5) * 5, tMax = Math.ceil(Math.max(...ts.map(r => r[1])) / 5) * 5 + 2;
+  const X = t => L + (W - L - R) * ((t - tMin) / (tMax - tMin || 1));
+  const line = k => ts.map(r => `${X(r[k]).toFixed(1)},${Y(r[0]).toFixed(1)}`).join(' ');
+  const grid = []; for (let z = zMin; z <= zMax; z += 500) grid.push(`<line x1="${L}" x2="${W - R}" y1="${Y(z)}" y2="${Y(z)}" class="ich-g"/><text x="${L - 6}" y="${Y(z) + 4}" class="ich-ax" text-anchor="end">${z}</text>`);
+  const thermal = x.wstar > 0.2 && top > (x.zs ?? alt) + 50;
+  const colTop = Y(top), colBot = Y(Math.max(zMin, x.zs ?? alt));
+  return `<svg class="ich-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Thermiksäule: ${esc(ichSum(x, alt))}">
+    <defs><linearGradient id="ichCol" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="var(--wait)" stop-opacity=".55"/><stop offset="1" stop-color="var(--wait)" stop-opacity=".08"/></linearGradient></defs>
+    ${grid.join('')}
+    ${thermal ? `<rect class="ich-col" x="${L + 4}" y="${colTop}" width="${W - L - R - 8}" height="${Math.max(0, colBot - colTop)}" rx="8" fill="url(#ichCol)" style="transform-origin: 0 ${colBot}px"/>` : ''}
+    ${x.base && x.base <= zMax ? `<g class="ich-cloud" transform="translate(${L + 92},${Y(x.base) - 17})"><path d="M10 16h46a9 9 0 0 0-2-17.8A13 13 0 0 0 29 0a11 11 0 0 0-20 5A8 8 0 0 0 10 16z"/></g>` : ''}
+    ${x.inv ? `<line x1="${L}" x2="${W - R}" y1="${Y(x.inv)}" y2="${Y(x.inv)}" class="ich-inv"/>` : ''}
+    ${oldTop && oldTop >= zMin && oldTop <= zMax ? `<line x1="${L}" x2="${L + 24}" y1="${Y(oldTop)}" y2="${Y(oldTop)}" class="ich-old"/><text x="${L + 30}" y="${Y(oldTop) + 4}" class="ich-lb ich-lb-old">bisher</text>` : ''}
+    <polyline points="${line(2)}" class="ich-td"/><polyline points="${line(1)}" class="ich-t"/>
+    ${x.base && x.base <= zMax ? `<text x="${L + 8}" y="${Y(x.base) - 4}" class="ich-lb">Basis ${Math.round(x.base / 50) * 50} m</text>` : ''}
+    ${x.inv ? `<text x="${W - R - 2}" y="${Y(x.inv) - 4}" class="ich-lb" text-anchor="end">Sperrschicht${x.invDt ? ' +' + x.invDt.toFixed(1) + '°' : ''}</text>` : ''}
+    <line x1="${L}" x2="${W - R}" y1="${Y(alt)}" y2="${Y(alt)}" class="ich-alt"/><text x="${L + 8}" y="${Y(alt) + 14}" class="ich-lb ich-lb-alt">Start ${alt} m</text>
+    ${thermal ? `<text x="${W - R - 8}" y="${colBot - colTop >= 22 && Math.abs(colTop + 14 - Y(alt)) > 10 ? colTop + 14 : colBot + 14}" class="ich-lb ich-lb-top" text-anchor="end">Thermik bis ${Math.round(top / 50) * 50} m</text>` : ''}
+  </svg>`;
+}
+async function fillIch(s, date, hour, hr) {
+  const el = $('#ichNear'), sum = t => { const e = $('#ichSum'); if (e) e.textContent = t; };
+  if (!el) return;
+  try {
+    const j = await ichData(s.id);
+    if ($('#ichNear') !== el) return;
+    const i = j.hours.findIndex(x => zDay(x.t) === date && zHour(x.t) === hour);
+    if (i < 0) { sum('für diese Stunde noch nicht gerechnet'); el.innerHTML = '<p class="fine" style="margin:0">MeteoSchweiz rechnet dieses Modell 33 Stunden voraus, von 7 bis 20 Uhr. Für diese Stunde gibt es noch keine Säule.</p>'; return; }
+    const x = j.hours[i], pr = j.profiles[i], alt = s.alt, top = x.base ? Math.min(x.top, x.base) : x.top;
+    sum(ichSum(x, alt));
+    const facts = [
+      x.wstar > 0.2 && top > alt + 50 ? `<div><b>${Math.round(top / 50) * 50} m</b><span>Thermik bis (${top - alt >= 0 ? '+' : ''}${Math.round((top - alt) / 50) * 50} m über Start)</span></div>` : `<div><b>–</b><span>${x.shf != null && x.shf <= 15 ? 'Der Boden heizt kaum (' + (x.snow >= 50 ? 'Schnee' : 'zu wenig Sonne') + ')' : 'Keine Thermik über dem Start'}</span></div>`,
+      `<div><b>${x.wstar ? x.wstar.toFixed(1) : '0'} m/s</b><span>${x.wstar > 0.2 && top <= alt + 50 ? 'Steigen unter dem Start (Mittel)' : 'Steigen in der Thermik (Mittel)'}</span></div>`,
+      `<div><b>${x.base ? Math.round(x.base / 50) * 50 + ' m' : 'blau'}</b><span>${x.base ? 'Wolkenbasis' : 'keine Quellwolken (Blauthermik)'}</span></div>`,
+      x.inv ? `<div><b>${Math.round(x.inv / 50) * 50} m</b><span>Sperrschicht (Inversion)${x.invDt ? ', ' + x.invDt.toFixed(1) + '° wärmer' : ''}</span></div>` : '',
+      x.snow != null && x.snow >= 30 ? `<div><b>${x.snow} %</b><span>Schnee am Boden um den Start</span></div>` : ''
+    ].join('');
+    const old = hr?.thermalTop != null ? `<p class="fine ich-cmp"><span class="ich-key ich-key-old"></span>Bisherige Rechnung: Thermik bis ${Math.round(hr.thermalTop / 50) * 50} m. Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>` : '<p class="fine ich-cmp">Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>';
+    el.innerHTML = `${ichSvg(x, pr, alt, hr?.thermalTop)}<p class="fine ich-legend"><span class="ich-key ich-key-t"></span>Temperatur <span class="ich-key ich-key-td"></span>Taupunkt <span class="ich-key ich-key-col"></span>Thermik</p><div class="kv">${facts}</div>${old}<p class="fine" style="margin:4px 0 0">Quelle: MeteoSchweiz, Modell ICON-CH1 (1 km), Lauf ${new Date(j.run).toLocaleString('de-CH', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric', timeZone: 'Europe/Zurich' })} Uhr.</p>`;
+    requestAnimationFrame(() => el.querySelector('.ich-col')?.classList.add('in'));
+  } catch (e) { sum('nicht verfügbar'); el.innerHTML = `<p class="fine" style="margin:0">Thermiksäule nicht verfügbar (${esc(errTxt(e))}).</p>`; }
+}
+
 async function fillObstNear(s) {
   const el = $('#obstNear');
   if (!el) return;
