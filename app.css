@@ -1597,3 +1597,8 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .ich-key-col { height: 10px; border: 0; border-radius: 3px; background: color-mix(in srgb, var(--wait) 45%, transparent); }
 .ich-key-old { border-top: 3px solid var(--muted); }
 .ich-cmp { margin: 8px 0 0; }
+
+/* Thermiksäule auf der Karte: Obergrenze unter dem Startplatz (Wolke = an der Basis gedeckelt) */
+.mk-ich { display: flex; align-items: center; gap: 3px; margin: 0 auto; width: max-content; padding: 1px 6px; border-radius: 9px; font: 700 10.5px var(--f-num); color: #7a3f00; background: color-mix(in srgb, #ffd9a8 88%, transparent); box-shadow: 0 1px 3px rgba(0,0,0,.18); pointer-events: none; }
+.mk-ich.cap { color: var(--ink); background: color-mix(in srgb, #fff 90%, transparent); }
+.mk-ich.cap i { width: 11px; height: 7px; border-radius: 6px 6px 3px 3px; background: #c9d3dc; box-shadow: 3px -2px 0 -1px #c9d3dc; }

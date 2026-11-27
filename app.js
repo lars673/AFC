@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.20.4';
+const APP_VER = '12.20.5';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3083,6 +3083,26 @@ async function ichData(id) {
   ICH.set(id, { at: Date.now(), d: j });
   return j;
 }
+/* Thermiksäule für alle Startplätze einer Stunde (Karte und 3D). Fehlt sie, zeigen Karte und 3D einfach nichts davon. */
+const ICHH = new Map();
+async function ichHour(iso) {
+  if (!iso || iso === 'now') iso = new Date(Math.round(Date.now() / 3600000) * 3600000).toISOString();
+  const k = iso.slice(0, 13), c = ICHH.get(k);
+  if (c && Date.now() - c.at < 10 * 60000) return c.d;
+  try {
+    const r = await fetch('/api/thermiksaeule?t=' + encodeURIComponent(iso));
+    const d = r.ok ? await r.json() : null;
+    ICHH.set(k, { at: Date.now(), d });
+    if (ICHH.size > 40) ICHH.delete(ICHH.keys().next().value);
+    return d;
+  } catch { return null; }
+}
+/** Nutzbare Säule über dem Start: { top (bis Wolke/Obergrenze), capped, wstar } oder null. */
+function ichUse(x, alt) {
+  if (!x || !(x.wstar > 0.2) || !num(x.top)) return null;
+  const capped = num(x.base) && x.base < x.top, top = capped ? x.base : x.top;
+  return top > alt + 50 ? { top, capped, wstar: x.wstar } : null;
+}
 function ichSum(x, alt) {
   if (!x || !(x.wstar > 0.2) || x.top < alt + 50) return x?.base && x.base <= alt ? 'Start in den Wolken' : x?.base && x.base < alt + 300 ? 'Wolken knapp über dem Start, keine Thermik darüber' : x?.wstar > 0.2 && x.top > (x.zs ?? alt) + 50 ? 'Thermik nur unter dem Start' : 'keine Thermik über dem Start';
   const top = x.base ? Math.min(x.top, x.base) : x.top;
@@ -3233,6 +3253,8 @@ function drawSites() {
       ? L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-e"></div>' })
       : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${!s.blocked ? `<i class="mk-ring" style="--f:${Math.max(4, Math.min(100, b.score))}" aria-hidden="true"></i>` : ''}${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });   // Messring von oben (Stil C): farbiger Bogen wächst mit dem Score
     const at = n > 1 ? M.map.unproject(g.p, z) : [s.lat, s.lon];
+    const ich = !s.blocked && T.modes.has('thermal') && ICHM.d?.sites ? ichUse(ICHM.d.sites[s.id], s.alt) : null;
+    if (ich) L.marker(at, { icon: L.divIcon({ className: '', iconSize: [64, 18], iconAnchor: [32, -19], html: `<div class="mk-ich${ich.capped ? ' cap' : ''}" title="Thermik bis ${Math.round(ich.top / 50) * 50} m${ich.capped ? ' (Wolkenbasis)' : ''}, MeteoSchweiz ICON-CH1">${ich.capped ? '<i aria-hidden="true"></i>' : '↑'}${Math.round(ich.top / 50) * 50}</div>` }), interactive: false, keyboard: false, zIndexOffset: -1000 }).addTo(M.sites);
     L.marker(at, { icon, title: n > 1 ? `${n} Startplätze, bester ${s.name}: ${b ? b.score : 'keine Bewertung'}` : `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 })
       .on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : n > 1 ? mapSheet('group', g.m.map(x => x.s.id)) : mapSheet('site', s.id))).addTo(M.sites);
   }
@@ -3959,9 +3981,19 @@ function thermalLayers(g) {
     else T.layers[mode] = new CanvasOverlay('', thermalBounds(g), { pane, opacity: o, className: 'thermal-img', interactive: false, w: g.nx, h: g.ny }).addTo(M.map);
   }
 }
+/* Karte: unter jedem Startplatz die Thermik-Obergrenze aus der Säule (nur mit Ebene «Thermik»). */
+const ICHM = { k: '', d: null };
+async function ichMap(iso) {
+  if (!T.modes.has('thermal')) return;
+  const d = await ichHour(iso), k = iso + '|' + (d?.run || '');
+  if (!T.modes.has('thermal') || k === ICHM.k) return;
+  ICHM.k = k; ICHM.d = d;
+  if (S.plan && M.map) drawSites();
+}
 async function updateThermal() {
   syncWindBar();
   if (!M.map || !CanvasOverlay) return;
+  if (!T.modes.has('thermal') && ICHM.d) { ICHM.d = null; ICHM.k = ''; if (S.plan) drawSites(); }
   if (!T.modes.size) { thermalLayers(null); T.data = null; sunArc(null); return; }
   if (FILM.playing) {
     try { thermalLayers(await thermalGrid()); if (await filmPrepare()) filmDraw(); }
@@ -3969,6 +4001,7 @@ async function updateThermal() {
     return;
   }
   const iso = mapIso(), req = ++T.req;
+  ichMap(iso);
   try {
     const g = await thermalGrid();
     const d = await thermalData(iso);
@@ -5248,6 +5281,7 @@ async function v3dApply() {
   sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
   v3dWind(d);
   v3dThermals(d);
+  v3dIch(iso, tok);
   if (reg) { v3dRegionMarkers(); v3dRegionHud(err); } else v3dSiteHud(err);
 }
 /* ---- Thermik zum Sehen: über den stärksten Stellen steigt ein Schlauch auf, vom Wind geneigt, bis zur Thermikobergrenze
@@ -5316,6 +5350,39 @@ function v3dThermals(d) {
   sc.setTris('therm', tris);
   sc.setLines('thermL', lines, { flow: 520, alpha: 1, bias: 0.001 });
   sc.setLines('thermC', caps, { bias: 0.001 });
+}
+/* 3D: die Thermiksäule aus ICON-CH1 über jedem Startplatz im Bild (mit Ebene «Thermik»): warmer, nach oben
+   verblassender Zylinder vom Start bis zur Obergrenze, an der Wolkenbasis ein weisser Ring mit Wolkendeckel. */
+async function v3dIch(iso, tok) {
+  const sc = V3.scene, clear = () => { sc?.setTris('ich', null); sc?.setLines('ichC', null); V3.ichN = 0; };
+  if (!sc) return;
+  if (V3.layer !== 'thermal') return clear();
+  const d = await ichHour(iso);
+  if (tok !== V3.tok || V3.scene !== sc) return;
+  if (!d?.sites || V3.layer !== 'thermal') return clear();
+  const c = sc.c, tris = [], rings = [], col = [1, 0.62, 0.22], n = 24;
+  for (const o of S.plan.sites) {
+    if (o.blocked || !num(o.lat) || haversineKm(c.lat, c.lon, o.lat, o.lon) * 1000 > sc.R * 0.88) continue;
+    const u = ichUse(d.sites[o.id], o.alt);
+    if (!u) continue;
+    const g0 = Math.max(o.alt, sc.ground(o.lat, o.lon)), H = u.top - g0;
+    if (H < 60) continue;
+    const r = Math.max(70, Math.min(260, sc.R * 0.012)) * (0.8 + Math.min(0.6, u.wstar / 4)), A = sc.toLocal(o.lat, o.lon, g0), yT = u.top * sc.ex;
+    const a0 = 0.24 + Math.min(0.22, u.wstar * 0.08);
+    const P = (k, y) => [A[0] + Math.cos(k / n * 2 * Math.PI) * r, y, A[2] + Math.sin(k / n * 2 * Math.PI) * r];
+    for (let k = 0; k < n; k++) {
+      const b0 = P(k, A[1]), b1 = P(k + 1, A[1]), t0 = P(k, yT), t1 = P(k + 1, yT);
+      tris.push(...b0, ...col, a0, ...t0, ...col, a0 * 0.35, ...b1, ...col, a0, ...b1, ...col, a0, ...t0, ...col, a0 * 0.35, ...t1, ...col, a0 * 0.35);
+      if (u.capped) { const m = [A[0], yT, A[2]]; tris.push(...m, 1, 1, 1, 0.55, ...t0, 1, 1, 1, 0.42, ...t1, 1, 1, 1, 0.42); }
+    }
+    const ring = []; for (let k = 0; k <= n; k++) { const q = P(k, yT), [la, lo] = sc.toGeo(q[0], q[2]); ring.push([la, lo, u.top]); }
+    rings.push({ pts: ring, color: u.capped ? [1, 1, 1, 0.95] : [1, 0.7, 0.3, 0.85], width: 2.4 });
+  }
+  V3.ichN = rings.length;
+  sc.setTris('ich', tris.length ? tris : null);
+  sc.setLines('ichC', rings.length ? rings : null, { bias: 0.001 });
+  const nt = $('#v3dNote');
+  if (nt && rings.length && !nt.textContent.includes('ICON-CH1')) nt.textContent += ' Säulen über den Startplätzen: Thermik bis zur Obergrenze oder Wolkenbasis (MeteoSchweiz ICON-CH1).';
 }
 /** Windfäden: Stromlinien des Bodenwinds, dem Gelände entlang, als fliessende Linien 45 m über Grund. */
 function windLines3d(sc, d) {

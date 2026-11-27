@@ -1632,6 +1632,18 @@ const server = http.createServer(async (req, res) => {
         // Thermiksäule eines Startplatzes aus ICON-CH1 (MeteoSchweiz): Stundenwerte und Profile für die Anzeige
         const id = u.searchParams.get('site') || '';
         if (!state.ich) return sendJson(req, res, 202, { warming: true, error: ingest.iconch.error });
+        if (!id) {
+          // alle Startplätze für eine Stunde (Karte und 3D): ?t=ISO, nächste gerechnete Stunde innerhalb 30 Minuten
+          const t = Date.parse(u.searchParams.get('t') || '');
+          if (!Number.isFinite(t)) return sendJson(req, res, 400, { error: 't=Zeit (ISO) fehlt' });
+          const sites = {};
+          for (const [k, rows] of Object.entries(state.ich.byKey)) {
+            if (k === PAYERNE.key) continue;
+            const x = rows.find(r => Math.abs(r.t - t) <= 30 * 60000);
+            if (x) sites[k] = { top: x.top, base: x.base, wstar: x.wstar, inv: x.inv, zs: x.zs, snow: x.snow };
+          }
+          return sendJson(req, res, 200, { ok: true, run: new Date(state.ich.ref).toISOString(), t: new Date(t).toISOString(), source: state.ich.source, sites });
+        }
         const rows = state.ich.byKey[id];
         if (!rows) return sendJson(req, res, 404, { error: 'kein Startplatz mit dieser Kennung' });
         return sendJson(req, res, 200, { ok: true, site: id, run: new Date(state.ich.ref).toISOString(), source: state.ich.source, hours: rows, profiles: state.ich.profiles[id] || [] });
