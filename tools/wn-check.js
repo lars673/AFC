@@ -35,7 +35,7 @@ const foam = meta.foam || [];
 const inFoam = s => foam.some(b => s.lat >= b[0] && s.lat <= b[2] && s.lon >= b[1] && s.lon <= b[3]);
 const hourCH = t => Number(new Intl.DateTimeFormat('de-CH', { timeZone: 'Europe/Zurich', hour: '2-digit', hour12: false }).format(new Date(t)));
 const dd = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
-const per = {};
+const per = {}, S = [];
 for (const r of rows) {
   const s = ST[r.code]; if (!s) continue;
   const hr = hourCH(r.target); if (hr < 8 || hr > 18) continue;
@@ -44,6 +44,7 @@ for (const r of rows) {
   // wie lib/plan.js: Faktor gegenüber der Modellmasche, im Lee nichts ändern
   const lee = w.rel < 0.6 || Math.abs(w.dev) > 60, fx = lee ? 1 : Math.min(1.6, Math.max(0.6, w.rel));
   const after = r.fw * fx, dirA = lee ? r.fd : (r.fd + w.dev + 360) % 360;
+  S.push({ code: r.code, fw: r.fw, ow: r.ow, rel: w.rel, lee });
   p.n++; p.e0 += Math.abs(r.fw - r.ow); p.e1 += Math.abs(after - r.ow); p.b0 += r.fw - r.ow; p.b1 += after - r.ow; p.f += fx;
   if (r.ow >= 5 && Number.isFinite(r.od) && Number.isFinite(r.fd)) { p.nd++; p.d0 += dd(r.fd, r.od); p.d1 += dd(dirA, r.od); }
 }
@@ -58,4 +59,22 @@ for (const [code, p] of list) {
   const t = p.foam ? tot.f : tot.a; t.n += p.n; t.e0 += p.e0; t.e1 += p.e1; t.nd += p.nd; t.d0 += p.d0; t.d1 += p.d1;
   console.log(`${(p.name + ' (' + code + (p.foam ? ', OpenFOAM' : '') + ')').slice(0, 27).padEnd(28)}${String(p.n).padStart(5)}${f1(p.f / p.n).padStart(8)}  ${(f1(p.e0 / p.n) + ' → ' + f1(p.e1 / p.n)).padEnd(26)}${(f1(p.b0 / p.n) + ' → ' + f1(p.b1 / p.n)).padEnd(27)}${p.nd ? Math.round(p.d0 / p.nd) + '° → ' + Math.round(p.d1 / p.nd) + '°' : '–'}`);
 }
-for (const [k, t] of Object.entries(tot)) if (t.n) console.log(`\n${k === 'f' ? 'Mit OpenFOAM' : 'Nur WindNinja einfach'}: ${t.n} Stunden, Fehler ${f1(t.e0 / t.n)} → ${f1(t.e1 / t.n)} km/h (${Math.round((1 - t.e1 / t.e0) * 100)} % besser)${t.nd ? `, Richtung ${Math.round(t.d0 / t.nd)}° → ${Math.round(t.d1 / t.nd)}°` : ''}`);
+for (const [k, t] of Object.entries(tot)) if (t.n) console.log(`\n${k === 'f' ? 'Mit OpenFOAM' : 'Nur WindNinja einfach'}: ${t.n} Stunden, Fehler ${f1(t.e0 / t.n)} → ${f1(t.e1 / t.n)} km/h (${t.e1 <= t.e0 ? Math.round((1 - t.e1 / t.e0) * 100) + ' % besser' : Math.round((t.e1 / t.e0 - 1) * 100) + ' % schlechter'})${t.nd ? `, Richtung ${Math.round(t.d0 / t.nd)}° → ${Math.round(t.d1 / t.nd)}°` : ''}`);
+
+// Eichung: wie stark soll der Faktor wirken? wirksam = rel^a (a_hoch für rel > 1, a_tief für rel < 1).
+// Gesucht mit Auslassen je Station (die Station selbst bestimmt ihr a nicht mit), damit es nicht nur auswendig passt.
+const AS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+const eff = (x, au, ad) => x.lee ? 1 : (x.rel >= 1 ? Math.min(1.6, x.rel ** au) : Math.max(0.6, x.rel ** ad));
+const codes = [...new Set(S.map(x => x.code))];
+const err = {};   // err[code][au|ad] = Summe
+for (const x of S) { const e = err[x.code] ??= {}; for (const au of AS) for (const ad of AS) { const k = au + '|' + ad; e[k] = (e[k] || 0) + Math.abs(x.fw * eff(x, au, ad) - x.ow); } }
+const sumK = (ex) => { const t = {}; for (const c of codes) if (c !== ex) for (const [k, v] of Object.entries(err[c])) t[k] = (t[k] || 0) + v; return t; };
+const best = t => Object.entries(t).sort((a, b) => a[1] - b[1])[0][0];
+const all = sumK(null), kb = best(all);
+let loo = 0, base = 0; for (const c of codes) { const k = best(sumK(c)); loo += err[c][k]; base += err[c]['0|0']; }
+console.log(`\nEichung (alle ${S.length} Stunden): bestes a_hoch|a_tief = ${kb}, Fehler ${f1(all['0|0'] / S.length)} → ${f1(all[kb] / S.length)} km/h; mit Auslassen je Station ${f1(base / S.length)} → ${f1(loo / S.length)} km/h; voll (1|1) ${f1(all['1|1'] / S.length)}`);
+for (const g of [[0, 1200], [1200, 2000], [2000, 5000]]) {
+  const sub = S.filter(x => { const a = ST[x.code].alt; return a >= g[0] && a < g[1]; }); if (!sub.length) continue;
+  const t = {}; for (const x of sub) for (const au of AS) for (const ad of AS) { const k = au + '|' + ad; t[k] = (t[k] || 0) + Math.abs(x.fw * eff(x, au, ad) - x.ow); }
+  const k = best(t); console.log(`  Höhe ${g[0]}–${g[1]} m: ${sub.length} Std, bestes ${k}, Fehler ${f1(t['0|0'] / sub.length)} → ${f1(t[k] / sub.length)}`);
+}
