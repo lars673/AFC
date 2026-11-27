@@ -14,7 +14,7 @@ const store = {
   del(k) { try { localStorage.removeItem('afc.' + k); } catch { /* egal */ } if (SYNC_KEYS.has(k)) store.changed?.(); },
   changed: null
 };
-const APP_VER = '12.20.5';
+const APP_VER = '12.20.6';
 // Testphase: JavaScript-Fehler an den Mac melden (gleiche Meldung nur einmal, höchstens 8 pro Sitzung)
 const rawFetch = window.fetch.bind(window);
 const ERR = { n: 0, seen: new Set() };
@@ -3618,12 +3618,32 @@ async function thermalGrid() {
         if (km.nx === g.nx && km.ny === g.ny) kk7 = new Uint8Array(kb, 4 + kl, N);
       }
     } catch {}
-    T.grid = { ...g, kk7, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
+    // Bodenbedeckung (BFS Arealstatistik, tools/landcover.js): Thermikfaktor je Zelle × 100, 0 = keine Daten
+    let land = null;
+    try {
+      const rl = await fetch('/landcover-grid.bin');
+      if (rl.ok) { const lb = await rl.arrayBuffer(), ll = new DataView(lb).getUint32(0, true), lm = JSON.parse(new TextDecoder().decode(new Uint8Array(lb, 4, ll))); if (lm.nx === g.nx && lm.ny === g.ny) land = new Uint8Array(lb, 4 + ll, N); }
+    } catch {}
+    T.grid = { ...g, kk7, land, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
     return T.grid;
   })().catch(e => { T.gridReq = null; throw e; });
   return T.gridReq;
 }
 
+/** Schneekarte aus ICON-CH1 (MeteoSchweiz) auf dem Geländeraster: 0-100 % je Zelle, 255 = keine Daten. Alle 30 Minuten neu gefragt. */
+const SNOW = { at: 0, data: null, t: null, req: null };
+async function snowGrid() {
+  if (SNOW.data && Date.now() - SNOW.at < 30 * 60000) return SNOW.data;
+  SNOW.req ??= (async () => {
+    try {
+      const r = await fetch('/api/schnee');
+      if (r.status === 200) { const g = await thermalGrid(), b = new Uint8Array(await r.arrayBuffer()); if (b.length === g.nx * g.ny) { SNOW.data = b; SNOW.t = r.headers.get('X-AFC-Time'); } }
+    } catch {}
+    SNOW.at = Date.now(); SNOW.req = null;
+    return SNOW.data;
+  })();
+  return SNOW.req;
+}
 /** Wetterwert am Ort (bilinear, fehlende Rasterpunkte werden übersprungen). */
 function fieldAt(d, arr, lat, lon) {
   const g = d.grid, fx = Math.min(Math.max((lon - g.lo0) / g.dlo, 0), g.nx - 1), fy = Math.min(Math.max((lat - g.la0) / g.dla, 0), g.ny - 1);
@@ -3666,8 +3686,16 @@ function thermalCell(d, g, k, lat, lon) {
   const fFlights = flights == null ? 1 : 0.4 + 0.9 * flights;
   const fStrength = Math.min(1.2, Math.max(0.2, wstar / 2));
   const fCloud = (1 - 0.7 * Math.min(100, low) / 100) * (rain >= 0.3 ? 0 : rain >= 0.1 ? 0.5 : 1);
-  const v = Math.min(1, (heat * fReach * fForm * fSlope * fStrength * fCloud * fFlights) ** 1.4);   // nur die besten Stellen leuchten
-  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, flights, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
+  // Boden (BFS Arealstatistik): Fels und Geröll heizen schneller, Wald träger, Wasser und Gletscher kaum
+  const land = g.land && g.land[k] ? g.land[k] / 100 : null, fLand = land ?? 1;
+  // Schnee (ICON-CH1): weisser Boden wirft die Sonne zurück und heizt kaum
+  const sn = SNOW.data && SNOW.data.length === g.elev.length && SNOW.data[k] <= 100 ? SNOW.data[k] : null, fSnow = sn == null ? 1 : 1 - 0.85 * sn / 100;
+  let v = heat * fReach * fForm * fSlope * fStrength * fCloud * fFlights * fLand * fSnow;
+  // Lee: hinter Kreten zerreisst oder unterdrückt absinkende Luft die Thermik (nur rechnen, wo es überhaupt Thermik gibt)
+  let lee = 0;
+  if (v > 0.05) { lee = leeCell(d, g, k, lat, lon).v || 0; v *= 1 - 0.6 * lee; }
+  v = Math.min(1, v ** 1.4);   // nur die besten Stellen leuchten
+  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, flights, land, snow: sn, lee, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
 }
 
 const THERMAL_RAMP = [[0.2, [255, 230, 90, 0]], [0.3, [255, 210, 60, 110]], [0.5, [255, 140, 30, 170]], [0.7, [235, 60, 30, 200]], [1, [180, 0, 60, 220]]];
@@ -3881,6 +3909,11 @@ function thermikWhy(d, g, k, lat, lon) {
     else if (c.flights >= 0.7) why.push('In Flügen häufig Thermik an dieser Stelle (kk7)');
     else if (c.flights <= 0.15) why.push('In Flügen selten Thermik an dieser Stelle (kk7)');
   }
+  if (c.land != null && c.land <= 0.3) why.push('Wasser oder Gletscher: der Boden heizt kaum');
+  else if (c.land != null && c.land >= 1.15) why.push('Fels oder Geröll: heizt schnell auf');
+  else if (c.land != null && c.land <= 0.85) why.push('Wald: heizt langsamer auf als Wiese oder Fels');
+  if (c.snow != null && c.snow >= 50) why.push(`Schnee (${c.snow} %): der Boden heizt kaum (MeteoSchweiz ICON-CH1)`);
+  if (c.lee >= 0.25) why.push('Im Lee einer Krete: Thermik zerrissen oder unterdrückt');
   if (c.rain >= 0.1) why.push('Regen dämpft die Thermik');
   else if (c.low >= 40) why.push(`tiefe Wolken (${Math.round(c.low)} %) beschatten den Hang`);
   return { title: 'Thermik ' + level, elev: c.elev, why };
@@ -3905,7 +3938,7 @@ async function thermalData(iso) {
   const key = iso === 'now' ? nowKey() : iso;
   let d = T.cache.get(key);
   if (d) return d;
-  const r = await fetch(iso === 'now' ? '/api/thermal?now=1' : `/api/thermal?t=${encodeURIComponent(iso)}`);
+  const [r] = await Promise.all([fetch(iso === 'now' ? '/api/thermal?now=1' : `/api/thermal?t=${encodeURIComponent(iso)}`), snowGrid()]);   // Schnee vor dem ersten Bild
   if (r.status === 202) return null;
   if (!r.ok) throw new Error(r.status === 404 ? 'keine Daten für diese Zeit' : 'Fehler ' + r.status);
   d = await r.json();
@@ -4126,7 +4159,7 @@ async function filmPrepare() {
   const done = () => { if (req !== FILM.req) return false; if (FILM.busy) { FILM.busy = false; syncWindBar(); } if (/^Tagesfilm wird/.test($('#mapMsg').textContent)) mapMsg(''); return true; };
   if (!modes.length || !FILM.frames) return done();
   let g;
-  try { g = await thermalGrid(); } catch (err) { done(); throw err; }
+  try { g = await thermalGrid(); await snowGrid(); } catch (err) { done(); throw err; }
   if (req !== FILM.req) return false;
   const todo = [];
   for (const d of new Set(FILM.frames)) for (const m of modes) if (!d.film[m]) todo.push([d, m]);

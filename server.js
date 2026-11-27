@@ -144,7 +144,8 @@ CREATE TABLE IF NOT EXISTS ens_fc (time TEXT PRIMARY KEY, made TEXT, n INTEGER, 
 CREATE TABLE IF NOT EXISTS ich_fc (site_id TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, lead REAL, top REAL, base REAL, lcl REAL, wstar REAL, inv REAL, invdt REAL, shf REAL, snow REAL, PRIMARY KEY(site_id,date,hour));
 CREATE TABLE IF NOT EXISTS ich_pay (time TEXT PRIMARY KEY, lead REAL, prof TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sonde (time TEXT PRIMARY KEY, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sonde_cmp (time TEXT PRIMARY KEY, lead REAL, mae REAL, bias REAL, inv_s REAL, inv_m REAL, inv_dz REAL);`);
+CREATE TABLE IF NOT EXISTS sonde_cmp (time TEXT PRIMARY KEY, lead REAL, mae REAL, bias REAL, inv_s REAL, inv_m REAL, inv_dz REAL);
+CREATE TABLE IF NOT EXISTS ogn_spot (date TEXT, hour INTEGER, cell TEXT, lat REAL, lon REAL, climb REAL, top REAL, n INTEGER, PRIMARY KEY(date, hour, cell));`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
@@ -413,15 +414,20 @@ function ensCheck() {
 const ICH_ON = process.env.AFC_ICONCH ? process.env.AFC_ICONCH === '1' : !process.env.AFC_OPENMETEO_URL;
 const ICH_FILE = () => path.join(dataDir, 'iconch.json'), ICH_GRID = () => path.join(dataDir, 'iconch-grid.json');
 const ICH_PLACES = [...SITES.filter(s => s.type === 'start' && isNum(s.lat)).map(s => ({ key: s.id, lat: s.lat, lon: s.lon, alt: s.alt })), PAYERNE];
-const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ICH_PLACES)).digest('hex').slice(0, 12);
+const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ICH_PLACES) + '|raster1').digest('hex').slice(0, 12);
+const ichRaster = () => { try { const g = readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin'))); return { la0: g.la0, lo0: g.lo0, dla: g.dla, dlo: g.dlo, nx: g.nx, ny: g.ny }; } catch { return null; } };
 async function ichLoadGrid() {
   if (state.ichGrid) return state.ichGrid;
   try {
     const g = JSON.parse(await fs.readFile(ICH_GRID(), 'utf8'));
-    if (g.sig === ichPlacesSig() && Date.now() - g.at < 30 * 86400000) return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)) });
+    if (g.sig === ichPlacesSig() && Date.now() - g.at < 30 * 86400000) {
+      const b = g.raster?.map ? Buffer.from(g.raster.map, 'base64') : null;
+      return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)), raster: b ? { ...g.raster, map: new Int32Array(b.buffer, b.byteOffset, b.length / 4) } : null });
+    }
   } catch { /* noch keiner */ }
-  const g = await ichGrid(ICH_PLACES);
-  await fs.writeFile(ICH_GRID(), JSON.stringify({ ...g, sig: ichPlacesSig(), at: Date.now(), hsurf: [...g.hsurf], hhl: g.hhl.map(a => [...a]) }));
+  const g = await ichGrid(ICH_PLACES, { raster: ichRaster() });
+  const rs = g.raster ? { ...g.raster, map: Buffer.from(g.raster.map.buffer, g.raster.map.byteOffset, g.raster.map.byteLength).toString('base64') } : null;
+  await fs.writeFile(ICH_GRID(), JSON.stringify({ ...g, raster: rs, sig: ichPlacesSig(), at: Date.now(), hsurf: [...g.hsurf], hhl: g.hhl.map(a => [...a]) }));
   return (state.ichGrid = g);
 }
 /** Neuer Lauf fällig? MeteoSchweiz rechnet alle 3 h, die Daten liegen rund 2 h später bereit. */
@@ -486,6 +492,20 @@ function sondeCompare(iso) {
   return c;
 }
 /** Übersicht für Profil › Technik: Ballonvergleich der letzten 60 Tage und alt gegen neu an den Flügen. */
+/* Eichung der eigenen Thermikkarte: wo Gleitschirm- und Deltapiloten (OGN) kreisend steigen. Gespeichert werden nur Ort
+   (auf rund 250 m gerundet, wie das Geländeraster), Stunde, bestes Steigen und Höhe, keine Kennungen. Tagsüber jede Minute. */
+async function collectOgnSpots(now = Date.now()) {
+  const zp = zurichParts(now);
+  if (zp.hour < 8 || zp.hour > 19) return;
+  const d = await liveData();
+  if (!d?.ok || !d.spots?.length) return;
+  const up = db.prepare('INSERT INTO ogn_spot(date,hour,cell,lat,lon,climb,top,n) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(date,hour,cell) DO UPDATE SET climb=MAX(climb,excluded.climb), top=MAX(top,excluded.top), n=MAX(n,excluded.n)');
+  for (const sp of d.spots) {
+    if (sp.min > 3) continue;
+    const la = Math.round(sp.lat / 0.00225) * 0.00225, lo = Math.round(sp.lon / 0.0033) * 0.0033;
+    up.run(zp.date, zp.hour, `${la.toFixed(5)},${lo.toFixed(4)}`, la, lo, sp.climb, sp.top, sp.n);
+  }
+}
 function iconchStatus() {
   const since = new Date(Date.now() - 60 * 86400000).toISOString();
   const rows = dbAll('SELECT * FROM sonde_cmp WHERE time>=? ORDER BY time DESC', [since]);
@@ -497,7 +517,8 @@ function iconchStatus() {
     const mk = table => { const m = new Map(); for (const d of dates) for (const r of dbAll(`SELECT site_id, hour, top FROM ${table} WHERE date=?`, [d])) m.set(`${r.site_id}|${d}|${r.hour}`, { top: r.top }); return m; };
     flights = compareTops(fl, mk('site_fc'), mk('ich_fc'));
   } catch { /* noch keine Flüge */ }
-  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
+  const ogn = dbGet('SELECT COUNT(*) AS n, COUNT(DISTINCT date) AS days FROM ogn_spot') || { n: 0, days: 0 };
+  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, ognSpots: ogn, sat: satInst ? satInst.status() : null, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
 }
 
 /* ------------------------------------------------------------------ MyAFC */
@@ -1499,6 +1520,7 @@ const STATIC = new Map([
   ['/logbook.js', ['lib/logbook.js', 'text/javascript; charset=utf-8']],
   ['/igc.js', ['lib/igc.js', 'text/javascript; charset=utf-8']],
   ['/terrain-grid.bin', ['lib/terrain-grid.bin', 'application/octet-stream']],
+  ['/landcover-grid.bin', ['lib/landcover-grid.bin', 'application/octet-stream']],
   ['/proto/motion', ['proto/motion.html', 'text/html; charset=utf-8']],   // Prototyp: Wind- und Thermik-Motion (nicht verlinkt)
   ['/pano.json', ['lib/pano.json', 'application/json; charset=utf-8']],
   ['/icon-192.png', ['icon-192.png', 'image/png']], ['/icon-512.png', ['icon-512.png', 'image/png']],
@@ -1641,6 +1663,14 @@ const server = http.createServer(async (req, res) => {
         const pk = thermalResponse(t);
         if (!pk) return sendJson(req, res, 404, { error: 'keine Thermikdaten für diese Zeit' });
         return sendPacked(req, res, pk);
+      }
+      if (req.method === 'GET' && p === '/api/schnee') {
+        // Schneekarte aus ICON-CH1 auf dem Geländeraster: 1 Byte je Zelle (0-100 % Schnee, 255 = keine Daten)
+        const sn = state.ich?.snow;
+        if (!sn) return sendJson(req, res, 202, { warming: true });
+        const body = Buffer.from(sn.data, 'base64');
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, max-age=600', 'X-AFC-Time': new Date(sn.t).toISOString(), 'Content-Length': body.length, ...SEC });
+        return res.end(body);
       }
       if (req.method === 'GET' && p === '/api/thermiksaeule') {
         // Thermiksäule eines Startplatzes aus ICON-CH1 (MeteoSchweiz): Stundenwerte und Profile für die Anzeige
@@ -2283,6 +2313,7 @@ async function start() {
   })().catch(e => console.error('Start', errMsg(e)));
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => planTick(), 5 * 60000));   // Prognose, Windraster, Varianten: nach Tagesplan
+  if (OGN_URL() && process.env.AFC_OGN_COLLECT !== '0') timers.push(setInterval(() => tick('ognspot', () => collectOgnSpots()), 60000));
   if (ICH_ON) { setTimeout(() => tick('ich', () => collectIconCh()), 90000).unref(); timers.push(setInterval(() => tick('ich', () => collectIconCh()), 20 * 60000)); timers.push(setInterval(() => tick('sonde', collectSonde), 30 * 60000)); setTimeout(() => tick('sonde', collectSonde), 120000).unref(); }
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
