@@ -5330,6 +5330,31 @@ function cloudsFor(d, lat, lon, base) {
   const fog = d.cloud?.fog?.top ?? null, low = { grid: d.grid, v: d.low }, lv = windLevels(d, lat, lon);
   return { cover: fog != null ? (d.cloud.up ?? 0) / 100 : low, base: num(base) && !(fog != null && base < fog + 50) ? base : d.cloud?.base ?? null, fog, wind: lv[1] || lv[0] || [0, 0] };
 }
+/* Echte Wolken aus ICON-CH1: unterste Wolkenschicht je km mit Basis, Obergrenze und Bedeckung (aus den Modellflächen). */
+const ICHC = new Map();
+async function ichClouds(iso) {
+  if (!iso || iso === 'now') iso = new Date(Math.round(Date.now() / 3600000) * 3600000).toISOString();
+  const k = iso.slice(0, 13), c = ICHC.get(k);
+  if (c && Date.now() - c.at < 10 * 60000) return c.d;
+  try {
+    const r = await fetch('/api/wolken3d?t=' + encodeURIComponent(iso));
+    const d = r.ok ? await r.json() : null;
+    ICHC.set(k, { at: Date.now(), d });
+    if (ICHC.size > 30) ICHC.delete(ICHC.keys().next().value);
+    return d;
+  } catch { return null; }
+}
+function cloudsIch(c3, d, lat, lon) {
+  const fog = d?.cloud?.fog?.top ?? null, n = c3.base.length, cov = new Array(n), base = new Array(n), thick = new Array(n);
+  for (let k = 0; k < n; k++) {
+    const b = c3.base[k], t = c3.top[k], c = c3.cov[k];
+    // dieselbe Schicht wie das gemessene Nebelmeer zeigt schon die Nebeldecke
+    if (b == null || !(c > 0) || (fog != null && t <= fog + 150)) { cov[k] = 0; base[k] = null; thick[k] = 0; continue; }
+    cov[k] = c; base[k] = b; thick[k] = Math.max(0, t - b);
+  }
+  const lv = d ? windLevels(d, lat, lon) : [];
+  return { cover: { grid: c3.grid, v: cov }, base, thick, fog, wind: lv[1] || lv[0] || [0, 0], ich: true };
+}
 function v3dScene(g, area) {
   const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { mesh: innerWidth >= 700 ? 513 : 301,   // Handy: bewährte Netzgrösse, bis es auf dem iPhone geprüft ist
     avoid: () => [$('#v3dHud'), $('#v3dStage .v3d-tools')] });
@@ -5469,7 +5494,7 @@ function v3dSiteHud(err = '') {
   el.innerHTML = `<div class="v3d-box">${num(score) ? `<span class="mini-pill s-${cls(score)}">${score}</span>` : ''}${hr ? `<span>Wind <b>${hr.speed ?? '–'}</b> km/h ${arrow(hr.dir)} ${dirLabel(hr.dir)}${num(hr.gust) ? ` · Böen <b>${hr.gust}</b>` : ''}</span>` : `<span>${V3.hour} Uhr</span>`}</div>${err ? `<div class="v3d-box warn" role="status">${esc(err)}</div>` : ''}`;
   const cab = V3.cables && V3.obstN != null ? (V3.obstN ? `${V3.obstN} Kabel und Seilbahnen im Ausschnitt (BAZL, nur meldepflichtige). ` : 'Keine erfassten Kabel im Ausschnitt (BAZL, nur meldepflichtige). ') : '';
   const cw = V3.clouds ? V3.scene?.clouds : null;
-  const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. ` : '';
+  const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}${V3.c3 ? 'Wolken aus MeteoSchweiz ICON-CH1: Basis, Dicke und Menge je Kilometer, die einzelnen Wolken sind angedeutet. ' : 'Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. '}` : '';
   $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? (V3.d?.measured ? `Wind jetzt: an ${V3.d.measured.stations.length} Messstationen angepasst, dazwischen geschätzt. ` : `${WN_NOTE()} `) : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
   const m = V3.scene?.markers.find(x => x.id === 'start');
   if (m) V3.scene.moveMarker('start', V3.site.lat, V3.site.lon, null, `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(V3.site.name)}</span>`);
@@ -5479,6 +5504,7 @@ async function v3dApply() {
   const sc = V3.scene, tok = V3.tok, reg = V3.mode === 'region', s = reg ? V3.reg : V3.site, iso = nowMode() && V3.hour === nowHourToday() ? 'now' : filmIso(S.plan.dates[S.day], V3.hour);
   if (!sc || (V3.mode !== 'site' && !reg)) return;
   let d = null, err = '';
+  const c3p = ichClouds(iso);
   try { d = await thermalData(iso); if (!d) err = 'Die Wetterdaten werden noch geladen, gleich nochmals versuchen.'; } catch (e) { err = 'Wind und Thermik für diese Stunde fehlen (' + errTxt(e) + ').'; }
   if (tok !== V3.tok || V3.scene !== sc) return;
   V3.d = d;
@@ -5487,7 +5513,10 @@ async function v3dApply() {
   else sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
   sc.ovA = V3.wind && V3.layer === 'lee' ? 0.5 : 1;   // Lee-Fläche zarter, damit die Wirbel darauf sichtbar bleiben
   if (!reg) v3dHourData();
-  sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
+  const c3 = await c3p;
+  if (tok !== V3.tok || V3.scene !== sc) return;
+  V3.c3 = !!c3;
+  sc.setClouds(c3 ? cloudsIch(c3, d, s.lat, s.lon) : cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
   v3dWind(d);
   v3dThermals(d);
   v3dIch(iso, tok);

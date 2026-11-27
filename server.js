@@ -423,19 +423,21 @@ const ICH_SITES = [...SITES.filter(s => s.type === 'start' && isNum(s.lat)).map(
 const ichStations = () => { const r = ichRaster(); return !r ? [] : Object.values(state.stationList || {}).filter(m => isNum(m.lat) && isNum(m.lon) && isNum(m.alt) && m.lat > r.la0 && m.lat < r.la0 + (r.ny - 1) * r.dla && m.lon > r.lo0 && m.lon < r.lo0 + (r.nx - 1) * r.dlo).map(m => ({ code: m.code, lat: m.lat, lon: m.lon, alt: m.alt })).sort((a, b) => a.code.localeCompare(b.code)); };
 const ichPlaces = () => [...ICH_SITES, ...ichStations().map(m => ({ key: 'st:' + m.code, lat: m.lat, lon: m.lon, alt: m.alt, st: true }))];
 const ICH_PLACES = ICH_SITES;
-const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ichPlaces()) + '|raster3').digest('hex').slice(0, 12);
+const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ichPlaces()) + '|raster4').digest('hex').slice(0, 12);
 const ichRaster = () => { try { const g = readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin'))); return { la0: g.la0, lo0: g.lo0, dla: g.dla, dlo: g.dlo, nx: g.nx, ny: g.ny }; } catch { return null; } };
 async function ichLoadGrid() {
   if (state.ichGrid && state.ichGrid.sig === ichPlacesSig()) return state.ichGrid;
   try {
     const g = JSON.parse(await fs.readFile(ICH_GRID(), 'utf8'));
     if (g.sig === ichPlacesSig() && Date.now() - g.at < 30 * 86400000) {
-      const b = g.raster?.map ? Buffer.from(g.raster.map, 'base64') : null;
-      return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)), raster: b ? { ...g.raster, map: new Int32Array(b.buffer, b.byteOffset, b.length / 4) } : null });
+      const typed = (b64, T) => { if (!b64) return null; const b = Buffer.from(b64, 'base64'), c = new Uint8Array(b.length); c.set(b); return new T(c.buffer); };
+      const r = g.raster;
+      return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)), raster: r?.map ? { ...r, map: typed(r.map, Int32Array), sub: typed(r.sub, Int32Array), hhlSub: typed(r.hhlSub, Int16Array) } : null });
     }
   } catch { /* noch keiner */ }
   const g = await ichGrid(ichPlaces(), { raster: ichRaster() });
-  const rs = g.raster ? { ...g.raster, map: Buffer.from(g.raster.map.buffer, g.raster.map.byteOffset, g.raster.map.byteLength).toString('base64') } : null;
+  const b64 = a => (a ? Buffer.from(a.buffer, a.byteOffset, a.byteLength).toString('base64') : null);
+  const rs = g.raster ? { ...g.raster, map: b64(g.raster.map), sub: b64(g.raster.sub), hhlSub: b64(g.raster.hhlSub) } : null;
   await fs.writeFile(ICH_GRID(), JSON.stringify({ ...g, raster: rs, sig: ichPlacesSig(), at: Date.now(), hsurf: [...g.hsurf], hhl: g.hhl.map(a => [...a]) }));
   return (state.ichGrid = { ...g, sig: ichPlacesSig() });
 }
@@ -1728,6 +1730,15 @@ const server = http.createServer(async (req, res) => {
         const body = Buffer.from(sn.data, 'base64');
         res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, max-age=600', 'X-AFC-Time': new Date(sn.t).toISOString(), 'Content-Length': body.length, ...SEC });
         return res.end(body);
+      }
+      if (req.method === 'GET' && p === '/api/wolken3d') {
+        // Unterste Wolkenschicht je km aus ICON-CH1 für die 3D-Ansicht: Basis, Obergrenze (m ü. M.), Bedeckung (%)
+        const c = state.ich?.cloud3, t = Date.parse(u.searchParams.get('t') || '');
+        if (!c?.t?.length) return sendJson(req, res, 202, { warming: true });
+        if (!Number.isFinite(t)) return sendJson(req, res, 400, { error: 't=Zeit (ISO) fehlt' });
+        const i = c.t.findIndex(x => Math.abs(x - t) <= 30 * 60000);
+        if (i < 0) return sendJson(req, res, 404, { error: 'für diese Stunde keine Wolken aus ICON-CH1' });
+        return sendJson(req, res, 200, { ok: true, t: new Date(c.t[i]).toISOString(), run: new Date(state.ich.ref).toISOString(), grid: c.grid, base: c.base[i], top: c.top[i], cov: c.cov[i], source: state.ich.source });
       }
       if (req.method === 'GET' && p === '/api/thermiksaeule') {
         // Thermiksäule eines Startplatzes aus ICON-CH1 (MeteoSchweiz): Stundenwerte und Profile für die Anzeige

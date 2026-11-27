@@ -285,7 +285,7 @@
       c += (texture2D(u_t, v_uv + u_d*1.3846) + texture2D(u_t, v_uv - u_d*1.3846))*.316216;
       c += (texture2D(u_t, v_uv + u_d*3.2308) + texture2D(u_t, v_uv - u_d*3.2308))*.070270;
       gl_FragColor = c*u_k; }`;
-  const VS_CLD = 'attribute vec3 a_pos; uniform mat4 u_mvp; uniform float u_lift; varying vec3 v_pos; void main(){ v_pos = vec3(a_pos.x, a_pos.y + u_lift, a_pos.z); gl_Position = u_mvp*vec4(v_pos, 1.); }';
+  const VS_CLD = 'attribute vec4 a_pos; uniform mat4 u_mvp; uniform float u_lift, u_kv; varying vec3 v_pos; void main(){ v_pos = vec3(a_pos.x, a_pos.y + u_lift + u_kv*a_pos.w, a_pos.z); gl_Position = u_mvp*vec4(v_pos, 1.); }';
   const FS_CLD = HI + `varying vec3 v_pos; uniform sampler2D u_noise, u_cov; uniform vec4 u_cv; uniform vec2 u_off; uniform vec3 u_lit, u_dim;
     uniform float u_k, u_R, u_sc, u_fog, u_a;
     void main(){
@@ -538,11 +538,12 @@
         const mean = has ? base.reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0) / base.filter(Number.isFinite).length : (prev ? prev.base[0] : 2500);
         for (let i = 0; i < n; i++) if (!Number.isFinite(base[i])) base[i] = mean;
         const cov = fill(c.cover, 0, c.cover?.v ? 0.01 : 1).map(v => clamp(v, 0, 1));
-        to = { g, n, cov, fogc: fill(c.fogCover, 1, c.fogCover?.v ? 0.01 : 1).map(v => clamp(v, 0, 1)), base, fogTop: c.fog ?? prev?.fogTop ?? 1000, fogA: c.fog != null ? 1 : 0, deckA: has && cov.some(v => v > 0.02) ? 1 : 0, an: 1 };
+        const thick = fill(c.thick, 0, 1).map(v => Math.max(0, v));
+        to = { g, n, cov, thick, real: !!c.thick, fogc: fill(c.fogCover, 1, c.fogCover?.v ? 0.01 : 1).map(v => clamp(v, 0, 1)), base, fogTop: c.fog ?? prev?.fogTop ?? 1000, fogA: c.fog != null ? 1 : 0, deckA: has && cov.some(v => v > 0.02) ? 1 : 0, an: 1 };
         if (c.wind) cl.wind = [c.wind[0] || 0, c.wind[1] || 0];
       }
       if (!to) return;
-      const same = prev && prev.n === to.n && (prev.g?.nx || 0) === (to.g?.nx || 0);
+      const same = prev && prev.n === to.n && (prev.g?.nx || 0) === (to.g?.nx || 0) && (prev.g?.dla || 0) === (to.g?.dla || 0);
       // weicher Übergang: vom jetzigen Stand zum neuen; die Höhe einer Schicht, die erst erscheint, wird nicht «hergefahren»
       cl.from = same ? { ...prev, base: prev.deckA * prev.an > 0.02 ? prev.base : to.base, fogTop: prev.fogA * prev.an > 0.02 ? prev.fogTop : to.fogTop } : { ...to, an: 0 };
       cl.to = to; cl.t0 = performance.now(); cl.ms = Math.max(1, ms); cl.cur = null;
@@ -556,7 +557,7 @@
       const k = end ? 1 : ease(clamp((performance.now() - cl.t0) / cl.ms, 0, 1)), a = cl.from, b = cl.to;
       if (cl.cur && cl.k === k) return k < 1;
       const mix = (x, y) => x + (y - x) * k, arr = (x, y) => (k >= 1 ? y : x.map((v, i) => v + (y[i] - v) * k));
-      cl.cur = { g: b.g, n: b.n, cov: arr(a.cov, b.cov), fogc: arr(a.fogc, b.fogc), base: arr(a.base, b.base), fogTop: mix(a.fogTop, b.fogTop), fogA: mix(a.fogA, b.fogA), deckA: mix(a.deckA, b.deckA), an: mix(a.an, b.an) };
+      cl.cur = { g: b.g, n: b.n, real: b.real, cov: arr(a.cov, b.cov), thick: arr(a.thick || b.thick, b.thick), fogc: arr(a.fogc, b.fogc), base: arr(a.base, b.base), fogTop: mix(a.fogTop, b.fogTop), fogA: mix(a.fogA, b.fogA), deckA: mix(a.deckA, b.deckA), an: mix(a.an, b.an) };
       cl.k = k; cl.dirty = true;
       return k < 1;
     }
@@ -566,21 +567,22 @@
       for (let i = 0; i < nx * ny; i++) { px[i * 4] = Math.round(c.cov[i] * 255); px[i * 4 + 1] = Math.round(c.fogc[i] * 255); px[i * 4 + 3] = 255; }
       gl.bindTexture(gl.TEXTURE_2D, this.X.cov); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, nx, ny, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      const M = 33, R = this.R, V = new Float32Array(M * M * 3), F = new Float32Array(M * M * 3);
-      const baseAt = (la, lo) => {
-        if (!g) return c.base[0];
+      // feines Raster (ICON-CH1, 1 km): mehr Stützpunkte, damit Basis und Dicke der Wolken dem Modell folgen
+      const M = c.real ? 65 : 33, R = this.R, V = new Float32Array(M * M * 4), F = new Float32Array(M * M * 4);
+      const at = (arr, la, lo) => {
+        if (!g) return arr[0];
         const fx = clamp((lo - g.lo0) / g.dlo, 0, g.nx - 1.001), fy = clamp((la - g.la0) / g.dla, 0, g.ny - 1.001), x = fx | 0, y = fy | 0, tx = fx - x, ty = fy - y, k = y * g.nx + x;
-        return (c.base[k] * (1 - tx) + c.base[k + 1] * tx) * (1 - ty) + (c.base[k + g.nx] * (1 - tx) + c.base[k + g.nx + 1] * tx) * ty;
+        return (arr[k] * (1 - tx) + arr[k + 1] * tx) * (1 - ty) + (arr[k + g.nx] * (1 - tx) + arr[k + g.nx + 1] * tx) * ty;
       };
-      let sum = 0;
+      let sum = 0, tmax = 0;
       for (let j = 0; j < M; j++) for (let i = 0; i < M; i++) {
-        const o = (j * M + i) * 3, x = -R + i * 2 * R / (M - 1), z = -R + j * 2 * R / (M - 1), geo = this.toGeo(x, z), b = baseAt(geo[0], geo[1]);
-        V[o] = F[o] = x; V[o + 2] = F[o + 2] = z; V[o + 1] = b * this.ex; sum += b;
+        const o = (j * M + i) * 4, x = -R + i * 2 * R / (M - 1), z = -R + j * 2 * R / (M - 1), geo = this.toGeo(x, z), b = at(c.base, geo[0], geo[1]), th = c.thick ? at(c.thick, geo[0], geo[1]) : 0;
+        V[o] = F[o] = x; V[o + 2] = F[o + 2] = z; V[o + 1] = b * this.ex; V[o + 3] = th * this.ex; sum += b; tmax = Math.max(tmax, th);
       }
-      cl.mean = sum / (M * M);
+      cl.mean = sum / (M * M); cl.tmax = tmax;
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.cld); gl.bufferData(gl.ARRAY_BUFFER, V, gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.B.cldF); gl.bufferData(gl.ARRAY_BUFFER, F, gl.STATIC_DRAW);
-      const I = new Uint16Array((M - 1) * (M - 1) * 6);
+      const I = new Uint16Array((M - 1) * (M - 1) * 6);   // 65² Punkte passen noch in 16 Bit
       for (let j = 0, q = 0; j < M - 1; j++) for (let i = 0; i < M - 1; i++) { const a = j * M + i, b = a + 1, c2 = a + M, d = c2 + 1; I[q++] = a; I[q++] = c2; I[q++] = b; I[q++] = b; I[q++] = c2; I[q++] = d; }
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
       cl.nI = I.length;
@@ -990,14 +992,16 @@
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.B.cldI); gl.enableVertexAttribArray(P.a.a_pos);
         const thick = clamp(this.R * 0.045, 220, 900) * this.ex, fogT = 90 * this.ex;
         const layers = [];
-        if (cc.deckA > 0.01) layers.push({ y: cl.mean * this.ex, n: 6, buf: this.B.cld, fog: 0, a: cc.an * cc.deckA, lift: k => k * thick });
+        // echte Wolken (ICON-CH1): jede Schale folgt der Dicke der Wolke am Ort (a_pos.w), dicke Wolken bekommen mehr Schalen
+        if (cc.deckA > 0.01) layers.push(cc.real ? { y: cl.mean * this.ex, n: clamp(Math.round((cl.tmax || 0) / 160), 6, 12), buf: this.B.cld, fog: 0, a: cc.an * cc.deckA, lift: k => k * 40 * this.ex, real: 1 }
+          : { y: cl.mean * this.ex, n: 6, buf: this.B.cld, fog: 0, a: cc.an * cc.deckA, lift: k => k * thick, real: 0 });
         if (cc.fogA > 0.01) layers.push({ y: cc.fogTop * this.ex, n: 4, buf: this.B.cldF, fog: 1, a: cc.an * cc.fogA, lift: k => cc.fogTop * this.ex - (1 - k) * fogT });
         layers.sort((p, q2) => Math.abs(q2.y - eye[1]) - Math.abs(p.y - eye[1]));
         for (const L of layers) {
-          gl.bindBuffer(gl.ARRAY_BUFFER, L.buf); gl.vertexAttribPointer(P.a.a_pos, 3, gl.FLOAT, false, 12, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, L.buf); gl.vertexAttribPointer(P.a.a_pos, 4, gl.FLOAT, false, 16, 0);
           gl.uniform1f(P.u.u_fog, L.fog); gl.uniform1f(P.u.u_a, L.a);
           const up = eye[1] > L.y;
-          for (let i = 0; i < L.n; i++) { const k = (up ? i : L.n - 1 - i) / (L.n - 1); gl.uniform1f(P.u.u_k, k); gl.uniform1f(P.u.u_lift, L.lift(k)); gl.drawElements(gl.TRIANGLES, cl.nI, gl.UNSIGNED_SHORT, 0); }
+          for (let i = 0; i < L.n; i++) { const k = (up ? i : L.n - 1 - i) / (L.n - 1); gl.uniform1f(P.u.u_k, k); gl.uniform1f(P.u.u_kv, k); gl.uniform1f(P.u.u_lift, L.lift(k)); gl.drawElements(gl.TRIANGLES, cl.nI, gl.UNSIGNED_SHORT, 0); }
         }
         gl.disableVertexAttribArray(P.a.a_pos);
       }

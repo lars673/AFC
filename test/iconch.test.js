@@ -170,3 +170,12 @@ test('Wettervarianten: Bodenwerte je Variante, Wind auf Starthöhe verschoben, R
   const wet = memberRow({ ...base, t2: [289], td2: [287], shf: [180], u10: 0, v10: -2, g10: 4 });
   assert.ok(wet[6] && wet[0] <= wet[6], 'Thermik endet an der Wolkenbasis');
 });
+
+test('3D-Wolken: unterste Schicht aus der Bedeckung auf den Modellflächen', async () => {
+  const { cloudLayer } = await import('../lib/iconch.js');
+  // Halbschichten oben->unten: 4000, 3000, 2000, 1500, 1000, 600; Vollschichten dazwischen (5)
+  const hh = [4000, 3000, 2000, 1500, 1000, 600];
+  assert.deepEqual(cloudLayer(hh, [0, 80, 0, 60, 90]), { base: 600, top: 1500, cov: 90 }, 'Nebel/Hochnebel ab Boden, Lücke darüber beendet die Schicht');
+  assert.deepEqual(cloudLayer(hh, [0, 0, 70, 10, 0]), { base: 1500, top: 2000, cov: 70 });
+  assert.equal(cloudLayer(hh, [0, 20, 0, 10, 5]), null, 'unter 30 % keine Schicht');
+});
