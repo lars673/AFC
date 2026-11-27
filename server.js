@@ -44,7 +44,7 @@ import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, too
 import { testProgress, testBreakdown } from './lib/testphase.js';
 import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
-import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, SOURCE as ICH_SOURCE } from './lib/iconch.js';
+import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, windCompare, SOURCE as ICH_SOURCE } from './lib/iconch.js';
 import { fetchSonde, compareProfile, PAYERNE } from './lib/sonde.js';
 import { createSat, SAT_SOURCE } from './lib/sat.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS ich_fc (site_id TEXT NOT NULL, date TEXT NOT NULL, ho
 CREATE TABLE IF NOT EXISTS ich_pay (time TEXT PRIMARY KEY, lead REAL, prof TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sonde (time TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sonde_cmp (time TEXT PRIMARY KEY, lead REAL, mae REAL, bias REAL, inv_s REAL, inv_m REAL, inv_dz REAL);
+CREATE TABLE IF NOT EXISTS ich_pred (code TEXT, target TEXT, lead REAL, wind REAL, gust REAL, dir REAL, PRIMARY KEY(code, target));
 CREATE TABLE IF NOT EXISTS ogn_spot (date TEXT, hour INTEGER, cell TEXT, lat REAL, lon REAL, climb REAL, top REAL, n INTEGER, PRIMARY KEY(date, hour, cell));`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
@@ -413,11 +414,15 @@ function ensCheck() {
 // bis die Säule an echten Flügen und am Ballon Payerne besser trifft als die bisherige Rechnung.
 const ICH_ON = process.env.AFC_ICONCH ? process.env.AFC_ICONCH === '1' : !process.env.AFC_OPENMETEO_URL;
 const ICH_FILE = () => path.join(dataDir, 'iconch.json'), ICH_GRID = () => path.join(dataDir, 'iconch-grid.json');
-const ICH_PLACES = [...SITES.filter(s => s.type === 'start' && isNum(s.lat)).map(s => ({ key: s.id, lat: s.lat, lon: s.lon, alt: s.alt })), PAYERNE];
-const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ICH_PLACES) + '|raster1').digest('hex').slice(0, 12);
+const ICH_SITES = [...SITES.filter(s => s.type === 'start' && isNum(s.lat)).map(s => ({ key: s.id, lat: s.lat, lon: s.lon, alt: s.alt })), PAYERNE];
+// Messstationen im Ausschnitt des Geländerasters: Wind auf Stationshöhe zum Prüfen gegen die Messung
+const ichStations = () => { const r = ichRaster(); return !r ? [] : Object.values(state.stationList || {}).filter(m => isNum(m.lat) && isNum(m.lon) && isNum(m.alt) && m.lat > r.la0 && m.lat < r.la0 + (r.ny - 1) * r.dla && m.lon > r.lo0 && m.lon < r.lo0 + (r.nx - 1) * r.dlo).map(m => ({ code: m.code, lat: m.lat, lon: m.lon, alt: m.alt })).sort((a, b) => a.code.localeCompare(b.code)); };
+const ichPlaces = () => [...ICH_SITES, ...ichStations().map(m => ({ key: 'st:' + m.code, lat: m.lat, lon: m.lon, alt: m.alt, st: true }))];
+const ICH_PLACES = ICH_SITES;
+const ichPlacesSig = () => crypto.createHash('sha1').update(JSON.stringify(ichPlaces()) + '|raster3').digest('hex').slice(0, 12);
 const ichRaster = () => { try { const g = readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin'))); return { la0: g.la0, lo0: g.lo0, dla: g.dla, dlo: g.dlo, nx: g.nx, ny: g.ny }; } catch { return null; } };
 async function ichLoadGrid() {
-  if (state.ichGrid) return state.ichGrid;
+  if (state.ichGrid && state.ichGrid.sig === ichPlacesSig()) return state.ichGrid;
   try {
     const g = JSON.parse(await fs.readFile(ICH_GRID(), 'utf8'));
     if (g.sig === ichPlacesSig() && Date.now() - g.at < 30 * 86400000) {
@@ -425,10 +430,10 @@ async function ichLoadGrid() {
       return (state.ichGrid = { ...g, hsurf: Float32Array.from(g.hsurf), hhl: g.hhl.map(a => Float32Array.from(a)), raster: b ? { ...g.raster, map: new Int32Array(b.buffer, b.byteOffset, b.length / 4) } : null });
     }
   } catch { /* noch keiner */ }
-  const g = await ichGrid(ICH_PLACES, { raster: ichRaster() });
+  const g = await ichGrid(ichPlaces(), { raster: ichRaster() });
   const rs = g.raster ? { ...g.raster, map: Buffer.from(g.raster.map.buffer, g.raster.map.byteOffset, g.raster.map.byteLength).toString('base64') } : null;
   await fs.writeFile(ICH_GRID(), JSON.stringify({ ...g, raster: rs, sig: ichPlacesSig(), at: Date.now(), hsurf: [...g.hsurf], hhl: g.hhl.map(a => [...a]) }));
-  return (state.ichGrid = g);
+  return (state.ichGrid = { ...g, sig: ichPlacesSig() });
 }
 /** Neuer Lauf fällig? MeteoSchweiz rechnet alle 3 h, die Daten liegen rund 2 h später bereit. */
 function ichDue(now = Date.now()) {
@@ -442,9 +447,11 @@ async function collectIconCh(now = Date.now()) {
   const t0 = Date.now();
   try {
     const grid = await ichLoadGrid();
-    const r = await ichThermals(grid, ICH_PLACES, { now });
+    const places = ichPlaces().filter(p => grid.byKey[p.key]);
+    const r = await ichThermals(grid, places, { now, stations: ichStations() });
     if (state.ich && r.ref <= state.ich.ref) return;
     state.ich = r;
+    for (const k of [...state.payloads.keys()]) if (/^(thermal|wind:10m|film):/.test(k)) state.payloads.delete(k);   // feiner Wind ist neu
     ingest.iconch = { ok: true, at: nowIso(), error: null, run: new Date(r.ref).toISOString(), places: Object.keys(r.byKey).length, secs: Math.round((Date.now() - t0) / 1000) };
     storeIconCh(r, now);
     fs.writeFile(ICH_FILE() + '.tmp', JSON.stringify(r)).then(() => fs.rename(ICH_FILE() + '.tmp', ICH_FILE())).catch(() => {});
@@ -456,13 +463,19 @@ async function collectIconCh(now = Date.now()) {
 function storeIconCh(r, now = Date.now()) {
   const up = db.prepare('INSERT INTO ich_fc(site_id,date,hour,lead,top,base,lcl,wstar,inv,invdt,shf,snow) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base, lcl=excluded.lcl, wstar=excluded.wstar, inv=excluded.inv, invdt=excluded.invdt, shf=excluded.shf, snow=excluded.snow WHERE excluded.lead<=ich_fc.lead');
   for (const [id, rows] of Object.entries(r.byKey)) {
-    if (id === PAYERNE.key) continue;
+    if (id === PAYERNE.key || id.startsWith('st:')) continue;
     for (const x of rows) {
       if (!x || !isNum(x.top)) continue;
       const zp = zurichParts(x.t), lead = Math.max(0, (x.t - now) / 3600000);
       // wie bei site_fc: Thermik endet an der Wolkenbasis
       up.run(id, zp.date, zp.hour, lead, isNum(x.base) ? Math.min(x.top, x.base) : x.top, x.base, x.lcl, x.wstar, x.inv, x.invDt, x.shf, x.snow);
     }
+  }
+  // Bodenwind an den Messstationen: wie bei fc_pred bleibt je Stunde die Prognose mit Vorlauf am nächsten bei 3 h
+  const upW = db.prepare(`INSERT INTO ich_pred(code,target,lead,wind,gust,dir) VALUES(?,?,?,?,?,?) ON CONFLICT(code,target) DO UPDATE SET lead=excluded.lead, wind=excluded.wind, gust=excluded.gust, dir=excluded.dir WHERE abs(excluded.lead - 3) < abs(ich_pred.lead - 3)`);
+  for (const [code, rows] of Object.entries(r.stations || {})) for (const x of rows) {
+    const lead = (x.t - now) / 3600000;
+    if (lead >= 1 && lead <= 12) upW.run(code, new Date(x.t).toISOString(), lead, x.wind, x.gust, x.dir);
   }
   // Payerne: das Profil zur Ballonzeit (00/12 UTC), die jüngste Prognose mindestens 3 h vorher
   for (const pr of r.profiles?.[PAYERNE.key] || []) {
@@ -518,7 +531,13 @@ function iconchStatus() {
     flights = compareTops(fl, mk('site_fc'), mk('ich_fc'));
   } catch { /* noch keine Flüge */ }
   const ogn = dbGet('SELECT COUNT(*) AS n, COUNT(DISTINCT date) AS days FROM ogn_spot') || { n: 0, days: 0 };
-  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, ognSpots: ogn, sat: satInst ? satInst.status() : null, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
+  // Bodenwind ICON-CH1 gegen das bisherige Modell (Open-Meteo), an denselben Stationen und Stunden gemessen
+  let wind = { n: 0 };
+  try {
+    const wr = dbAll('SELECT i.wind iw, i.gust ig, i.dir idr, p.wind pw, p.gust pg, p.dir pd, o.wind ow, o.gust og, o.dir od FROM ich_pred i JOIN fc_pred p ON p.code=i.code AND p.target=i.target JOIN observations o ON o.code=i.code AND o.time=i.target WHERE i.target>=? AND o.wind IS NOT NULL', [since]);
+    wind = windCompare(wr);
+  } catch { /* noch keine Daten */ }
+  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, ognSpots: ogn, wind, sat: satInst ? satInst.status() : null, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
 }
 
 /* ------------------------------------------------------------------ MyAFC */
@@ -690,6 +709,7 @@ function windResponse(ms, level) {
   if (p) return p;
   const sl = windSlice(state.windgrid, hourMs, level);
   if (!sl) return null;
+  if (level === '10m') sl.fine = ichFine(hourMs);
   p = packJson(sl);
   state.payloads.set(key, p);
   return p;
@@ -727,6 +747,7 @@ function thermalResponse(ms) {
   const sl = thermalSlice(state.windgrid, hourMs);
   if (!sl) return null;
   sl.cloud = cloudAt(sl.grid, hourMs);
+  sl.fine = ichFine(hourMs);
   p = packJson(sl);
   state.payloads.set(key, p);
   return p;
@@ -739,7 +760,7 @@ function filmResponse(ms, n) {
   let p = state.payloads.get(key);
   if (p) return p;
   const hours = [];
-  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) { sl.cloud = cloudAt(sl.grid, t0 + i * 3600000); hours.push(sl); } }
+  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) { sl.cloud = cloudAt(sl.grid, t0 + i * 3600000); sl.fine = ichFine(t0 + i * 3600000); hours.push(sl); } }
   if (hours.length < 2) return null;
   p = packJson({ grid: hours[0].grid, fetchedAt: hours[0].fetchedAt, hours: hours.map(({ grid, fetchedAt, ...h }) => h) });
   state.payloads.set(key, p);
@@ -911,6 +932,15 @@ function stationsPayload() {
   return out;
 }
 
+/** Feiner Bodenwind aus ICON-CH1 (rund 1 km, km/h ganzzahlig) für eine Stunde, sonst null. Die Karte nimmt ihn statt des groben Rasters. */
+function ichFine(ms) {
+  const w = state.ich?.wind10;
+  if (!w?.t?.length) return null;
+  const i = w.t.findIndex(t => Math.abs(t - ms) <= 30 * 60000);
+  if (i < 0) return null;
+  const r = a => a.map(x => (x == null ? null : Math.round(x)));
+  return { grid: w.grid, u: r(w.u[i]), v: r(w.v[i]), src: 'ICON-CH1' };
+}
 function packJson(obj) {
   const body = Buffer.from(JSON.stringify(obj));
   return { body, gz: zlib.gzipSync(body), etag: '"' + crypto.createHash('sha1').update(body).digest('base64url').slice(0, 20) + '"' };
@@ -1682,7 +1712,7 @@ const server = http.createServer(async (req, res) => {
           if (!Number.isFinite(t)) return sendJson(req, res, 400, { error: 't=Zeit (ISO) fehlt' });
           const sites = {};
           for (const [k, rows] of Object.entries(state.ich.byKey)) {
-            if (k === PAYERNE.key) continue;
+            if (k === PAYERNE.key || k.startsWith('st:')) continue;
             const x = rows.find(r => Math.abs(r.t - t) <= 30 * 60000);
             if (x) sites[k] = { top: x.top, base: x.base, wstar: x.wstar, inv: x.inv, zs: x.zs, snow: x.snow };
           }
@@ -2275,6 +2305,7 @@ async function maintenance() {
     const cut = new Date(Date.now() - 30 * 86400000).toISOString();
     dbRun('DELETE FROM observations WHERE time<?', [cut]);
     dbRun('DELETE FROM fc_pred WHERE target<?', [cut]);
+    dbRun('DELETE FROM ich_pred WHERE target<?', [cut]);
     dbRun('DELETE FROM model_fc WHERE target<?', [cut]);
     const cut120 = new Date(Date.now() - 120 * 86400000).toISOString();
     dbRun('DELETE FROM reg_fc WHERE target<?', [cut120]); dbRun('DELETE FROM reg_obs WHERE time<?', [cut120]);

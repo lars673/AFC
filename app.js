@@ -3212,7 +3212,8 @@ async function fillIch(s, date, hour, hr) {
       `<div><b>${x.wstar ? x.wstar.toFixed(1) : '0'} m/s</b><span>${x.wstar > 0.2 && top <= alt + 50 ? 'Steigen unter dem Start (Mittel)' : 'Steigen in der Thermik (Mittel)'}</span></div>`,
       `<div><b>${x.base ? Math.round(x.base / 50) * 50 + ' m' : 'blau'}</b><span>${x.base ? 'Wolkenbasis' : 'keine Quellwolken (Blauthermik)'}</span></div>`,
       x.inv ? `<div><b>${Math.round(x.inv / 50) * 50} m</b><span>Sperrschicht (Inversion)${x.invDt ? ', ' + x.invDt.toFixed(1) + '° wärmer' : ''}</span></div>` : '',
-      x.snow != null && x.snow >= 30 ? `<div><b>${x.snow} %</b><span>Schnee am Boden um den Start</span></div>` : ''
+      x.snow != null && x.snow >= 30 ? `<div><b>${x.snow} %</b><span>Schnee am Boden um den Start</span></div>` : '',
+      x.wl ? `<div class="ich-wind"><b>${Math.round(x.wl.wind)} km/h ${arrow(x.wl.dir)}</b><span>Wind auf Starthöhe ${dirLabel(x.wl.dir)}${x.w2000 ? ` · 2000 m: ${Math.round(x.w2000.wind)} ${dirLabel(x.w2000.dir)}` : ''}${x.w3000 ? ` · 3000 m: ${Math.round(x.w3000.wind)} ${dirLabel(x.w3000.dir)}` : ''}</span></div>` : ''
     ].join('');
     const old = hr?.thermalTop != null ? `<p class="fine ich-cmp"><span class="ich-key ich-key-old"></span>Bisherige Rechnung: Thermik bis ${Math.round(hr.thermalTop / 50) * 50} m. Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>` : '<p class="fine ich-cmp">Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>';
     el.innerHTML = `${ichSvg(x, pr, alt, hr?.thermalTop)}<p class="fine ich-legend"><span class="ich-key ich-key-t"></span>Temperatur <span class="ich-key ich-key-td"></span>Taupunkt <span class="ich-key ich-key-col"></span>Thermik</p><div class="kv">${facts}</div>${old}<p class="fine" style="margin:4px 0 0">Quelle: MeteoSchweiz, Modell ICON-CH1 (1 km), Lauf ${new Date(j.run).toLocaleString('de-CH', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric', timeZone: 'Europe/Zurich' })} Uhr.</p>`;
@@ -3349,6 +3350,7 @@ function terrainFlow(w, g, lat, lon) {
   return [u * keep, v * keep];
 }
 function windSample(d, lat, lon) {
+  if (d.fine) { const f = fineAt(d.fine, lat, lon); if (f) return f; }   // ICON-CH1, rund 1 km
   const g = d.grid, fx = (lon - g.lo0) / g.dlo, fy = (lat - g.la0) / g.dla;
   if (fx < 0 || fy < 0 || fx > g.nx - 1 || fy > g.ny - 1) return null;
   const x0 = Math.min(Math.floor(fx), g.nx - 2), y0 = Math.min(Math.floor(fy), g.ny - 2), tx = fx - x0, ty = fy - y0;
@@ -3713,9 +3715,17 @@ function rampRgba(ramp, v) {
 /** Wind auf Geländehöhe: Bodenwind in tiefen Lagen, darüber zwischen 2000 m und 3000 m interpoliert. */
 function windAtAlt(d, lat, lon, elev) { return windMix(windLevels(d, lat, lon), elev); }
 /** Wind der drei Höhen an einem Ort: [Boden, ca. 2000 m, ca. 3000 m], je [u, v] oder null. */
-function windLevels(d, lat, lon) {
+/** Wind in drei Höhen [Boden, ca. 2000 m, ca. 3000 m] (u, v km/h). Boden aus ICON-CH1 (rund 1 km), wenn vorhanden; coarse = nur das grobe Raster. */
+function windLevels(d, lat, lon, coarse = false) {
   const at = k => { const w = d.wind?.[k]; if (!w) return null; const u = fieldAt(d, w.u, lat, lon), v = fieldAt(d, w.v, lat, lon); return u == null || v == null ? null : [u, v]; };
-  return [at('10m'), at('800'), at('700')];
+  const f = !coarse && d.fine ? fineAt(d.fine, lat, lon) : null;
+  return [f || at('10m'), at('800'), at('700')];
+}
+function fineAt(f, lat, lon) {
+  const g = f.grid, fx = (lon - g.lo0) / g.dlo, fy = (lat - g.la0) / g.dla;
+  if (fx < 0 || fy < 0 || fx > g.nx - 1 || fy > g.ny - 1) return null;
+  const u = fieldAt({ grid: g }, f.u, lat, lon), v = fieldAt({ grid: g }, f.v, lat, lon);
+  return u == null || v == null ? null : [u, v];
 }
 function windMix(lv, elev) {
   const mix = (a, b, t) => (!a ? b : !b ? a : [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
@@ -5537,7 +5547,8 @@ function wnFlow(w, lat, lon) {
   return [Math.sin(to) * sp, Math.cos(to) * sp];
 }
 /** Wind für die Teilchen: Bodenwind im Gelände (WindNinja, sonst Schätzung) und Höhenwind (ca. 2000 m) an einem Punkt, in km/h. */
-const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = wnFlow(lv[0], lat, lon) || terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
+// WindNinja rechnet aus dem grossräumigen Wind (grobes Raster); ausserhalb seiner Gebiete fliesst der feine ICON-CH1-Wind dem Gelände entlang
+const windSampler = d => (lat, lon) => { const lv = windLevels(d, lat, lon), g = wnFlow(windLevels(d, lat, lon, true)[0], lat, lon) || terrainFlow(lv[0], T.grid, lat, lon); return g ? { g, a: lv[1] || lv[0] } : null; };
 /** Zwei Stunden weich gemischt (Zeitregler zwischen den vollen Stunden). */
 const windSamplerMix = (a, b, f) => { const A = windSampler(a), B = windSampler(b); return (lat, lon) => { const p = A(lat, lon), q = B(lat, lon); if (!p || !q) return p || q; const m = (x, y) => [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f]; return { g: m(p.g, q.g), a: m(p.a, q.a) }; }; };
 /** 3D-Wind als feine Lichtfäden: viele Teilchen wie im Tunnel-Vorbild (ein Faden kostet wenig) */

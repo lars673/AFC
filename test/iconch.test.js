@@ -142,3 +142,14 @@ test('Alt gegen neu an IGC-Flügen', () => {
   assert.equal(r.n, 2); assert.equal(r.old.mae, 450); assert.equal(r.neu.mae, 100);
   assert.deepEqual(compareTops([], old, neu), { n: 0 });
 });
+
+test('Wind auf Höhe aus den Modellflächen und Richtung', async () => {
+  const { windAt, windOf } = await import('../lib/iconch.js');
+  // 3 Flächen, oben zuerst: Halbhöhen 2500, 1500, 750 (HHL 3000, 2000, 1000, 500)
+  const hhl = [3000, 2000, 1000, 500], U = [10, 5, 2], V = [0, 0, 0];
+  assert.deepEqual(windAt(hhl, U, V, 600), [2, 0], 'unter der untersten Fläche deren Wert');
+  assert.ok(Math.abs(windAt(hhl, U, V, 2000)[0] - 7.5) < 1e-9, 'linear zwischen 1500 und 2500');
+  assert.equal(windAt(hhl, U, V, 2600), null);
+  assert.deepEqual(windOf(0, -10), { wind: 36, dir: 0 }, 'Nordwind weht nach Süden');
+  assert.deepEqual(windOf(-10, 0), { wind: 36, dir: 90 }, 'Ostwind');
+});
