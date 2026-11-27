@@ -2854,6 +2854,67 @@ async function setRadar(on) {
   await draw(false);
   RAD.timer = setInterval(() => { if (S.tab === 'map') draw(true); }, 10 * 60000);
 }
+/* ---- Wolken jetzt (EUMETSAT, /api/sat): sichtbares Bild 500 m, nur wo die Wolkenmaske Wolken sieht (Schnee bleibt weg).
+   Gleicher Ausschnitt wie das Geländeraster: Karte und 3D legen das Bild direkt über das Gelände. */
+const SAT = { info: null, at: 0, cv: null, key: '', layer: null, timer: null };
+const satStamp = iso => iso.slice(0, 16).replace(/[-:T]/g, '');
+const loadImg = url => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Satellitenbild nicht geladen')); i.src = url; });
+/** Zusammengesetztes Wolkenbild (Canvas) und Zeiten, höchstens alle 5 Minuten neu. */
+async function satClouds(force) {
+  if (!force && SAT.cv && Date.now() - SAT.at < 5 * 60000) return SAT;
+  const r = await fetch('/api/sat', { cache: 'no-store' }), j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Satellit nicht verfügbar');
+  const key = j.vis + j.clm;
+  if (key !== SAT.key) {
+    const g = await thermalGrid(), [vis, clm] = await Promise.all([loadImg(`/api/sat/vis/${satStamp(j.vis)}.png`), loadImg(`/api/sat/clm/${satStamp(j.clm)}.png`)]);
+    const w = g.nx * 2, h = g.ny * 2, cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(clm, 0, 0, w, h); const m = ctx.getImageData(0, 0, w, h).data;      // Maske weich hochgerechnet: weiss = Wolke, grün = klar
+    ctx.clearRect(0, 0, w, h); ctx.drawImage(vis, 0, 0, w, h);
+    const im = ctx.getImageData(0, 0, w, h), px = im.data;
+    // Helligkeit strecken: bei tiefer Sonne (Winter, Abend) ist das ganze Bild dunkel; Mass = helle Wolken im Ausschnitt
+    const hist = new Uint32Array(256); let nc = 0;
+    for (let i = 0; i < px.length; i += 16) if (m[i] > 160) { hist[px[i]]++; nc++; }
+    let p95 = 255; for (let v = 255, acc = 0; v > 0; v--) { acc += hist[v]; if (acc >= nc * 0.05) { p95 = v; break; } }
+    const gain = 255 / Math.max(60, p95);
+    for (let i = 0; i < px.length; i += 4) {
+      const cloud = Math.max(0, Math.min(1, (m[i] - 40) / 180)), b = Math.min(1, px[i] * gain / 255);   // Rot ist bei grün fast 0, bei weiss 255
+      const a = cloud * Math.max(0, Math.min(1, (b - 0.12) / 0.45));
+      const c = Math.round(170 + 85 * b);
+      px[i] = c; px[i + 1] = c; px[i + 2] = Math.min(255, c + 6); px[i + 3] = Math.round(235 * a);
+    }
+    ctx.putImageData(im, 0, 0);
+    SAT.cv = cv; SAT.key = key;
+  }
+  SAT.info = j; SAT.at = Date.now();
+  return SAT;
+}
+function satLabel(j) {
+  const t = new Date(j.vis), today = t.toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' }) === todayKey();
+  return `Wolken (Satellit) ${today ? '' : t.toLocaleDateString('de-CH', { day: 'numeric', month: 'numeric', timeZone: 'Europe/Zurich' }) + ' '}${timeOf(j.vis)} Uhr${j.day ? '' : ', letztes Bild bei Tag'}`;
+}
+async function setSat(on) {
+  const keep = store.get('ov', {}); keep.sat = on; store.set('ov', keep);
+  clearInterval(SAT.timer); SAT.timer = null;
+  if (SAT.layer) { M.map?.removeLayer(SAT.layer); SAT.layer = null; }
+  const chip = $('#satChip');
+  if (!on || !M.map) { if (chip) chip.hidden = true; return; }
+  const draw = async force => {
+    try {
+      const s = await satClouds(force), g = await thermalGrid();
+      if (!store.get('ov', {}).sat) return;
+      if (!SAT.layer) {
+        if (!M.map.getPane('sat')) M.map.createPane('sat').style.zIndex = 430;
+        SAT.layer = new CanvasOverlay('', thermalBounds(g), { pane: 'sat', opacity: 1, className: 'sat-img', interactive: false, w: s.cv.width, h: s.cv.height, attribution: 'Wolken: <a href="https://www.eumetsat.int" target="_blank" rel="noopener">EUMETSAT</a>' }).addTo(M.map);
+      }
+      SAT.layer.blend(s.cv);
+      chip.textContent = satLabel(s.info); chip.hidden = false;
+    } catch (e) { chip.textContent = 'Satellit: ' + errTxt(e); chip.hidden = false; }
+  };
+  await draw(false);
+  SAT.timer = setInterval(() => { if (S.tab === 'map') draw(true); }, 10 * 60000);
+}
 /** Regen auf dem Radar in der Nähe eines Ortes: nächster Regen (km, Richtung) jetzt und vor 20 Minuten. */
 async function radarNear(lat, lon, radiusKm = 30) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)}`, hit = RAD.near.get(key);
@@ -3192,6 +3253,7 @@ function initMap() {
   const ov = store.get('ov', {});
   for (const k of Object.keys(OVERLAYS)) if (ov[k]) setOverlay(k, true);
   if (ov.radar) setRadar(true);
+  if (ov.sat) setSat(true);
   syncLayerPanel();
   M.map.on('moveend', () => { if (obstOn()) updateObst(); });
   if (ov.obst) updateObst();
@@ -4569,7 +4631,7 @@ document.addEventListener('change', e => {
     pushSync(); return;
   }
   if (t.matches('#layerPanel input[name="base"]')) setBase(t.value);
-  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value === 'radar') setRadar(t.checked); else if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else if (t.value === 'obst') { updateObst(); if (t.checked && M.map && M.map.getZoom() < OB_MINZOOM) { mapMsg('Kabel und Hindernisse erscheinen ab einer näheren Zoomstufe. Antippen für Höhe und Art.'); setTimeout(() => mapMsg(''), 6000); } } else renderMap(); } }
+  else if (t.matches('#layerPanel input[name="ov"]')) { if (t.value === 'radar') setRadar(t.checked); else if (t.value === 'sat') setSat(t.checked); else if (t.value in OVERLAYS) setOverlay(t.value, t.checked); else { store.set('ov', { ...store.get('ov', {}), [t.value]: t.checked }); if (t.value === 'air' || t.value === 'wild') updateAir(); else if (t.value === 'obst') { updateObst(); if (t.checked && M.map && M.map.getZoom() < OB_MINZOOM) { mapMsg('Kabel und Hindernisse erscheinen ab einer näheren Zoomstufe. Antippen für Höhe und Art.'); setTimeout(() => mapMsg(''), 6000); } } else renderMap(); } }
 });
 // IGC-Dateien aufs Flugbuch ziehen
 document.addEventListener('dragover', e => { if (S.tab === 'book' && e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
@@ -5041,7 +5103,8 @@ function motionSync() {
 const V3_LAYERS = {
   thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Schläuche: die stärksten Stellen, vom Wind geneigt, bis zur Obergrenze oder (weisser Ring) zur Wolkenbasis.'],
   soar: ['Soaring', 'Soaring: wo der Wind frontal auf einen steilen Hang trifft.'],
-  lee: ['Lee', 'Lee: absinkende Luft und Rotoren hinter höheren Kreten, gegen den Wind gesehen.']
+  lee: ['Lee', 'Lee: absinkende Luft und Rotoren hinter höheren Kreten, gegen den Wind gesehen.'],
+  sat: ['Satellit', 'Satellit: echte Wolken vom letzten Bild bei Tag (EUMETSAT, alle 10 Minuten, 500 m), Schnee ausgeblendet. Gilt für jetzt, nicht für die gewählte Stunde.']
 };
 const PLAY_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i-play" d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z"/><path class="i-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
 const GLIDER_SVG = '<svg class="v3d-gl" viewBox="0 0 40 34" width="40" height="34" aria-hidden="true"><path d="M3 12C8 3 32 3 37 12c-5-3.5-29-3.5-34 0z" fill="#ff5a36" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 12l14 15M35 12L21 27M14 9.6l5.4 17M26 9.6l-5.4 17" stroke="#fff" stroke-width="1" fill="none" opacity=".9"/><circle cx="20" cy="28.5" r="3.6" fill="#101c15" stroke="#fff" stroke-width="1.6"/></svg>';
@@ -5275,7 +5338,8 @@ async function v3dApply() {
   if (tok !== V3.tok || V3.scene !== sc) return;
   V3.d = d;
   if (!V3.playing && !v3dBetween()) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
-  sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
+  if (V3.layer === 'sat') { try { sc.setOverlay((await satClouds(false)).cv, noMotion() ? 1 : 450); } catch (e) { err = 'Satellit: ' + errTxt(e); sc.setOverlay(null); } if (tok !== V3.tok || V3.scene !== sc) return; }
+  else sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
   sc.ovA = V3.wind && V3.layer === 'lee' ? 0.5 : 1;   // Lee-Fläche zarter, damit die Wirbel darauf sichtbar bleiben
   if (!reg) v3dHourData();
   sc.setClouds(cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);

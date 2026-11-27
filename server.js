@@ -46,6 +46,7 @@ import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
 import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, SOURCE as ICH_SOURCE } from './lib/iconch.js';
 import { fetchSonde, compareProfile, PAYERNE } from './lib/sonde.js';
+import { createSat, SAT_SOURCE } from './lib/sat.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
 import { hashPassword, verifyPassword, passwordProblem, newToken, tokenHash, newCode, newId, parseCookies, cleanEmail, cleanName, cleanProfile, cleanUserPrefs, cleanPhoto, cleanFeedback, cleanClientError, wingLoading, FEEDBACK_KINDS, NOFLY_REASONS, LICENSES, STYLES } from './lib/auth.js';
 
@@ -983,6 +984,18 @@ async function mediaRoute(req, res, p, u) {
   try {
     if (p.startsWith('/api/radar') && !SRC.radar) return sendJson(req, res, 410, { error: 'Regenradar in dieser Version ausgeschaltet', off: true });
     if (p === '/api/camimg' && !SRC.camImg) return sendJson(req, res, 410, { error: 'Webcam-Bilder in dieser Version nur als Link', off: true });
+    if (p === '/api/sat') {
+      // Satellit «Wolken jetzt» (EUMETSAT): Zeiten des letzten Tageslichtbilds und der passenden Wolkenmaske
+      const si = await SAT().info();
+      return sendJson(req, res, 200, { ok: true, vis: new Date(si.vis).toISOString(), clm: new Date(si.clm).toISOString(), day: si.day, source: SAT_SOURCE });
+    }
+    const sm = p.match(/^\/api\/sat\/(vis|clm)\/(\d{12})\.png$/);
+    if (sm) {
+      const s = sm[2], t = Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8), +s.slice(8, 10), +s.slice(10, 12));
+      if (!(t > Date.now() - 3 * 86400000 && t < Date.now() + 3600000) || t % (5 * 60000)) return sendJson(req, res, 400, { error: 'Zeit ungültig' });
+      const buf = await SAT().image(sm[1], t);
+      return img(200, { type: 'image/png', buf }, 86400);
+    }
     if (p === '/api/radar') {
       const ri = await radarInfo();
       return sendJson(req, res, 200, { ok: !!ri.frames.length, frames: ri.frames.map(f => f.time), source: 'RainViewer' });
@@ -1018,6 +1031,7 @@ async function mediaRoute(req, res, p, u) {
 /* ------------------------------------------------------------------ Live-Piloten (OGN): wer fliegt, wie es steigt (lib/live.js) */
 // Geholt wird nur, wenn jemand die App offen hat, höchstens alle 20 Sekunden und nur für den Ausschnitt des Geländerasters.
 const OGN_URL = () => process.env.AFC_OGN_URL ?? 'https://live.glidernet.org/lxml.php';
+let satInst; const SAT = () => (satInst ??= createSat(readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin')))));
 let liveGrid; const liveElev = (lat, lon) => { try { liveGrid ??= readGrid(readFileSync(path.join(ROOT, 'lib/terrain-grid.bin'))); return elevAt(liveGrid, lat, lon); } catch { liveGrid = { nx: 0, ny: 0 }; return null; } };
 const liveTrack = makeTracker(liveElev);
 let liveAt = 0, liveOkAt = 0, liveReq = null, liveErr = null;
@@ -1554,7 +1568,7 @@ const server = http.createServer(async (req, res) => {
     // Öffentlicher Zugang (Tailscale Funnel) ohne Konten wäre ein offenes Flugbuch für alle: dann gesperrt.
     if (p.startsWith('/api/') && req.headers['tailscale-funnel-request'] && !authOn() && p !== '/api/auth/state') return sendJson(req, res, 403, { error: 'Öffentlicher Zugang erst, wenn auf dem Mac ein Konto eingerichtet ist.' });
     // Regenradar und Webcam-Bilder: eigene Grenze, weil eine Karte viele Kacheln auf einmal lädt
-    if (req.method === 'GET' && (p === '/api/radar' || p.startsWith('/api/radar/') || p === '/api/camimg')) {
+    if (req.method === 'GET' && (p === '/api/radar' || p.startsWith('/api/radar/') || p === '/api/camimg' || p === '/api/sat' || p.startsWith('/api/sat/'))) {
       if (limited(req, 'media', 600)) return sendJson(req, res, 429, { error: 'zu viele Anfragen' });
       if (authOn() && !userOf(req)) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: true });
       return mediaRoute(req, res, p, u);
