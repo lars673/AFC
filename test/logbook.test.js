@@ -193,3 +193,22 @@ test('Faires Lernen: eine Stimme pro Pilot und Tag, ein Pilot höchstens einen D
   r = siteFeedback([1, 2, 3].map(d => ({ uid: 'e', siteId: 'x', date: '2026-11-0' + d, afcVerdict: 'streng', pilot: E })).concat([{ uid: 'f', siteId: 'x', date: '2026-11-04', afcVerdict: 'streng', pilot: E }]), N, 'expert');
   assert.equal(r.x.adj, 4);
 });
+
+test('Prognose gegen eigenen Flug: höchste Thermik gegen Obergrenze zur selben Zeit, Basis begrenzt', async () => {
+  const { flightVsForecast } = await import('../lib/logbook.js');
+  const f = { start: '12:10', durMin: 75, track: { thermals: [
+    { at: '12:20', base: 1500, alt: 1900, rate: 1.5 }, { at: '13:00', base: 1600, alt: 2100, rate: 2.1 }, { at: '13:15', base: 1700, alt: 1950, rate: 1.2 }] } };
+  const fc = [{ hour: 12, top: 1900, base: null, wstar: 1.2 }, { hour: 13, top: 2300, base: 2000, wstar: 1.6 }, { hour: 14, top: 2400, base: null, wstar: 1.8 }];
+  const r = flightVsForecast(f, fc, [{ hour: 13, top: 2150, base: null, wstar: 1.5 }]);
+  assert.equal(r.best.alt, 2100);
+  assert.equal(r.fcTop, 2000);              // 13 Uhr: Basis 2000 unter der Obergrenze 2300
+  assert.equal(r.diff, 100);
+  assert.equal(r.verdict, 'gut');
+  assert.equal(r.anaTop, 2150);
+  assert.equal(r.w, 1.8);                    // 12 bis 14 Uhr (Flug bis 13:25, eine Stunde Rand)
+  assert.equal(r.climb, 'wie erwartet');     // Mittel 1,6 m/s gegen 1,8
+  assert.equal(flightVsForecast({ start: '12:00', track: { thermals: [] } }, fc), null);
+  const lo = flightVsForecast({ start: '12:00', durMin: 30, track: { thermals: [{ at: '12:30', base: 1400, alt: 1600, rate: 0.6 }, { at: '12:40', base: 1400, alt: 1550, rate: 0.5 }] } }, fc);
+  assert.equal(lo.fcTop, 1950); assert.equal(lo.verdict, 'tiefer'); assert.equal(lo.climb, 'schwächer');
+  assert.equal(flightVsForecast(f, []).fcTop, null);
+});

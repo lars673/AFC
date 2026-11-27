@@ -1823,7 +1823,61 @@ function trackHtml(t, id) {
   return `<div class="lb-wide lb-track"><span class="lb-type">Spur${t.file ? ' · ' + esc(t.file) : ''}</span>${svg}${prof}
     ${id && line.length > 2 ? `<button class="btn replay-btn" type="button" data-act="replay" data-id="${esc(id)}">${PLAY_SVG} Flug in 3D ansehen</button>` : ''}
     <p class="fine" style="margin:4px 0 0">${(t.thermals || []).length} Thermiken · bestes Steigen ${t.climbMax ?? '–'} m/s${num(t.maxDistKm) ? ` · bis ${t.maxDistKm} km vom Start` : ''}</p>
-    ${th.length ? `<p class="fine" style="margin:2px 0 0">${th.map(h => `${h.at}: ${h.base} → ${h.alt} m (${h.rate} m/s)`).join(' · ')}</p>` : ''}</div>`;
+    ${th.length ? `<p class="fine" style="margin:2px 0 0">${th.map(h => `${h.at}: ${h.base} → ${h.alt} m (${h.rate} m/s)`).join(' · ')}</p>` : ''}
+    ${id && (t.thermals || []).length ? `<div class="fcvs" id="fcVs" aria-live="polite"></div>` : ''}</div>`;
+}
+/* ---- Prognose gegen den eigenen Flug: die Bärte aus der IGC-Spur neben der Thermikprognose (MeteoSchweiz ICON-CH1), die AFC
+   für diesen Startplatz und Tag gespeichert hat, und der Analyse danach (KENDA-CH1). Ändert die Bewertung nicht. */
+async function fcVsFill(f) {
+  const el = $('#fcVs');
+  if (!el || !f?.track?.thermals?.length || !f.date || !f.start) return;
+  const p0 = f.track.takeoff || (f.track.line?.[0] && { lat: f.track.line[0][0], lon: f.track.line[0][1] });
+  const site = (f.siteId && siteById(f.siteId)) || (p0 && S.plan?.sites.filter(o => num(o.lat)).map(o => [o, haversineKm(p0.lat, p0.lon, o.lat, o.lon)]).filter(x => x[1] < 3).sort((a, b) => a[1] - b[1])[0]?.[0]);
+  const head = '<span class="lb-type">Prognose gegen deinen Flug</span>';
+  if (!site) { el.innerHTML = `${head}<p class="fine">Für den Vergleich braucht es einen Startplatz aus AFC.</p>`; return; }
+  el.innerHTML = `${head}<p class="fine">Prognose wird geladen …</p>`;
+  let j;
+  try { const r = await fetch(`/api/flugvergleich?site=${encodeURIComponent(site.id)}&date=${f.date}`); j = await r.json(); if (!r.ok) throw new Error(j.error || 'nicht verfügbar'); }
+  catch (e) { el.innerHTML = `${head}<p class="fine">Prognose nicht geladen (${esc(errTxt(e))}).</p>`; return; }
+  if (!el.isConnected) return;
+  const v = LG().flightVsForecast(f, j.fc, j.ana);
+  if (!j.fc.length || !v || v.fcTop == null) { el.innerHTML = `${head}<p class="fine">Für ${esc(site.name)} am ${ddmm(f.date)} ist keine Thermikprognose von MeteoSchweiz gespeichert. AFC speichert sie seit dem 27.11.2026, für jeden Startplatz und jede Stunde.</p>`; return; }
+  const r50 = x => Math.round(x / 50) * 50, b = v.best;
+  const say = v.verdict === 'gut' ? `Die Prognose traf: dein höchster Bart ging um ${b.at} Uhr bis ${r50(b.alt)} m, vorhergesagt waren ${r50(v.fcTop)} m.`
+    : v.verdict === 'höher' ? `Du bist ${r50(v.diff)} m höher gestiegen als vorhergesagt: um ${b.at} Uhr bis ${r50(b.alt)} m statt ${r50(v.fcTop)} m.`
+    : `Du bist ${r50(-v.diff)} m weniger hoch gekommen als vorhergesagt (${r50(b.alt)} statt ${r50(v.fcTop)} m um ${b.at} Uhr). Oft verlässt man den Bart früher, die Prognose zeigt, was möglich gewesen wäre.`;
+  const cl = v.climb ? ` Steigen im Mittel ${String(v.rate).replace('.', ',')} m/s, vorhergesagt bis ${String(v.w).replace('.', ',')} m/s: ${v.climb === 'wie erwartet' ? 'wie erwartet' : v.climb + ' als erwartet'}.` : '';
+  const an = v.anaTop != null ? ` Die Analyse mit allen Messungen danach zeigt ${r50(v.anaTop)} m.` : '';
+  el.innerHTML = `${head}${fcVsSvg(f, j, v)}<p class="fine fcvs-say"><b class="fcvs-${v.verdict}">${v.verdict === 'gut' ? 'Traf' : v.verdict === 'höher' ? 'Höher' : 'Tiefer'}</b> ${say}${cl}${an}</p><p class="fine fcvs-src">${esc(j.source)} für ${esc(site.name)}, gerechnet vor dem Flug${j.ana.length ? `; Analyse ${esc(j.anaSource)}` : ''}. Ändert die Bewertung nicht.</p>`;
+}
+/** Höhe über der Tageszeit: Spur (grau, Zeit geschätzt), Bärte (Balken), Prognose der nutzbaren Obergrenze (orange), Analyse (türkis). */
+function fcVsSvg(f, j, v) {
+  const W = 320, H = 170, L = 40, R = 10, T = 10, B = 20, th = f.track.thermals.filter(t => num(t.alt) && /^\d\d:\d\d$/.test(t.at || ''));
+  const hm = t => Number(t.slice(0, 2)) + Number(t.slice(3, 5)) / 60, s0 = hm(f.start), s1 = s0 + (f.durMin || 0) / 60;
+  const useTop = r => (num(r.top) ? (num(r.base) && r.base < r.top ? r.base : r.top) : null);
+  const x0 = Math.floor(Math.min(s0, ...th.map(t => hm(t.at))) - 0.5), x1 = Math.ceil(Math.max(s1, ...th.map(t => hm(t.at))) + 0.5);
+  const fc = j.fc.filter(r => r.hour >= x0 - 1 && r.hour <= x1 + 1 && num(useTop(r))), an = j.ana.filter(r => r.hour >= x0 - 1 && r.hour <= x1 + 1 && num(useTop(r)) && r.wstar > 0.2);
+  const line = f.track.line || [], alts = [...line.map(p => p[2]), ...th.map(t => t.base), ...th.map(t => t.alt), ...fc.map(useTop), ...an.map(useTop)].filter(num);
+  const z0 = Math.floor((Math.min(...alts) - 100) / 250) * 250, z1 = Math.ceil((Math.max(...alts) + 150) / 250) * 250;
+  const X = x => L + (W - L - R) * (x - x0) / (x1 - x0), Y = z => T + (H - T - B) * (1 - (z - z0) / (z1 - z0));
+  const grid = [], step = z1 - z0 > 1500 ? 500 : 250;
+  for (let z = Math.ceil(z0 / step) * step; z <= z1; z += step) grid.push(`<line x1="${L}" x2="${W - R}" y1="${Y(z).toFixed(1)}" y2="${Y(z).toFixed(1)}" class="ich-g"/><text x="${L - 5}" y="${(Y(z) + 4).toFixed(1)}" class="ich-ax" text-anchor="end">${z}</text>`);
+  for (let h = x0; h <= x1; h++) grid.push(`<text x="${X(h).toFixed(1)}" y="${H - 5}" class="ich-ax" text-anchor="middle">${h}</text>`);
+  const pl = rows => rows.map(r => `${X(r.hour).toFixed(1)},${Y(Math.min(z1, useTop(r))).toFixed(1)}`).join(' ');
+  const trace = line.length > 1 ? line.map((p, i) => `${X(s0 + (s1 - s0) * i / (line.length - 1)).toFixed(1)},${Y(p[2]).toFixed(1)}`).join(' ') : '';
+  const bars = th.map(t => { const x = X(hm(t.at)).toFixed(1), k = Math.min(1, Math.max(0, (t.rate || 0) / 3)); return `<line x1="${x}" x2="${x}" y1="${Y(t.base ?? t.alt).toFixed(1)}" y2="${Y(t.alt).toFixed(1)}" class="fcvs-bar" style="stroke-opacity:${(0.45 + 0.55 * k).toFixed(2)}"><title>${t.at} Uhr: ${t.base}–${t.alt} m, ${t.rate} m/s</title></line>`; }).join('');
+  const bx = X(hm(v.best.at)), by = Y(v.best.alt), fy = Y(v.fcTop);
+  return `<svg class="fcvs-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Höhe deines Flugs über der Zeit, mit der Prognose der Thermikobergrenze">
+    <defs><clipPath id="fcvsClip"><rect x="${L}" y="0" width="${W - L - R}" height="${H}"/></clipPath></defs>
+    ${grid.join('')}
+    <g clip-path="url(#fcvsClip)">${fc.length > 1 ? `<polyline points="${pl(fc)}" class="fcvs-fc"/>` : ''}
+    ${an.length > 1 ? `<polyline points="${pl(an)}" class="fcvs-ana"/>` : ''}</g>
+    ${trace ? `<polyline points="${trace}" class="fcvs-trace"/>` : ''}
+    ${bars}
+    <line x1="${bx.toFixed(1)}" x2="${bx.toFixed(1)}" y1="${by.toFixed(1)}" y2="${fy.toFixed(1)}" class="fcvs-gap"/>
+    <circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="3.6" class="fcvs-best"/><circle cx="${bx.toFixed(1)}" cy="${fy.toFixed(1)}" r="3.2" class="fcvs-fcpt"/>
+    <g class="fcvs-key"><line x1="${L + 6}" x2="${L + 20}" y1="${T + 6}" y2="${T + 6}" class="fcvs-fc"/><text x="${L + 24}" y="${T + 10}" class="ich-lb">Prognose</text>${an.length > 1 ? `<line x1="${L + 82}" x2="${L + 96}" y1="${T + 6}" y2="${T + 6}" class="fcvs-ana"/><text x="${L + 100}" y="${T + 10}" class="ich-lb">so war es</text>` : ''}<line x1="${L + (an.length > 1 ? 162 : 82)}" x2="${L + (an.length > 1 ? 162 : 82)}" y1="${T + 1}" y2="${T + 11}" class="fcvs-bar"/><text x="${L + (an.length > 1 ? 168 : 88)}" y="${T + 10}" class="ich-lb">deine Bärte</text></g>
+  </svg>`;
 }
 
 /**
@@ -1874,6 +1928,7 @@ function flightForm(id, copyId) {
     <div class="btn-row">${f ? '<button class="btn danger sec" type="button" data-act="lbdelflight">Löschen</button><button class="btn sec" type="button" data-act="lbcopyflight" title="Neuen Flug mit denselben Angaben erfassen">Kopieren</button>' : ''}<button class="btn sec" type="button" data-act="closemsg">Abbrechen</button><button class="btn" type="submit">Speichern</button></div></form>`);
   const form = $('#lbFlightForm');
   form.dataset.id = f?.id || '';
+  if (f?.track) fcVsFill(f);
   // Höhe automatisch: bekannter Start- oder Landeplatz gewählt → Höhe übernehmen; Differenz laufend anzeigen
   const hdiff = () => {
     const a = Number(form.startAlt.value), b = Number(form.landAlt.value);
@@ -5760,36 +5815,93 @@ function v3dThermals(d) {
 }
 /* 3D: die Thermiksäule aus ICON-CH1 über jedem Startplatz im Bild (mit Ebene «Thermik»): warmer, nach oben
    verblassender Zylinder vom Start bis zur Obergrenze, an der Wolkenbasis ein weisser Ring mit Wolkendeckel. */
+/* ---- Atmende Thermiksäulen: über jedem Startplatz wächst die Säule (MeteoSchweiz ICON-CH1) am Vormittag stufenlos in die Höhe
+   und sinkt am Abend wieder zusammen; Lichtfäden steigen darin auf, schneller bei stärkerem Steigen. Zwischen den Stunden gemischt. */
+const ICHD = new Map();
+async function ichSeries(date) {
+  const c = ICHD.get(date);
+  if (c && Date.now() - c.at < 10 * 60000) return c.d;
+  try {
+    const r = await fetch(`/api/thermiksaeule?from=${encodeURIComponent(filmIso(date, 5))}&to=${encodeURIComponent(filmIso(date, 21))}`);
+    const d = r.ok ? await r.json() : null;
+    if (d?.series) { ICHD.set(date, { at: Date.now(), d }); if (ICHD.size > 4) ICHD.delete(ICHD.keys().next().value); }
+    return d;
+  } catch { return null; }
+}
+/** Säule eines Startplatzes zur Zeit t (ms) aus der Stundenreihe [[t, top, base, wstar]]: { top, capped, wstar } oder null.
+    Fehlt die Thermik in einer der beiden Stunden, wächst die Säule vom Boden aus (oder sinkt dorthin zurück). */
+function ichAt(rows, t, alt, g0) {
+  if (!rows?.length) return null;
+  let i = rows.findIndex(r => r[0] > t);
+  if (i === 0) return null;
+  if (i < 0) i = rows.length;
+  const A = rows[i - 1], B = rows[i];
+  const use = r => (r ? ichUse({ top: r[1], base: r[2], wstar: r[3] }, alt) : null);
+  const ua = use(A), ub = B && B[0] - A[0] <= 2 * 3600000 ? use(B) : null;
+  const f = ub || ua ? (B ? Math.max(0, Math.min(1, (t - A[0]) / (B[0] - A[0]))) : 0) : 0;
+  if (!B && t - A[0] > 30 * 60000) return null;
+  if (!ua && !ub) return null;
+  // weich: Ein- und Ausschwingen statt linearer Knicke zur vollen Stunde
+  const e = f * f * (3 - 2 * f), ga = Math.max(alt, g0);
+  const top = (ua ? ua.top : ga) + ((ub ? ub.top : ga) - (ua ? ua.top : ga)) * e;
+  const wstar = (ua?.wstar || 0) + ((ub?.wstar || 0) - (ua?.wstar || 0)) * e;
+  return { top, wstar, capped: e < 0.5 ? !!ua?.capped : !!ub?.capped, fade: ua && ub ? 1 : ua ? 1 - e : e };
+}
 async function v3dIch(iso, tok) {
-  const sc = V3.scene, clear = () => { sc?.setTris('ich', null); sc?.setLines('ichC', null); V3.ichN = 0; };
+  const sc = V3.scene;
   if (!sc) return;
-  if (V3.layer !== 'thermal') return clear();
+  if (V3.layer !== 'thermal') return v3dIchClear();
+  const date = S.plan?.dates?.[S.day];
+  const ser = date ? await ichSeries(date) : null;
+  if (tok !== V3.tok || V3.scene !== sc || V3.layer !== 'thermal') return;
+  if (ser?.series) { V3.ichSer = { date, s: ser.series }; return v3dIchT(); }
+  // ohne Reihe: wie bisher je volle Stunde
+  V3.ichSer = null;
   const d = await ichHour(iso);
   if (tok !== V3.tok || V3.scene !== sc) return;
-  if (!d?.sites || V3.layer !== 'thermal') return clear();
-  const c = sc.c, tris = [], rings = [], col = [1, 0.62, 0.22], n = 24;
-  for (const o of S.plan.sites) {
-    if (o.blocked || !num(o.lat) || haversineKm(c.lat, c.lon, o.lat, o.lon) * 1000 > sc.R * 0.88) continue;
-    const u = ichUse(d.sites[o.id], o.alt);
-    if (!u) continue;
-    const g0 = Math.max(o.alt, sc.ground(o.lat, o.lon)), H = u.top - g0;
-    if (H < 60) continue;
-    const r = Math.max(70, Math.min(260, sc.R * 0.012)) * (0.8 + Math.min(0.6, u.wstar / 4)), A = sc.toLocal(o.lat, o.lon, g0), yT = u.top * sc.ex;
-    const a0 = 0.24 + Math.min(0.22, u.wstar * 0.08);
+  if (!d?.sites || V3.layer !== 'thermal') return v3dIchClear();
+  ichDraw(sc, S.plan.sites.map(o => ({ o, u: ichUse(d.sites[o.id], o.alt) })));
+}
+function v3dIchClear() { const sc = V3.scene; sc?.setTris('ich', null); sc?.setLines('ichC', null); sc?.setLines('ichF', null); V3.ichN = 0; V3.ichSer = null; }
+/** Säulen zur Zeit des Zeitreglers (V3.t, stufenlos), höchstens etwa zehnmal pro Sekunde neu gebaut. */
+function v3dIchT(force = true) {
+  const sc = V3.scene, ser = V3.ichSer;
+  if (!sc || !ser || V3.layer !== 'thermal' || ser.date !== S.plan?.dates?.[S.day]) return;
+  const now = performance.now();
+  if (!force && now - (V3.ichT0 || 0) < 90) return;
+  V3.ichT0 = now;
+  const t = nowMode() && V3.hour === nowHourToday() && !V3.playing && Math.abs((V3.t ?? V3.hour) - V3.hour) < 0.02 ? Date.now() : Date.parse(filmIso(ser.date, Math.floor(V3.t ?? V3.hour))) + ((V3.t ?? V3.hour) % 1) * 3600000;
+  ichDraw(sc, S.plan.sites.map(o => ({ o, u: num(o.lat) ? ichAt(ser.s[o.id], t, o.alt, sc.ground(o.lat, o.lon)) : null })));
+}
+function ichDraw(sc, list) {
+  const c = sc.c, tris = [], rings = [], threads = [], col = [1, 0.62, 0.22], n = 24;
+  for (const { o, u } of list) {
+    if (!u || o.blocked || !num(o.lat) || haversineKm(c.lat, c.lon, o.lat, o.lon) * 1000 > sc.R * 0.88) continue;
+    const g0 = Math.max(o.alt, sc.ground(o.lat, o.lon)), H = u.top - g0, fade = u.fade ?? 1;
+    if (H < 25) continue;
+    // die Säule wird mit dem Steigen etwas dicker und kräftiger: so «atmet» sie über den Tag
+    const r = Math.max(70, Math.min(260, sc.R * 0.012)) * (0.8 + Math.min(0.6, u.wstar / 4)) * (0.6 + 0.4 * fade), A = sc.toLocal(o.lat, o.lon, g0), yT = u.top * sc.ex;
+    const a0 = (0.24 + Math.min(0.22, u.wstar * 0.08)) * fade;
     const P = (k, y) => [A[0] + Math.cos(k / n * 2 * Math.PI) * r, y, A[2] + Math.sin(k / n * 2 * Math.PI) * r];
     for (let k = 0; k < n; k++) {
       const b0 = P(k, A[1]), b1 = P(k + 1, A[1]), t0 = P(k, yT), t1 = P(k + 1, yT);
       tris.push(...b0, ...col, a0, ...t0, ...col, a0 * 0.35, ...b1, ...col, a0, ...b1, ...col, a0, ...t0, ...col, a0 * 0.35, ...t1, ...col, a0 * 0.35);
-      if (u.capped) { const m = [A[0], yT, A[2]]; tris.push(...m, 1, 1, 1, 0.55, ...t0, 1, 1, 1, 0.42, ...t1, 1, 1, 1, 0.42); }
+      if (u.capped) { const m = [A[0], yT, A[2]]; tris.push(...m, 1, 1, 1, 0.55 * fade, ...t0, 1, 1, 1, 0.42 * fade, ...t1, 1, 1, 1, 0.42 * fade); }
     }
     const ring = []; for (let k = 0; k <= n; k++) { const q = P(k, yT), [la, lo] = sc.toGeo(q[0], q[2]); ring.push([la, lo, u.top]); }
-    rings.push({ pts: ring, color: u.capped ? [1, 1, 1, 0.95] : [1, 0.7, 0.3, 0.85], width: 2.4 });
+    rings.push({ pts: ring, color: u.capped ? [1, 1, 1, 0.95 * fade] : [1, 0.7, 0.3, 0.85 * fade], width: 2.4 });
+    // aufsteigende Lichtfäden: drei je Säule, Tempo nach dem Steigen (w*)
+    for (let k = 0; k < 3; k++) {
+      const q = P(k * 8 + 3, 0), qx = A[0] + (q[0] - A[0]) * 0.45, qz = A[2] + (q[2] - A[2]) * 0.45, [la, lo] = sc.toGeo(qx, qz);
+      threads.push({ pts: [[la, lo, g0 + 10], [la, lo, g0 + H * 0.5], [la, lo, u.top - 10]], color: [1, 0.86, 0.6, 0.9 * fade], width: 2, speed: 0.35 + Math.min(1.2, u.wstar * 0.45), phase: k * 97 + (o.alt % 300) });
+    }
   }
   V3.ichN = rings.length;
   sc.setTris('ich', tris.length ? tris : null);
   sc.setLines('ichC', rings.length ? rings : null, { bias: 0.001 });
+  sc.setLines('ichF', threads.length ? threads : null, { bias: 0.001, flow: Math.max(160, sc.R * 0.02) });
   const nt = $('#v3dNote');
-  if (nt && rings.length && !nt.textContent.includes('ICON-CH1')) nt.textContent += ' Säulen über den Startplätzen: Thermik bis zur Obergrenze oder Wolkenbasis (MeteoSchweiz ICON-CH1).';
+  if (nt && rings.length && !nt.textContent.includes('ICON-CH1')) nt.textContent += ' Säulen über den Startplätzen: Thermik bis zur Obergrenze oder Wolkenbasis (MeteoSchweiz ICON-CH1), stufenlos über den Tag.';
 }
 /** Windfäden: Stromlinien des Bodenwinds, dem Gelände entlang, als fliessende Linien 45 m über Grund. */
 function windLines3d(sc, d) {
@@ -5959,6 +6071,7 @@ function v3dSiteFrame(ts, dt) {
     const h = Math.min(19, Math.floor(V3.t)), f = V3.t - h, a = FILM.frames?.[h - FILM.H0], b = FILM.frames?.[h + 1 - FILM.H0];
     if (a && b && ts - V3.shT > 130) { V3.shT = ts; sc.setSun({ elev: a.sunPos.elev + (b.sunPos.elev - a.sunPos.elev) * f, az: lerpDeg(a.sunPos.az, b.sunPos.az, f) }); }
     $('#v3dHourT').textContent = filmClock(V3.t) + ' Uhr'; $('#v3dHour').value = V3.t;
+    v3dIchT(false);
     const hh = Math.round(V3.t);
     if (hh !== V3.hour) { V3.hour = hh; v3dApply(); }
     if (V3.t >= 20) v3dPlay(false); else busy = true;
@@ -6002,6 +6115,7 @@ function v3dScrub(t) {
       if (V3.wsim && now - (V3.wT || 0) > 110) { V3.wT = now; V3.wsim.setField(windSamplerMix(a, b, f)); }
     }
   }
+  v3dIchT(false);
   const hh = Math.round(V3.t);
   if (hh !== V3.hour) { V3.hour = hh; clearTimeout(V3.scrubT); V3.scrubT = setTimeout(v3dApply, 90); }
   sc.invalidate();

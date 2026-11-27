@@ -1746,10 +1746,31 @@ const server = http.createServer(async (req, res) => {
         if (i < 0) return sendJson(req, res, 404, { error: 'für diese Stunde keine Wolken aus ICON-CH1' });
         return sendJson(req, res, 200, { ok: true, t: new Date(c.t[i]).toISOString(), run: new Date(state.ich.ref).toISOString(), grid: c.grid, base: c.base[i], top: c.top[i], cov: c.cov[i], source: state.ich.source });
       }
+      if (req.method === 'GET' && p === '/api/flugvergleich') {
+        // Prognose gegen den eigenen Flug: gespeicherte Thermikprognose (ICON-CH1, bisheriges Modell) und Analyse für Startplatz und Tag
+        const id = u.searchParams.get('site') || '', date = u.searchParams.get('date') || '';
+        if (!/^[\w-]{1,60}$/.test(id) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(req, res, 400, { error: 'site und date (JJJJ-MM-TT)' });
+        const fc = dbAll('SELECT hour, top, base, wstar, early_top AS etop, lead FROM ich_fc WHERE site_id=? AND date=? ORDER BY hour', [id, date]);
+        const ana = dbAll('SELECT hour, top, base, wstar FROM ich_ana WHERE site_id=? AND date=? ORDER BY hour', [id, date]);
+        const old = dbAll('SELECT hour, top, base FROM site_fc WHERE site_id=? AND date=? ORDER BY hour', [id, date]);
+        return sendJson(req, res, 200, { ok: true, site: id, date, fc, ana, old, source: ICH_SOURCE, anaSource: KENDA_SOURCE });
+      }
       if (req.method === 'GET' && p === '/api/thermiksaeule') {
         // Thermiksäule eines Startplatzes aus ICON-CH1 (MeteoSchweiz): Stundenwerte und Profile für die Anzeige
         const id = u.searchParams.get('site') || '';
         if (!state.ich) return sendJson(req, res, 202, { warming: true, error: ingest.iconch.error });
+        if (!id && u.searchParams.has('from')) {
+          // alle Startplätze über einen Zeitraum (atmende Säulen in 3D): ?from=ISO&to=ISO, je Stunde [t, top, base, wstar]
+          const a = Date.parse(u.searchParams.get('from') || ''), b = Date.parse(u.searchParams.get('to') || '');
+          if (!Number.isFinite(a) || !Number.isFinite(b) || b < a || b - a > 36 * 3600000) return sendJson(req, res, 400, { error: 'from und to (ISO, höchstens 36 Stunden)' });
+          const series = {};
+          for (const [k, rows] of Object.entries(state.ich.byKey)) {
+            if (k === PAYERNE.key || k.startsWith('st:')) continue;
+            const r = rows.filter(x => x.t >= a - 30 * 60000 && x.t <= b + 30 * 60000).map(x => [x.t, x.top, x.base ?? null, x.wstar]);
+            if (r.length) series[k] = r;
+          }
+          return sendJson(req, res, 200, { ok: true, run: new Date(state.ich.ref).toISOString(), source: state.ich.source, series });
+        }
         if (!id) {
           // alle Startplätze für eine Stunde (Karte und 3D): ?t=ISO, nächste gerechnete Stunde innerhalb 30 Minuten
           const t = Date.parse(u.searchParams.get('t') || '');
