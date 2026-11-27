@@ -3159,7 +3159,7 @@ function drawSites() {
     // ohne Bewertung (z.B. am Abend) nur ein kleiner grauer Punkt statt einer Kugel mit «–»
     const icon = !b && !s.blocked
       ? L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7], html: '<div class="mk-e"></div>' })
-      : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${!s.blocked && b.score >= 55 ? `<i class="mk-glow" style="--k:${Math.min(1, (b.score - 55) / 35).toFixed(2)};--d:${(-(s.lat * 997 % 2.6)).toFixed(2)}s" aria-hidden="true"></i>` : ''}${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });   // Lichtsäule von oben: je besser, desto heller und grösser der pulsierende Schein
+      : L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17], html: `<div class="mk s-${c}${s.blocked ? ' blocked' : ''}">${!s.blocked ? `<i class="mk-ring" style="--f:${Math.max(4, Math.min(100, b.score))}" aria-hidden="true"></i>` : ''}${s.blocked ? '✕' : b.score}${n > 1 ? `<span class="mk-n">${n}</span>` : ''}</div>` });   // Messring von oben (Stil C): farbiger Bogen wächst mit dem Score
     const at = n > 1 ? M.map.unproject(g.p, z) : [s.lat, s.lon];
     L.marker(at, { icon, title: n > 1 ? `${n} Startplätze, bester ${s.name}: ${b ? b.score : 'keine Bewertung'}` : `${s.name}: ${b ? b.score : 'keine Bewertung'}`, keyboard: true, zIndexOffset: b ? b.score : 0 })
       .on('click', () => (RT.active ? routeClick({ lat: s.lat, lng: s.lon }, s.alt) : n > 1 ? mapSheet('group', g.m.map(x => x.s.id)) : mapSheet('site', s.id))).addTo(M.sites);
@@ -5599,46 +5599,23 @@ function v3dRegionMarkers() {
   // ohne Favoriten: die fünf Besten des Tages gross
   const big = fav.length ? fav : rest.slice().sort((a, b) => (b.days?.[S.day]?.best?.score ?? -1) - (a.days?.[S.day]?.best?.score ?? -1)).slice(0, 5);
   sc.setMarkers([
-    ...big.sort((a, b) => (at(b) ?? -1) - (at(a) ?? -1)).map((o, i) => ({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'top', yield: i > 0, title: o.name + ' in 3D ansehen', html: `<span class="v3d-pin s-${cls(at(o))}">${num(at(o)) ? at(o) : ''}</span><span class="v3d-name">${esc(o.name)}</span>` })),
-    ...rest.filter(o => !big.includes(o)).map(o => ({ id: o.id, lat: o.lat, lon: o.lon, act: 'site3d', cls: 'other', yield: true, title: o.name + ' in 3D ansehen', html: `<span class="v3d-dot s-${cls(at(o))}"></span><span class="v3d-name sm">${esc(o.name)}</span>` }))
+    ...big.sort((a, b) => (at(b) ?? -1) - (at(a) ?? -1)).map((o, i) => ({ id: o.id, lat: o.lat, lon: o.lon, agl: num(at(o)) && !o.blocked ? pilH(sc, at(o)) : 0, act: 'site3d', cls: 'top', yield: i > 0, title: o.name + ' in 3D ansehen', html: `<span class="v3d-pin s-${cls(at(o))}">${num(at(o)) ? at(o) : ''}</span><span class="v3d-name">${esc(o.name)}</span>` })),
+    ...rest.filter(o => !big.includes(o)).map(o => ({ id: o.id, lat: o.lat, lon: o.lon, agl: num(at(o)) && !o.blocked ? pilH(sc, at(o)) : 0, act: 'site3d', cls: 'other', yield: true, title: o.name + ' in 3D ansehen', html: `${num(at(o)) && !o.blocked ? `<span class="v3d-pin sm s-${cls(at(o))}">${at(o)}</span>` : `<span class="v3d-dot s-${cls(at(o))}"></span>`}<span class="v3d-name sm">${esc(o.name)}</span>` }))
   ]);
 }
-/* ---- Score als pulsierende Lichtsäule (Lars 2026-11-26): jeder Startplatz leuchtet so hoch und hell, wie gut sein Score
-   zur gezeigten Stunde ist. Grün sehr gut, gelb prüfen, orange/rot schwach; unter 40 keine Säule. */
+/* ---- Score-Farben für Nadel und Ring: grün sehr gut, gelb prüfen, orange/rot schwach. */
 const PIL_COL = s => (s >= 85 ? [0.25, 1, 0.55] : s >= 80 ? [0.5, 1, 0.35] : s >= 70 ? [1, 0.85, 0.25] : s >= 55 ? [1, 0.55, 0.2] : [1, 0.3, 0.28]);
-function pilOf(sc, o, s) { const k = Math.min(1, Math.max(0, (s - 40) / 50)); return { lat: o.lat, lon: o.lon, h: sc.R * (0.025 + 0.1 * k), color: PIL_COL(s), w: 5 + 10 * k, k }; }
-/** Stil der Score-Anzeige (Vergleich für Lars): 0 Glow, 1 Messskala, 2 Nadel mit Bodenring, 3 LED-Segmente, 4 3D-Balken. */
-let PIL_STY = Number(store.get('pilSty') ?? 0) || 0;
+/** Score als Messnadel mit Bodenring (Lars 2026-11-27, Stil C): der Ring liegt im Gelände, sein farbiger Teil und die
+    Nadel wachsen mit dem Score, die Zahl steht darüber. Klar technisch, damit es nicht wie Thermik aussieht. */
+const pilF = s => Math.min(1, Math.max(0.04, s / 100));
+/** Höhe der Nadel über Grund (m): dort steht die Zahl. */
+const pilH = (sc, s, big = 1) => sc.R * 0.12 * (big > 1 ? 1.2 : 1) * (0.25 + 0.75 * pilF(s));
 function pilSet(sc, items, big = 1) {
-  const sty = PIL_STY, R = sc.R;
-  sc.setLines('pilRing', null); sc.setLines('pilEdge', null); sc.setTris('pilBar', null);
-  if (sty === 0) { sc.setPillars(items.filter(p => p.s >= 40).map(p => { const q = pilOf(sc, p.o, p.s); q.w *= big; q.h *= big > 1 ? 1.25 : 1; return q; })); return; }
-  const H = R * 0.12 * (big > 1 ? 1.2 : 1), f = s => Math.min(1, Math.max(0.04, s / 100));
-  if (sty === 1 || sty === 3) { sc.setPillars(items.map(p => ({ lat: p.o.lat, lon: p.o.lon, h: H, color: PIL_COL(p.s), w: 11 * big, f: f(p.s) })), sty); return; }
-  if (sty === 2) {
-    sc.setPillars(items.map(p => ({ lat: p.o.lat, lon: p.o.lon, h: H * (0.25 + 0.75 * f(p.s)), color: PIL_COL(p.s), w: 13 * big, f: f(p.s) })), 2);
-    const kLo = Math.cos(46.7 * D2R) * 111320, ring = (o, r) => Array.from({ length: 41 }, (_, i) => [o.lat + Math.sin(i / 40 * 2 * Math.PI) * r / 111320, o.lon + Math.cos(i / 40 * 2 * Math.PI) * r / kLo, null]);
-    const col = s => [...PIL_COL(s), 0.95];
-    sc.setLines('pilRing', items.flatMap(p => { const r = R * 0.035 * f(p.s); return [{ pts: ring(p.o, r), color: col(p.s), width: 2.6 * big, agl: 12 }, { pts: ring(p.o, R * 0.035), color: [1, 1, 1, 0.35], width: 1.2 * big, agl: 12, dash: 60 }]; }), { bias: 0.002 });
-    return;
-  }
-  // 4: 3D-Balken wie in einem Diagramm, Kanten weiss
-  const tris = [], edges = [], hw = R * 0.0055;
-  for (const p of items) {
-    const g = sc.ground(p.o.lat, p.o.lon), h = H * f(p.s), c = PIL_COL(p.s), C = sc.toLocal(p.o.lat, p.o.lon, g), T = sc.toLocal(p.o.lat, p.o.lon, g + h), y0 = C[1], y1 = T[1];
-    const cn = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [C[0] + a * hw, C[2] + b * hw]);
-    const shade = [0.62, 0.86, 0.7, 0.95];
-    for (let i = 0; i < 4; i++) {
-      const A = cn[i], B = cn[(i + 1) % 4], k = shade[i], col = [c[0] * k, c[1] * k, c[2] * k, 0.92];
-      tris.push(A[0], y0, A[1], ...col, B[0], y0, B[1], ...col, B[0], y1, B[1], ...col, A[0], y0, A[1], ...col, B[0], y1, B[1], ...col, A[0], y1, A[1], ...col);
-    }
-    const top = [Math.min(1, c[0] * 1.15 + 0.1), Math.min(1, c[1] * 1.15 + 0.1), Math.min(1, c[2] * 1.15 + 0.1), 0.96];
-    tris.push(cn[0][0], y1, cn[0][1], ...top, cn[1][0], y1, cn[1][1], ...top, cn[2][0], y1, cn[2][1], ...top, cn[0][0], y1, cn[0][1], ...top, cn[2][0], y1, cn[2][1], ...top, cn[3][0], y1, cn[3][1], ...top);
-    const geo = (q, alt) => { const [la, lo] = sc.toGeo(q[0], q[1]); return [la, lo, alt]; };
-    edges.push({ pts: [...cn, cn[0]].map(q => geo(q, g + h)), color: [1, 1, 1, 0.9], width: 1.4 * big });
-    for (const q of cn) edges.push({ pts: [geo(q, g), geo(q, g + h)], color: [1, 1, 1, 0.55], width: 1.1 * big });
-  }
-  sc.setPillars(null); sc.setTris('pilBar', tris); sc.setLines('pilEdge', edges, { bias: 0.001 });
+  const R = sc.R, f = pilF;
+  sc.setPillars(items.map(p => ({ lat: p.o.lat, lon: p.o.lon, h: pilH(sc, p.s, big), color: PIL_COL(p.s), w: 13 * big, f: f(p.s) })), 2);
+  const kLo = Math.cos(46.7 * D2R) * 111320, ring = (o, r) => Array.from({ length: 41 }, (_, i) => [o.lat + Math.sin(i / 40 * 2 * Math.PI) * r / 111320, o.lon + Math.cos(i / 40 * 2 * Math.PI) * r / kLo, null]);
+  const col = s => [...PIL_COL(s), 0.95];
+  sc.setLines('pilRing', items.flatMap(p => { const r = R * 0.035 * f(p.s); return [{ pts: ring(p.o, r), color: col(p.s), width: 2.6 * big, agl: 12 }, { pts: ring(p.o, R * 0.035), color: [1, 1, 1, 0.35], width: 1.2 * big, agl: 12, dash: 60 }]; }), { bias: 0.002 });
 }
 function v3dPillars(sites) {
   const sc = V3.scene; if (!sc) return;
