@@ -1628,3 +1628,7 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .ens-h.sel { color: var(--ink); }
 .ens-h.sel i { outline: 2px solid var(--ink); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .ens-dots .ens-d { transition: none; opacity: 1; transform: none; } }
+.ich-ana { stroke: #0e8f8a; stroke-width: 2.5; stroke-linecap: round; }
+.ich-lb-ana { fill: #0e8f8a; }
+.ich-key-ana { border-top: 3px solid #0e8f8a; }
+.ich-ana-note { margin: 4px 0 8px; font-size: 14px; }

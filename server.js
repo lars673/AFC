@@ -44,7 +44,7 @@ import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, too
 import { testProgress, testBreakdown } from './lib/testphase.js';
 import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
-import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, windCompare, SOURCE as ICH_SOURCE } from './lib/iconch.js';
+import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, windCompare, SOURCE as ICH_SOURCE, fetchAnalysis, latestAnalysis, KENDA_SOURCE } from './lib/iconch.js';
 import { fetchSonde, compareProfile, PAYERNE } from './lib/sonde.js';
 import { createSat, SAT_SOURCE } from './lib/sat.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
@@ -142,12 +142,15 @@ CREATE TABLE IF NOT EXISTS reg_obs (time TEXT PRIMARY KEY, odp REAL, obdp REAL, 
 CREATE TABLE IF NOT EXISTS model_fc (area TEXT NOT NULL, target TEXT NOT NULL, lead REAL, ig REAL, eg REAL, iw REAL, ew REAL, PRIMARY KEY(area,target));
 CREATE TABLE IF NOT EXISTS ens_fc (time TEXT PRIMARY KEY, made TEXT, n INTEGER, pbise REAL, pfoehn REAL);
 CREATE TABLE IF NOT EXISTS ich_fc (site_id TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, lead REAL, top REAL, base REAL, lcl REAL, wstar REAL, inv REAL, invdt REAL, shf REAL, snow REAL, PRIMARY KEY(site_id,date,hour));
+CREATE TABLE IF NOT EXISTS ich_ana (site_id TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, top REAL, base REAL, wstar REAL, wind REAL, dir REAL, PRIMARY KEY(site_id,date,hour));
 CREATE TABLE IF NOT EXISTS ich_pay (time TEXT PRIMARY KEY, lead REAL, prof TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sonde (time TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sonde_cmp (time TEXT PRIMARY KEY, lead REAL, mae REAL, bias REAL, inv_s REAL, inv_m REAL, inv_dz REAL);
 CREATE TABLE IF NOT EXISTS ich_pred (code TEXT, target TEXT, lead REAL, wind REAL, gust REAL, dir REAL, PRIMARY KEY(code, target));
 CREATE TABLE IF NOT EXISTS ogn_spot (date TEXT, hour INTEGER, cell TEXT, lat REAL, lon REAL, climb REAL, top REAL, n INTEGER, PRIMARY KEY(date, hour, cell));`);
 if (!dbAll('PRAGMA table_info(site_fc)').some(c => c.name === 'wstar')) db.exec('ALTER TABLE site_fc ADD COLUMN wstar REAL');
+// Prognose vom Morgen (Vorlauf mindestens 6 h) neben der jüngsten: zum Vergleich mit der Analyse
+if (!dbAll('PRAGMA table_info(ich_fc)').some(c => c.name === 'early_top')) db.exec('ALTER TABLE ich_fc ADD COLUMN early_top REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'pilot', created TEXT, last_seen TEXT, profile TEXT NOT NULL DEFAULT '{}', prefs TEXT NOT NULL DEFAULT '{}', photo_at TEXT);
 CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, uid TEXT NOT NULL, created TEXT, expires TEXT NOT NULL, device TEXT);
@@ -229,6 +232,7 @@ const ingest = {
   msfc: { ok: false, at: null, error: null, run: null, points: 0, active: false },
   obstacles: { ok: false, at: null, error: null, count: 0, dataAt: null },
   iconch: { ok: false, at: null, error: null, run: null, places: 0, secs: null },
+  kenda: { ok: false, at: null, error: null, time: null },
   sonde: { ok: false, at: null, error: null, time: null }
 };
 const state = {
@@ -461,14 +465,17 @@ async function collectIconCh(now = Date.now()) {
 }
 /** Für den späteren Vergleich mit Flügen und Ballon: je Startplatz und Stunde die jüngste Prognose festhalten. */
 function storeIconCh(r, now = Date.now()) {
-  const up = db.prepare('INSERT INTO ich_fc(site_id,date,hour,lead,top,base,lcl,wstar,inv,invdt,shf,snow) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET lead=excluded.lead, top=excluded.top, base=excluded.base, lcl=excluded.lcl, wstar=excluded.wstar, inv=excluded.inv, invdt=excluded.invdt, shf=excluded.shf, snow=excluded.snow WHERE excluded.lead<=ich_fc.lead');
+  // Die jüngste Prognose ersetzt die ältere; early_top behält die letzte mit mindestens 6 h Vorlauf (was man am Morgen sah)
+  const nw = c => `${c}=CASE WHEN excluded.lead<=ich_fc.lead THEN excluded.${c} ELSE ich_fc.${c} END`;
+  const up = db.prepare(`INSERT INTO ich_fc(site_id,date,hour,lead,top,base,lcl,wstar,inv,invdt,shf,snow,early_top) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(site_id,date,hour) DO UPDATE SET ${['top', 'base', 'lcl', 'wstar', 'inv', 'invdt', 'shf', 'snow'].map(nw).join(', ')}, early_top=CASE WHEN excluded.lead>=6 AND excluded.lead<=ich_fc.lead THEN excluded.top ELSE ich_fc.early_top END, lead=MIN(excluded.lead, ich_fc.lead)`);
   for (const [id, rows] of Object.entries(r.byKey)) {
     if (id === PAYERNE.key || id.startsWith('st:')) continue;
     for (const x of rows) {
       if (!x || !isNum(x.top)) continue;
       const zp = zurichParts(x.t), lead = Math.max(0, (x.t - now) / 3600000);
       // wie bei site_fc: Thermik endet an der Wolkenbasis
-      up.run(id, zp.date, zp.hour, lead, isNum(x.base) ? Math.min(x.top, x.base) : x.top, x.base, x.lcl, x.wstar, x.inv, x.invDt, x.shf, x.snow);
+      const top = isNum(x.base) ? Math.min(x.top, x.base) : x.top;
+      up.run(id, zp.date, zp.hour, lead, top, x.base, x.lcl, x.wstar, x.inv, x.invDt, x.shf, x.snow, lead >= 6 ? top : null);
     }
   }
   // Bodenwind an den Messstationen: wie bei fc_pred bleibt je Stunde die Prognose mit Vorlauf am nächsten bei 3 h
@@ -485,6 +492,26 @@ function storeIconCh(r, now = Date.now()) {
     if (lead < 3) continue;
     dbRun('INSERT INTO ich_pay(time,lead,prof) VALUES(?,?,?) ON CONFLICT(time) DO UPDATE SET lead=excluded.lead, prof=excluded.prof WHERE excluded.lead<ich_pay.lead', [d.toISOString(), lead, JSON.stringify(pr)]);
   }
+}
+/* Analyse KENDA-CH1: stündlich, rund 2 bis 3 Stunden nach der Zeit. So war die Thermik wirklich (Modell mit allen Messungen). */
+async function collectKenda(now = Date.now()) {
+  const h = zurichParts(now).hour;
+  if (h < 8 || h > 23) return;
+  try {
+    const ref = await latestAnalysis(now);
+    if (!ref || (state.kendaAt && ref <= state.kendaAt)) return;
+    const zp = zurichParts(ref);
+    if (zp.hour < 7 || zp.hour > 20) { state.kendaAt = ref; return; }
+    const grid = await ichLoadGrid();
+    const a = await fetchAnalysis(grid, ICH_SITES.filter(p => grid.byKey[p.key]), { ref });
+    const up = db.prepare('INSERT OR REPLACE INTO ich_ana(site_id,date,hour,top,base,wstar,wind,dir) VALUES(?,?,?,?,?,?,?,?)');
+    for (const [id, x] of Object.entries(a.byKey)) {
+      if (id === PAYERNE.key) continue;
+      up.run(id, zp.date, zp.hour, isNum(x.top) ? (isNum(x.base) ? Math.min(x.top, x.base) : x.top) : null, x.base, x.wstar, x.wl?.wind ?? null, x.wl?.dir ?? null);
+    }
+    state.kendaAt = ref;
+    ingest.kenda = { ok: true, at: nowIso(), error: null, time: new Date(ref).toISOString() };
+  } catch (e) { ingest.kenda = { ...ingest.kenda, ok: false, at: nowIso(), error: errMsg(e) }; }
 }
 async function collectSonde() {
   try {
@@ -537,7 +564,7 @@ function iconchStatus() {
     const wr = dbAll('SELECT i.wind iw, i.gust ig, i.dir idr, p.wind pw, p.gust pg, p.dir pd, o.wind ow, o.gust og, o.dir od FROM ich_pred i JOIN fc_pred p ON p.code=i.code AND p.target=i.target JOIN observations o ON o.code=i.code AND o.time=i.target WHERE i.target>=? AND o.wind IS NOT NULL', [since]);
     wind = windCompare(wr);
   } catch { /* noch keine Daten */ }
-  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, ognSpots: ogn, wind, sat: satInst ? satInst.status() : null, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
+  return { on: ICH_ON, source: ICH_SOURCE, ingest: ingest.iconch, kenda: ingest.kenda, ognSpots: ogn, wind, sat: satInst ? satInst.status() : null, sonde: { ...ingest.sonde, n: rows.length, mae: avg('mae'), bias: rows.length ? Math.round(rows.reduce((a, r) => a + r.bias, 0) / rows.length * 100) / 100 : null, invN: invRows.length, invDz: invRows.length ? Math.round(invRows.reduce((a, r) => a + Math.abs(r.inv_dz), 0) / invRows.length) : null, last: rows[0] || null }, flights };
 }
 
 /* ------------------------------------------------------------------ MyAFC */
@@ -1720,7 +1747,9 @@ const server = http.createServer(async (req, res) => {
         }
         const rows = state.ich.byKey[id];
         if (!rows) return sendJson(req, res, 404, { error: 'kein Startplatz mit dieser Kennung' });
-        return sendJson(req, res, 200, { ok: true, site: id, run: new Date(state.ich.ref).toISOString(), source: state.ich.source, hours: rows, profiles: state.ich.profiles[id] || [] });
+        // Analyse von heute (KENDA-CH1) mit der Prognose vom Morgen und der jüngsten für dieselbe Stunde
+        const ana = dbAll('SELECT a.hour, a.top, a.base, a.wstar, a.wind, a.dir, f.top AS ftop, f.early_top AS etop FROM ich_ana a LEFT JOIN ich_fc f ON f.site_id=a.site_id AND f.date=a.date AND f.hour=a.hour WHERE a.site_id=? AND a.date=? ORDER BY a.hour', [id, zurichParts(Date.now()).date]);
+        return sendJson(req, res, 200, { ok: true, site: id, run: new Date(state.ich.ref).toISOString(), source: state.ich.source, hours: rows, profiles: state.ich.profiles[id] || [], ana, anaSource: KENDA_SOURCE });
       }
       if (req.method === 'GET' && p === '/api/wn') {
         // Wind im Gelände (WindNinja, im Voraus gerechnet): Ausschnitt der 3D-Szene als Binärdaten
@@ -2312,6 +2341,7 @@ async function maintenance() {
     dbRun('DELETE FROM usage_ev WHERE day<?', [new Date(Date.now() - USAGE_KEEP_DAYS * 86400000).toISOString().slice(0, 10)]);
     dbRun('DELETE FROM site_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     dbRun('DELETE FROM ich_fc WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
+    dbRun('DELETE FROM ich_ana WHERE date<?', [new Date(Date.now() - 800 * 86400000).toISOString().slice(0, 10)]);
     for (const f of await fs.readdir(dataDir)) if (f.startsWith('tmp-sicherung-')) await fs.rm(path.join(dataDir, f), { recursive: true, force: true });
     const name = `afc-${nowIso().replace(/[:.]/g, '-')}.sqlite`;
     await backup(db, path.join(backupsDir, name));
@@ -2345,7 +2375,7 @@ async function start() {
   timers.push(setInterval(() => tick('obs', collectObservations), OBS_EVERY_MS));
   timers.push(setInterval(() => planTick(), 5 * 60000));   // Prognose, Windraster, Varianten: nach Tagesplan
   if (OGN_URL() && process.env.AFC_OGN_COLLECT !== '0') timers.push(setInterval(() => tick('ognspot', () => collectOgnSpots()), 60000));
-  if (ICH_ON) { setTimeout(() => tick('ich', () => collectIconCh()), 90000).unref(); timers.push(setInterval(() => tick('ich', () => collectIconCh()), 20 * 60000)); timers.push(setInterval(() => tick('sonde', collectSonde), 30 * 60000)); setTimeout(() => tick('sonde', collectSonde), 120000).unref(); }
+  if (ICH_ON) { setTimeout(() => tick('ich', () => collectIconCh()), 90000).unref(); timers.push(setInterval(() => tick('ich', () => collectIconCh()), 20 * 60000)); timers.push(setInterval(() => tick('sonde', collectSonde), 30 * 60000)); timers.push(setInterval(() => tick('kenda', () => collectKenda()), 15 * 60000)); setTimeout(() => tick('kenda', () => collectKenda()), 150000).unref(); setTimeout(() => tick('sonde', collectSonde), 120000).unref(); }
   timers.push(setInterval(maintenance, 24 * 3600000));
   timers.push(setInterval(() => tick('air', collectAirspace), 24 * 3600000));
   timers.push(setInterval(() => tick('obst', collectObstacles), 3 * 3600000));   // prüft alle 3 h, lädt höchstens alle 20 h neu

@@ -3171,7 +3171,7 @@ function ichSum(x, alt) {
   return `bis ${Math.round(top / 50) * 50} m (${top - alt >= 0 ? '+' : ''}${Math.round((top - alt) / 50) * 50}), Steigen ca. ${x.wstar.toFixed(1)} m/s`;
 }
 /** Säule als Bild: Höhe nach oben, warme Säule bis zur Obergrenze, Wolke an der Basis, Sperrschicht gestrichelt. */
-function ichSvg(x, pr, alt, oldTop) {
+function ichSvg(x, pr, alt, oldTop, anaTop = null) {
   const W = 320, H = 230, L = 46, R = 12, T = 10, B = 22;
   const top = x.base ? Math.min(x.top, x.base) : x.top;
   const zMin = Math.max(0, Math.floor((Math.min(alt, x.zs ?? alt, top) - 500) / 500) * 500);
@@ -3191,12 +3191,30 @@ function ichSvg(x, pr, alt, oldTop) {
     ${x.base && x.base <= zMax ? `<g class="ich-cloud" transform="translate(${L + 92},${Y(x.base) - 17})"><path d="M10 16h46a9 9 0 0 0-2-17.8A13 13 0 0 0 29 0a11 11 0 0 0-20 5A8 8 0 0 0 10 16z"/></g>` : ''}
     ${x.inv ? `<line x1="${L}" x2="${W - R}" y1="${Y(x.inv)}" y2="${Y(x.inv)}" class="ich-inv"/>` : ''}
     ${oldTop && oldTop >= zMin && oldTop <= zMax ? `<line x1="${L}" x2="${L + 24}" y1="${Y(oldTop)}" y2="${Y(oldTop)}" class="ich-old"/><text x="${L + 30}" y="${Y(oldTop) + 4}" class="ich-lb ich-lb-old">bisher</text>` : ''}
+    ${num(anaTop) && anaTop >= zMin && anaTop <= zMax ? `<line x1="${W - R - 70}" x2="${W - R}" y1="${Y(anaTop)}" y2="${Y(anaTop)}" class="ich-ana"/><text x="${W - R - 74}" y="${Y(anaTop) + 4}" class="ich-lb ich-lb-ana" text-anchor="end">so war es</text>` : ''}
     <polyline points="${line(2)}" class="ich-td"/><polyline points="${line(1)}" class="ich-t"/>
     ${x.base && x.base <= zMax ? `<text x="${L + 8}" y="${Y(x.base) - 4}" class="ich-lb">Basis ${Math.round(x.base / 50) * 50} m</text>` : ''}
     ${x.inv ? `<text x="${W - R - 2}" y="${Y(x.inv) - 4}" class="ich-lb" text-anchor="end">Sperrschicht${x.invDt ? ' +' + x.invDt.toFixed(1) + '°' : ''}</text>` : ''}
     <line x1="${L}" x2="${W - R}" y1="${Y(alt)}" y2="${Y(alt)}" class="ich-alt"/><text x="${L + 8}" y="${Y(alt) + 14}" class="ich-lb ich-lb-alt">Start ${alt} m</text>
     ${thermal ? `<text x="${W - R - 8}" y="${colBot - colTop >= 22 && Math.abs(colTop + 14 - Y(alt)) > 10 ? colTop + 14 : colBot + 14}" class="ich-lb ich-lb-top" text-anchor="end">Thermik bis ${Math.round(top / 50) * 50} m</text>` : ''}
   </svg>`;
+}
+/* Analyse (KENDA-CH1): wie hoch die Thermik heute wirklich ging, gegen die Prognose vom Morgen. Nur für heute. */
+function anaNote(rows, hour, date, alt) {
+  if (!rows?.length || date !== zDay(Date.now())) return null;
+  // ohne Steigen (w* klein) ist «top» nur der Modellboden: dann keine Thermik und kein Vergleich
+  const r50 = v => Math.round(v / 50) * 50, ok = r => r.wstar > 0.2 && num(r.top) && r.top > alt + 50;
+  const cmp = r => (r.wstar > 0.2 && num(r.etop) && num(r.top) ? r.top - r.etop : null);
+  const say = d => (Math.abs(d) < 150 ? 'wie am Morgen vorhergesagt' : `${r50(Math.abs(d))} m ${d > 0 ? 'höher' : 'tiefer'} als am Morgen vorhergesagt`);
+  const here = rows.find(r => r.hour === hour);
+  if (here) {
+    const d = cmp(here);
+    return { here, html: `<b>So war es um ${hour} Uhr</b> (Analyse mit allen Messungen): ${ok(here) ? `Thermik bis ${r50(here.top)} m` : 'keine Thermik über dem Start'}${d != null ? `, ${say(d)}` : ''}.` };
+  }
+  const last = [...rows].reverse().find(r => r.hour < hour && cmp(r) != null);
+  if (!last) return null;
+  const d = cmp(last);
+  return { here: null, html: `<b>Heute bisher:</b> um ${last.hour} Uhr ging die Thermik ${say(d)}${Math.abs(d) >= 150 ? '. Für später eher ' + (d > 0 ? 'etwas mehr' : 'etwas weniger') + ' erwarten' : ''} (Analyse von MeteoSchweiz mit allen Messungen).` };
 }
 async function fillIch(s, date, hour, hr) {
   const el = $('#ichNear'), sum = t => { const e = $('#ichSum'); if (e) e.textContent = t; };
@@ -3205,9 +3223,17 @@ async function fillIch(s, date, hour, hr) {
     const j = await ichData(s.id);
     if ($('#ichNear') !== el) return;
     const i = j.hours.findIndex(x => zDay(x.t) === date && zHour(x.t) === hour);
+    const past = i < 0 ? anaNote(j.ana, hour, date, s.alt) : null;
+    if (past?.here) {
+      const a = past.here;
+      sum(a.wstar > 0.2 && num(a.top) && a.top > s.alt + 50 ? `so war es: bis ${Math.round(a.top / 50) * 50} m` : 'so war es: keine Thermik über dem Start');
+      el.innerHTML = `<p class="ich-ana-note"><span class="ich-key ich-key-ana"></span>${past.html}</p><div class="kv">${num(a.wind) ? `<div class="ich-wind"><b>${Math.round(a.wind)} km/h ${arrow(a.dir)}</b><span>Wind auf Starthöhe ${dirLabel(a.dir)} (Analyse)</span></div>` : ''}${a.wstar > 0.2 ? `<div><b>${a.wstar.toFixed(1)} m/s</b><span>Steigen in der Thermik (Mittel, Analyse)</span></div>` : ''}${num(a.base) ? `<div><b>${Math.round(a.base / 50) * 50} m</b><span>Wolkenbasis (Analyse)</span></div>` : ''}</div><p class="fine" style="margin:4px 0 0">Quelle: MeteoSchweiz, Analyse KENDA-CH1 (1 km): das Modell mit allen Messungen von Stationen, Ballonen, Flugzeugen, Radar und Satellit zusammengeführt.</p>`;
+      return;
+    }
     if (i < 0) { sum('für diese Stunde noch nicht gerechnet'); el.innerHTML = '<p class="fine" style="margin:0">MeteoSchweiz rechnet dieses Modell 33 Stunden voraus, von 7 bis 20 Uhr. Für diese Stunde gibt es noch keine Säule.</p>'; return; }
     const x = j.hours[i], pr = j.profiles[i], alt = s.alt, top = x.base ? Math.min(x.top, x.base) : x.top;
     sum(ichSum(x, alt));
+    const ana = anaNote(j.ana, hour, date, alt);
     const facts = [
       x.wstar > 0.2 && top > alt + 50 ? `<div><b>${Math.round(top / 50) * 50} m</b><span>Thermik bis (${top - alt >= 0 ? '+' : ''}${Math.round((top - alt) / 50) * 50} m über Start)</span></div>` : `<div><b>–</b><span>${x.shf != null && x.shf <= 15 ? 'Der Boden heizt kaum (' + (x.snow >= 50 ? 'Schnee' : 'zu wenig Sonne') + ')' : 'Keine Thermik über dem Start'}</span></div>`,
       `<div><b>${x.wstar ? x.wstar.toFixed(1) : '0'} m/s</b><span>${x.wstar > 0.2 && top <= alt + 50 ? 'Steigen unter dem Start (Mittel)' : 'Steigen in der Thermik (Mittel)'}</span></div>`,
@@ -3217,7 +3243,7 @@ async function fillIch(s, date, hour, hr) {
       x.wl ? `<div class="ich-wind"><b>${Math.round(x.wl.wind)} km/h ${arrow(x.wl.dir)}</b><span>Wind auf Starthöhe ${dirLabel(x.wl.dir)}${x.w2000 ? ` · 2000 m: ${Math.round(x.w2000.wind)} ${dirLabel(x.w2000.dir)}` : ''}${x.w3000 ? ` · 3000 m: ${Math.round(x.w3000.wind)} ${dirLabel(x.w3000.dir)}` : ''}</span></div>` : ''
     ].join('');
     const old = hr?.thermalTop != null ? `<p class="fine ich-cmp"><span class="ich-key ich-key-old"></span>Bisherige Rechnung: Thermik bis ${Math.round(hr.thermalTop / 50) * 50} m. Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>` : '<p class="fine ich-cmp">Die Säule ist neu und wird jetzt an Flügen und am Wetterballon Payerne geprüft; der Score rechnet noch wie bisher.</p>';
-    el.innerHTML = `${ichSvg(x, pr, alt, hr?.thermalTop)}<p class="fine ich-legend"><span class="ich-key ich-key-t"></span>Temperatur <span class="ich-key ich-key-td"></span>Taupunkt <span class="ich-key ich-key-col"></span>Thermik</p><div class="kv">${facts}</div>${old}<p class="fine" style="margin:4px 0 0">Quelle: MeteoSchweiz, Modell ICON-CH1 (1 km), Lauf ${new Date(j.run).toLocaleString('de-CH', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric', timeZone: 'Europe/Zurich' })} Uhr.</p>`;
+    el.innerHTML = `${ichSvg(x, pr, alt, hr?.thermalTop, ana?.here?.top)}${ana ? `<p class="ich-ana-note"><span class="ich-key ich-key-ana"></span>${ana.html}</p>` : ''}<p class="fine ich-legend"><span class="ich-key ich-key-t"></span>Temperatur <span class="ich-key ich-key-td"></span>Taupunkt <span class="ich-key ich-key-col"></span>Thermik</p><div class="kv">${facts}</div>${old}<p class="fine" style="margin:4px 0 0">Quelle: MeteoSchweiz, Modell ICON-CH1 (1 km), Lauf ${new Date(j.run).toLocaleString('de-CH', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric', timeZone: 'Europe/Zurich' })} Uhr.</p>`;
     requestAnimationFrame(() => el.querySelector('.ich-col')?.classList.add('in'));
   } catch (e) { sum('nicht verfügbar'); el.innerHTML = `<p class="fine" style="margin:0">Thermiksäule nicht verfügbar (${esc(errTxt(e))}).</p>`; }
 }
