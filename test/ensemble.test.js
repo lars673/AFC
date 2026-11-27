@@ -81,3 +81,15 @@ test('Varianten mit starken Böen kosten Punkte, auch wenn die Hauptprognose ruh
   assert.equal(dayConfidence({ lead: 1, ens: { wind: [3], rain: [0], n: 21 } }).level, 'gut');
   assert.ok(LEVELS.normal.gustHard > 20);
 });
+
+test('Geländemodell ändert den Score nicht, gibt im Lee nur einen Hinweis', () => {
+  const now = Date.UTC(2026, 5, 19, 18);
+  const base = new PlanModel({ now, raw: raw(), sites: SITES, obs: {}, stationMeta: {} });
+  const lee = new PlanModel({ now, raw: raw(), sites: SITES, obs: {}, stationMeta: {}, wn: () => ({ f: 0.3, ref: 1, rel: 0.3, dev: 0 }) });
+  const i = hourOf(base, 11);
+  const a = base.compute('normal').get('niederhorn-1').hours[i], b = lee.compute('normal').get('niederhorn-1').hours[i];
+  assert.equal(b.a.score, a.a.score);
+  assert.equal(b.w.speed, a.w.speed); assert.equal(b.w.dir, a.w.dir); assert.equal(b.w.gust, a.w.gust);
+  assert.ok(b.a.reasons.some(r => /Geländemodell/.test(r)), b.a.reasons.join(' | '));
+  assert.ok(!a.a.reasons.some(r => /Geländemodell/.test(r)));
+});
