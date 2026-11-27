@@ -1632,3 +1632,12 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .ich-lb-ana { fill: #0e8f8a; }
 .ich-key-ana { border-top: 3px solid #0e8f8a; }
 .ich-ana-note { margin: 4px 0 8px; font-size: 14px; }
+/* Satellitenfilm: Knopf im Wolken-Hinweis der Karte und in 3D */
+.sat-chip { display: flex; align-items: center; gap: 8px; padding: 3px 10px 3px 3px; }
+.sat-chip .film-btn, .v3d-sat .film-btn { width: 30px; height: 30px; background: #6cc3e2; color: #06222e; }
+.sat-chip .film-btn svg, .v3d-sat .film-btn svg { width: 14px; height: 14px; }
+.sat-chip .film-btn[hidden] { display: none; }
+.sat-chip .sat-txt, .v3d-sat span { font-variant-numeric: tabular-nums; }
+.v3d-sat { padding: 4px 10px 4px 4px; }
+.sat-chip[hidden] { display: none; }
+.v3d-sat .film-btn { pointer-events: auto; }

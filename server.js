@@ -1069,7 +1069,8 @@ async function mediaRoute(req, res, p, u) {
     if (p === '/api/sat') {
       // Satellit «Wolken jetzt» (EUMETSAT): Zeiten des letzten Tageslichtbilds und der passenden Wolkenmaske
       const si = await SAT().info();
-      return sendJson(req, res, 200, { ok: true, vis: new Date(si.vis).toISOString(), clm: new Date(si.clm).toISOString(), day: si.day, source: SAT_SOURCE });
+      const iso = t => new Date(t).toISOString();
+      return sendJson(req, res, 200, { ok: true, vis: iso(si.vis), clm: iso(si.clm), day: si.day, frames: (si.frames || []).map(f => ({ vis: iso(f.vis), clm: iso(f.clm) })), source: SAT_SOURCE });
     }
     const sm = p.match(/^\/api\/sat\/(vis|clm|snow)\/(\d{12})\.png$/);
     if (sm) {
