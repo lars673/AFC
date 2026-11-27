@@ -44,7 +44,7 @@ import { askMyAfc, myafcError, findSite, toolOverview, toolSite, toolRegion, too
 import { testProgress, testBreakdown } from './lib/testphase.js';
 import { cleanUsage, usageSummary, USAGE_KEEP_DAYS } from './lib/usage.js';
 import { fetchMsForecast, patchSeries } from './lib/msfc.js';
-import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, windCompare, SOURCE as ICH_SOURCE, fetchAnalysis, latestAnalysis, KENDA_SOURCE } from './lib/iconch.js';
+import { fetchGrid as ichGrid, fetchThermals as ichThermals, compareTops, windCompare, SOURCE as ICH_SOURCE, fetchAnalysis, fetchAnalysisClouds, latestAnalysis, KENDA_SOURCE } from './lib/iconch.js';
 import { fetchSonde, compareProfile, PAYERNE } from './lib/sonde.js';
 import { createSat, SAT_SOURCE } from './lib/sat.js';
 import { applyPendingImport, umzugCodeOk, UMZUG_FILE, UMZUG_MAX } from './lib/umzug.js';
@@ -511,6 +511,8 @@ async function collectKenda(now = Date.now()) {
       if (id === PAYERNE.key) continue;
       up.run(id, zp.date, zp.hour, isNum(x.top) ? (isNum(x.base) ? Math.min(x.top, x.base) : x.top) : null, x.base, x.wstar, x.wl?.wind ?? null, x.wl?.dir ?? null);
     }
+    // Wolkenschicht der Analyse: Höhe der Satellitenwolken in 3D
+    try { state.kendaCloud = await fetchAnalysisClouds(grid, { ref }); fs.writeFile(path.join(dataDir, 'kenda-cloud.json'), JSON.stringify(state.kendaCloud)).catch(() => {}); } catch { /* ohne: Höhe aus der Prognose */ }
     state.kendaAt = ref;
     ingest.kenda = { ok: true, at: nowIso(), error: null, time: new Date(ref).toISOString() };
   } catch (e) { ingest.kenda = { ...ingest.kenda, ok: false, at: nowIso(), error: errMsg(e) }; }
@@ -1069,7 +1071,7 @@ async function mediaRoute(req, res, p, u) {
       const si = await SAT().info();
       return sendJson(req, res, 200, { ok: true, vis: new Date(si.vis).toISOString(), clm: new Date(si.clm).toISOString(), day: si.day, source: SAT_SOURCE });
     }
-    const sm = p.match(/^\/api\/sat\/(vis|clm)\/(\d{12})\.png$/);
+    const sm = p.match(/^\/api\/sat\/(vis|clm|snow)\/(\d{12})\.png$/);
     if (sm) {
       const s = sm[2], t = Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8), +s.slice(8, 10), +s.slice(10, 12));
       if (!(t > Date.now() - 3 * 86400000 && t < Date.now() + 3600000) || t % (5 * 60000)) return sendJson(req, res, 400, { error: 'Zeit ungültig' });
@@ -1734,9 +1736,12 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/wolken3d') {
         // Unterste Wolkenschicht je km aus ICON-CH1 für die 3D-Ansicht: Basis, Obergrenze (m ü. M.), Bedeckung (%)
         const c = state.ich?.cloud3, t = Date.parse(u.searchParams.get('t') || '');
-        if (!c?.t?.length) return sendJson(req, res, 202, { warming: true });
         if (!Number.isFinite(t)) return sendJson(req, res, 400, { error: 't=Zeit (ISO) fehlt' });
-        const i = c.t.findIndex(x => Math.abs(x - t) <= 30 * 60000);
+        const i = c?.t ? c.t.findIndex(x => Math.abs(x - t) <= 30 * 60000) : -1;
+        // vorbei und nicht mehr im Lauf: die Analyse derselben Zeit (z. B. für das Satellitenbild)
+        const kc = state.kendaCloud;
+        if (i < 0 && kc && Math.abs(kc.t - t) <= 90 * 60000) return sendJson(req, res, 200, { ok: true, t: new Date(kc.t).toISOString(), grid: kc.grid, base: kc.base, top: kc.top, cov: kc.cov, source: KENDA_SOURCE });
+        if (!c?.t?.length) return sendJson(req, res, 202, { warming: true });
         if (i < 0) return sendJson(req, res, 404, { error: 'für diese Stunde keine Wolken aus ICON-CH1' });
         return sendJson(req, res, 200, { ok: true, t: new Date(c.t[i]).toISOString(), run: new Date(state.ich.ref).toISOString(), grid: c.grid, base: c.base[i], top: c.top[i], cov: c.cov[i], source: state.ich.source });
       }
@@ -2366,6 +2371,7 @@ async function maintenance() {
 const timers = [];
 async function start() {
   await loadSnapshot();
+  try { if (ICH_ON) state.kendaCloud = JSON.parse(await fs.readFile(path.join(dataDir, 'kenda-cloud.json'), 'utf8')); } catch { /* noch keine */ }
   try { if (ICH_ON) { state.ich = JSON.parse(await fs.readFile(ICH_FILE(), 'utf8')); ingest.iconch = { ok: true, at: new Date(state.ich.at).toISOString(), error: null, run: new Date(state.ich.ref).toISOString(), places: Object.keys(state.ich.byKey).length, secs: null }; } } catch { /* noch keine */ }
   state.obs = latestObs();
   if (Object.keys(state.obs).length) state.regional = regionalFromObs(state.obs, {});

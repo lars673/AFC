@@ -2867,11 +2867,18 @@ async function satClouds(force) {
   if (!r.ok) throw new Error(j.error || 'Satellit nicht verfügbar');
   const key = j.vis + j.clm;
   if (key !== SAT.key) {
-    const g = await thermalGrid(), [vis, clm] = await Promise.all([loadImg(`/api/sat/vis/${satStamp(j.vis)}.png`), loadImg(`/api/sat/clm/${satStamp(j.clm)}.png`)]);
+    // Wolke oder Schnee: zuerst das «Snow RGB» (Schnee rot, Wolken weiss bis hellblau, 1 km), sonst die Wolkenmaske (3 km)
+    const g = await thermalGrid(), [vis, snow, clm] = await Promise.all([loadImg(`/api/sat/vis/${satStamp(j.vis)}.png`), loadImg(`/api/sat/snow/${satStamp(j.vis)}.png`).catch(() => null), loadImg(`/api/sat/clm/${satStamp(j.clm)}.png`).catch(() => null)]);
+    if (!snow && !clm) throw new Error('Wolkenmaske nicht verfügbar');
     const w = g.nx * 2, h = g.ny * 2, cv = document.createElement('canvas'); cv.width = w; cv.height = h;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(clm, 0, 0, w, h); const m = ctx.getImageData(0, 0, w, h).data;      // Maske weich hochgerechnet: weiss = Wolke, grün = klar
+    ctx.drawImage(snow || clm, 0, 0, w, h); const m = ctx.getImageData(0, 0, w, h).data;
+    if (snow) for (let i = 0; i < m.length; i += 4) {
+      // Blau hoch und mindestens so stark wie Rot: Wolke; Schnee ist rot-orange, Wald und Wiese grün-braun (Blau tief)
+      const r = m[i], b = m[i + 2], k = Math.max(0, Math.min(1, (b - 175) / 60)) * Math.max(0, Math.min(1, (b - r + 25) / 40));
+      m[i] = Math.round(40 + 180 * k);   // gleiche Skala wie die Maske: Rot 40 = klar, 220 = Wolke
+    }
     ctx.clearRect(0, 0, w, h); ctx.drawImage(vis, 0, 0, w, h);
     const im = ctx.getImageData(0, 0, w, h), px = im.data;
     // Helligkeit strecken: bei tiefer Sonne (Winter, Abend) ist das ganze Bild dunkel; Mass = helle Wolken im Ausschnitt
@@ -5249,7 +5256,7 @@ const V3_LAYERS = {
   thermal: ['Thermik', 'Thermik: Schätzung aus Sonne auf dem Hang, Thermikhöhe und Geländeform. Schläuche: die stärksten Stellen, vom Wind geneigt, bis zur Obergrenze oder (weisser Ring) zur Wolkenbasis.'],
   soar: ['Soaring', 'Soaring: wo der Wind frontal auf einen steilen Hang trifft.'],
   lee: ['Lee', 'Lee: absinkende Luft und Rotoren hinter höheren Kreten, gegen den Wind gesehen.'],
-  sat: ['Satellit', 'Satellit: echte Wolken vom letzten Bild bei Tag (EUMETSAT, alle 10 Minuten, 500 m), Schnee ausgeblendet. Gilt für jetzt, nicht für die gewählte Stunde.']
+  sat: ['Satellit', 'Satellit: echte Wolken vom letzten Bild bei Tag (EUMETSAT, alle 10 Minuten, 500 m), Schnee ausgeblendet. Die Wolken schweben auf ihrer Höhe (MeteoSchweiz, Analyse KENDA-CH1 oder ICON-CH1) und werfen Schatten mit dem Sonnenstand der Aufnahme. Gilt für jetzt, nicht für die gewählte Stunde.']
 };
 const PLAY_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i-play" d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l11-6.8a.8.8 0 0 0 0-1.4l-11-6.8A.8.8 0 0 0 8 5.2z"/><path class="i-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
 const GLIDER_SVG = '<svg class="v3d-gl" viewBox="0 0 40 34" width="40" height="34" aria-hidden="true"><path d="M3 12C8 3 32 3 37 12c-5-3.5-29-3.5-34 0z" fill="#ff5a36" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 12l14 15M35 12L21 27M14 9.6l5.4 17M26 9.6l-5.4 17" stroke="#fff" stroke-width="1" fill="none" opacity=".9"/><circle cx="20" cy="28.5" r="3.6" fill="#101c15" stroke="#fff" stroke-width="1.6"/></svg>';
@@ -5354,6 +5361,31 @@ function cloudsIch(c3, d, lat, lon) {
   }
   const lv = d ? windLevels(d, lat, lon) : [];
   return { cover: { grid: c3.grid, v: cov }, base, thick, fog, wind: lv[1] || lv[0] || [0, 0], ich: true };
+}
+/* Wolken jetzt in 3D: Bedeckung aus dem Satellitenbild (EUMETSAT, alle 10 min), Höhe und Dicke aus ICON-CH1, wo es dort
+   Wolken hat, sonst aus der Wolkenbasis im Bild. So schweben die echten Wolken über dem Gelände und werfen Schatten. */
+function cloudsSat(sat, c3, d, lat, lon) {
+  const g = T.grid;
+  if (!g || !sat?.cv) return null;
+  if (!sat.alpha || sat.alphaKey !== sat.key) {
+    const cv = sat.cv; sat.alpha = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cv.width, cv.height).data; sat.alphaKey = sat.key; sat.aw = cv.width; sat.ah = cv.height;
+  }
+  const G = c3?.grid || { la0: g.la0, lo0: g.lo0, dla: g.dla * 4, dlo: g.dlo * 4, nx: Math.floor((g.nx - 1) / 4) + 1, ny: Math.floor((g.ny - 1) / 4) + 1 };
+  const n = G.nx * G.ny, cov = new Array(n), base = new Array(n), thick = new Array(n);
+  const W = g.lo0 - g.dlo / 2, N = g.la0 + (g.ny - 0.5) * g.dla, sx = sat.aw / (g.nx * g.dlo), sy = sat.ah / (g.ny * g.dla);
+  const bases = c3 ? c3.base.filter(num).sort((a, b) => a - b) : [];
+  const b0 = bases.length ? bases[bases.length >> 1] : 2000;
+  for (let y = 0; y < G.ny; y++) for (let x = 0; x < G.nx; x++) {
+    const k = y * G.nx + x, la = G.la0 + y * G.dla, lo = G.lo0 + x * G.dlo;
+    const cx = Math.round((lo - W) * sx), cy = Math.round((N - la) * sy), r = Math.max(1, Math.round(G.dlo * sx / 2));
+    let a = 0, m = 0;
+    for (let yy = cy - r; yy <= cy + r; yy++) for (let xx = cx - r; xx <= cx + r; xx++) if (xx >= 0 && yy >= 0 && xx < sat.aw && yy < sat.ah) { a += sat.alpha[(yy * sat.aw + xx) * 4 + 3]; m++; }
+    cov[k] = m ? Math.min(100, a / m / 235 * 100) : 0;
+    const ib = c3 && num(c3.base[k]);
+    base[k] = ib ? c3.base[k] : b0; thick[k] = ib ? Math.max(120, c3.top[k] - c3.base[k]) : 300;
+  }
+  const lv = d ? windLevels(d, lat, lon) : [];
+  return { cover: { grid: G, v: cov }, base, thick, fog: null, wind: lv[1] || lv[0] || [0, 0] };
 }
 function v3dScene(g, area) {
   const sc = V3.scene = new AFC3D.Scene($('#v3dStage'), g, { mesh: innerWidth >= 700 ? 513 : 301,   // Handy: bewährte Netzgrösse, bis es auf dem iPhone geprüft ist
@@ -5494,7 +5526,7 @@ function v3dSiteHud(err = '') {
   el.innerHTML = `<div class="v3d-box">${num(score) ? `<span class="mini-pill s-${cls(score)}">${score}</span>` : ''}${hr ? `<span>Wind <b>${hr.speed ?? '–'}</b> km/h ${arrow(hr.dir)} ${dirLabel(hr.dir)}${num(hr.gust) ? ` · Böen <b>${hr.gust}</b>` : ''}</span>` : `<span>${V3.hour} Uhr</span>`}</div>${err ? `<div class="v3d-box warn" role="status">${esc(err)}</div>` : ''}`;
   const cab = V3.cables && V3.obstN != null ? (V3.obstN ? `${V3.obstN} Kabel und Seilbahnen im Ausschnitt (BAZL, nur meldepflichtige). ` : 'Keine erfassten Kabel im Ausschnitt (BAZL, nur meldepflichtige). ') : '';
   const cw = V3.clouds ? V3.scene?.clouds : null;
-  const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}${V3.c3 ? 'Wolken aus MeteoSchweiz ICON-CH1: Basis, Dicke und Menge je Kilometer, die einzelnen Wolken sind angedeutet. ' : 'Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. '}` : '';
+  const cld = cw ? `${cw.fog != null ? `Nebelmeer bis etwa ${Math.round(cw.fog / 50) * 50} m. ` : ''}${cw.deck ? `Wolkenbasis etwa ${Math.round(cw.base / 50) * 50} m. ` : ''}${V3.satC ? '' : V3.c3 ? 'Wolken aus MeteoSchweiz ICON-CH1: Basis, Dicke und Menge je Kilometer, die einzelnen Wolken sind angedeutet. ' : 'Höhe und Menge aus der Prognose, die einzelnen Wolken sind nur angedeutet. '}` : '';
   $('#v3dNote').textContent = `${V3.layer ? V3_LAYERS[V3.layer][1] + ' ' : ''}${V3.wind ? (V3.d?.measured ? `Wind jetzt: an ${V3.d.measured.stations.length} Messstationen angepasst, dazwischen geschätzt. ` : `${WN_NOTE()} `) : ''}${cld}${cab}${RELIEF_NOTE(V3.scene?.dem)}`;
   const m = V3.scene?.markers.find(x => x.id === 'start');
   if (m) V3.scene.moveMarker('start', V3.site.lat, V3.site.lon, null, `<span class="v3d-pin s-${cls(score)}">${num(score) ? score : ''}</span><span class="v3d-name">${esc(V3.site.name)}</span>`);
@@ -5509,14 +5541,20 @@ async function v3dApply() {
   if (tok !== V3.tok || V3.scene !== sc) return;
   V3.d = d;
   if (!V3.playing && !v3dBetween()) sc.setSun(d?.sunPos || AFC3D.sunAt(Date.parse(iso), s.lat, s.lon));
-  if (V3.layer === 'sat') { try { sc.setOverlay((await satClouds(false)).cv, noMotion() ? 1 : 450); } catch (e) { err = 'Satellit: ' + errTxt(e); sc.setOverlay(null); } if (tok !== V3.tok || V3.scene !== sc) return; }
-  else sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
+  let satC = null;
+  if (V3.layer === 'sat') {
+    // die Wolken schweben auf ihrer Höhe und werfen Schatten, statt flach auf dem Gelände zu liegen
+    try { const st = await satClouds(false), c3n = await ichClouds(st.info?.vis || 'now'); satC = cloudsSat(st, c3n, d, s.lat, s.lon); if (satC && st.info?.vis && !V3.playing) sc.setSun(AFC3D.sunAt(Date.parse(st.info.vis), s.lat, s.lon)); } catch (e) { err = 'Satellit: ' + errTxt(e); }
+    if (tok !== V3.tok || V3.scene !== sc) return;
+    sc.setOverlay(null);
+  } else sc.setOverlay(d && V3.layer ? (d.img[V3.layer] ??= thermalImage(d, T.grid, V3.layer)) : null, noMotion() ? 1 : 450);
   sc.ovA = V3.wind && V3.layer === 'lee' ? 0.5 : 1;   // Lee-Fläche zarter, damit die Wirbel darauf sichtbar bleiben
   if (!reg) v3dHourData();
   const c3 = await c3p;
   if (tok !== V3.tok || V3.scene !== sc) return;
-  V3.c3 = !!c3;
-  sc.setClouds(c3 ? cloudsIch(c3, d, s.lat, s.lon) : cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase), noMotion() ? 1 : V3.playing ? 1400 : 700);
+  V3.c3 = !!c3; V3.satC = !!satC;
+  sc.cloudsOn = satC ? true : !!V3.clouds;
+  sc.setClouds(satC || (c3 ? cloudsIch(c3, d, s.lat, s.lon) : cloudsFor(d, s.lat, s.lon, reg ? null : V3.hr?.cloudBase)), noMotion() ? 1 : V3.playing ? 1400 : 700);
   v3dWind(d);
   v3dThermals(d);
   v3dIch(iso, tok);

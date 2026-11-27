@@ -12,7 +12,7 @@ test('Satellit: letzte Zeit aus GetCapabilities', () => {
 test('Satellit: nachts das letzte Bild bei Tag, tagsüber das neuste', () => {
   const night = Date.UTC(2026, 10, 27, 21, 10), noon = Date.UTC(2026, 10, 27, 11, 20);
   const t = lastDaylight(night, grid);
-  assert.ok(t < night && t > Date.UTC(2026, 10, 27, 13, 0) && t < Date.UTC(2026, 10, 27, 16, 0), new Date(t).toISOString());
+  assert.ok(t < night && t > Date.UTC(2026, 10, 27, 11, 30) && t < Date.UTC(2026, 10, 27, 15, 0), new Date(t).toISOString());
   assert.equal(lastDaylight(noon, grid), noon);
   assert.equal(clmFor(Date.UTC(2026, 10, 27, 14, 50), Date.UTC(2026, 10, 27, 21, 0)), Date.UTC(2026, 10, 27, 14, 45));
   assert.equal(clmFor(Date.UTC(2026, 10, 27, 14, 50), Date.UTC(2026, 10, 27, 14, 30)), Date.UTC(2026, 10, 27, 14, 30));
