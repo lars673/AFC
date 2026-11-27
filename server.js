@@ -448,7 +448,7 @@ async function collectIconCh(now = Date.now()) {
   try {
     const grid = await ichLoadGrid();
     const places = ichPlaces().filter(p => grid.byKey[p.key]);
-    const r = await ichThermals(grid, places, { now, stations: ichStations() });
+    const r = await ichThermals(grid, places, { now, stations: ichStations(), members: process.env.AFC_ICH_ENS !== "0" });
     if (state.ich && r.ref <= state.ich.ref) return;
     state.ich = r;
     for (const k of [...state.payloads.keys()]) if (/^(thermal|wind:10m|film):/.test(k)) state.payloads.delete(k);   // feiner Wind ist neu
@@ -747,7 +747,7 @@ function thermalResponse(ms) {
   const sl = thermalSlice(state.windgrid, hourMs);
   if (!sl) return null;
   sl.cloud = cloudAt(sl.grid, hourMs);
-  sl.fine = ichFine(hourMs);
+  sl.fine = ichFine(hourMs, true);
   p = packJson(sl);
   state.payloads.set(key, p);
   return p;
@@ -760,7 +760,7 @@ function filmResponse(ms, n) {
   let p = state.payloads.get(key);
   if (p) return p;
   const hours = [];
-  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) { sl.cloud = cloudAt(sl.grid, t0 + i * 3600000); sl.fine = ichFine(t0 + i * 3600000); hours.push(sl); } }
+  for (let i = 0; i < n; i++) { const sl = thermalSlice(state.windgrid, t0 + i * 3600000); if (sl) { sl.cloud = cloudAt(sl.grid, t0 + i * 3600000); sl.fine = ichFine(t0 + i * 3600000, true); hours.push(sl); } }
   if (hours.length < 2) return null;
   p = packJson({ grid: hours[0].grid, fetchedAt: hours[0].fetchedAt, hours: hours.map(({ grid, fetchedAt, ...h }) => h) });
   state.payloads.set(key, p);
@@ -933,13 +933,13 @@ function stationsPayload() {
 }
 
 /** Feiner Bodenwind aus ICON-CH1 (rund 1 km, km/h ganzzahlig) für eine Stunde, sonst null. Die Karte nimmt ihn statt des groben Rasters. */
-function ichFine(ms) {
+function ichFine(ms, heat = false) {
   const w = state.ich?.wind10;
   if (!w?.t?.length) return null;
   const i = w.t.findIndex(t => Math.abs(t - ms) <= 30 * 60000);
   if (i < 0) return null;
   const r = a => a.map(x => (x == null ? null : Math.round(x)));
-  return { grid: w.grid, u: r(w.u[i]), v: r(w.v[i]), src: 'ICON-CH1' };
+  return { grid: w.grid, u: r(w.u[i]), v: r(w.v[i]), ...(heat && w.shf?.[i] ? { shf: w.shf[i] } : {}), src: 'ICON-CH1' };
 }
 function packJson(obj) {
   const body = Buffer.from(JSON.stringify(obj));

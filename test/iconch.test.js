@@ -153,3 +153,20 @@ test('Wind auf Höhe aus den Modellflächen und Richtung', async () => {
   assert.deepEqual(windOf(0, -10), { wind: 36, dir: 0 }, 'Nordwind weht nach Süden');
   assert.deepEqual(windOf(-10, 0), { wind: 36, dir: 90 }, 'Ostwind');
 });
+
+test('Wettervarianten: Bodenwerte je Variante, Wind auf Starthöhe verschoben, Regen und Wolkenbasis', async () => {
+  const { memberRow } = await import('../lib/iconch.js');
+  const c = synthColumn(), col = column(c.hhl, c.T, c.QV, c.ps);
+  const base = { cells: [0], cols: [col], zs: [600], ps: [c.ps], wl: [0, -5], cu10: 0, cv10: -2, rain: 0, cloud: 20 };
+  const warm = memberRow({ ...base, t2: [289], td2: [275], shf: [180], u10: 0, v10: -2, g10: 4 });
+  const cold = memberRow({ ...base, t2: [289], td2: [275], shf: [10], u10: 0, v10: -2, g10: 4 });
+  assert.ok(warm[0] > 1400 && cold[0] === 600, `Sonne macht Thermik: ${warm[0]} gegen ${cold[0]}`);
+  assert.deepEqual(warm.slice(1, 3), [18, 0], 'Hauptlauf-Wind auf Starthöhe (5 m/s aus Nord)');
+  // Variante mit 3 m/s mehr Nordwind am Boden: auf Starthöhe ebenso mehr
+  const windy = memberRow({ ...base, t2: [289], td2: [275], shf: [180], u10: 0, v10: -5, g10: 9, rain: 1.24 });
+  assert.equal(windy[1], 28.8);
+  assert.ok(windy[3] >= windy[1], 'Böen nie unter dem Mittelwind');
+  assert.equal(windy[4], 1.2, 'Regen der Stunde in mm');
+  const wet = memberRow({ ...base, t2: [289], td2: [287], shf: [180], u10: 0, v10: -2, g10: 4 });
+  assert.ok(wet[6] && wet[0] <= wet[6], 'Thermik endet an der Wolkenbasis');
+});

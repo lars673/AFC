@@ -2757,6 +2757,7 @@ function renderSite(fresh = false) {
     <div class="folds">
     ${reasonsFold}
     ${windFold}
+    ${hr ? fold('ens', 'Wie sicher', 'wird geladen …', '<div id="ensNear"><p class="fine" style="margin:0">Wettervarianten werden geladen …</p></div>', { sumId: 'ensSum' }) : ''}
     ${hr ? fold('ich', 'Thermiksäule', 'wird geladen …', '<div id="ichNear"><p class="fine" style="margin:0">Thermiksäule von MeteoSchweiz wird geladen …</p></div>', { sumId: 'ichSum' }) : ''}
     ${landingHtml(s, hr)}
     ${fold('obst', 'Kabel und Hindernisse', 'wird geprüft …', '<div id="obstNear"><p class="fine" style="margin:0">Hindernisdaten werden geprüft …</p></div>', { sumId: 'obstSum' })}
@@ -2772,7 +2773,7 @@ function renderSite(fresh = false) {
   if (kvPrev) morphNums($('#siteDlg'), kvPrev, SCRUB.moved && SCRUB.on ? 140 : 380);
   if (S.day === 0 && !d._savedAt) fillRadarNear(s);
   fillObstNear(s);
-  if (hr && day?.date) fillIch(s, day.date, hr.h, hr);
+  if (hr && day?.date) { fillIch(s, day.date, hr.h, hr); fillEns(s, day.date, hr.h, hrs.map(h => h.h)); }
   fillCam(s);
   if (fresh) liveLoad();
 }
@@ -3221,6 +3222,60 @@ async function fillIch(s, date, hour, hr) {
   } catch (e) { sum('nicht verfügbar'); el.innerHTML = `<p class="fine" style="margin:0">Thermiksäule nicht verfügbar (${esc(errTxt(e))}).</p>`; }
 }
 
+/* Wie sicher: dieselbe Stunde in 11 Wettervarianten von MeteoSchweiz (ICON-CH1-EPS). Jede Variante wird mit den
+   Grenzen der eigenen Erfahrungsstufe geprüft: startbar (Wind, Böen, Rückenwind, Regen) und Thermik über dem Start. */
+const ENS_LV = { careful: { w: 30, g: 34 }, normal: { w: 35, g: 40 }, expert: { w: 40, g: 46 } };
+function ensVerdict(m, s, lv = ENS_LV[S.level] || ENS_LV.normal) {
+  const [top, wind, dir, gust, rain, , base] = m, why = [];
+  if (num(wind) && wind >= lv.w) why.push('wind');
+  else if (num(gust) && gust >= lv.g) why.push('gust');
+  if (num(wind) && num(dir) && wind >= 5 && s.aspects?.length) {
+    const d = Math.min(...s.aspects.map(a => { const x = Math.abs(((dir - a) % 360 + 540) % 360 - 180); return x; }));
+    if (-wind * Math.cos(d * Math.PI / 180) >= 8) why.push('tail');
+  }
+  if (num(rain) && rain >= 0.3) why.push('rain');
+  if (num(base) && base <= s.alt + 50) why.push('cloud');
+  return { ok: !why.length, therm: num(top) && top >= s.alt + 300, why };
+}
+function ensSummary(e, s) {
+  const v = e.m.map(m => ensVerdict(m, s)), ok = v.filter(x => x.ok), th = ok.filter(x => x.therm);
+  const cnt = k => v.filter(x => x.why.includes(k)).length;
+  const why = [['wind', 'zu viel Wind'], ['gust', 'zu starke Böen'], ['tail', 'Rückenwind'], ['rain', 'Regen'], ['cloud', 'Start in den Wolken']].map(([k, t]) => [cnt(k), t]).filter(([c]) => c).map(([c, t]) => `${c} × ${t}`);
+  const tops = e.m.map(m => m[0]).filter(num).sort((a, b) => a - b), q = f => tops[Math.min(tops.length - 1, Math.max(0, Math.round(f * (tops.length - 1))))];
+  const r50 = x => Math.round(x / 50) * 50;
+  return { v, n: e.n, ok: ok.length, th: th.length, why, top: tops.length ? { lo: r50(q(0.1)), mid: r50(q(0.5)), hi: r50(q(0.9)) } : null };
+}
+function ensDots(sm) {
+  return `<div class="ens-dots" role="img" aria-label="${sm.ok} von ${sm.n} Varianten startbar, ${sm.th} mit Thermik">${sm.v.map((x, k) =>
+    `<i class="ens-d ${x.ok ? (x.therm ? 'th' : 'ok') : 'no'}" style="--k:${k}" title="Variante ${k + 1}${k ? '' : ' (Hauptlauf)'}: ${x.ok ? (x.therm ? 'startbar, Thermik' : 'startbar') : 'nicht startbar'}"></i>`).join('')}</div>`;
+}
+async function fillEns(s, date, hour, planHours = null) {
+  const el = $('#ensNear'), sum = t => { const e = $('#ensSum'); if (e) e.textContent = t; };
+  if (!el) return;
+  try {
+    const j = await ichData(s.id);
+    if ($('#ensNear') !== el) return;
+    const day = j.hours.filter(x => zDay(x.t) === date && x.ens?.m?.length && (!planHours?.length || planHours.includes(zHour(x.t))));
+    const x = day.find(x => zHour(x.t) === hour);
+    if (!x) { sum('für diese Stunde noch nicht gerechnet'); el.innerHTML = '<p class="fine" style="margin:0">Die Varianten von MeteoSchweiz reichen 33 Stunden voraus, von 7 bis 20 Uhr. Für diese Stunde gibt es sie noch nicht.</p>'; return; }
+    const sm = ensSummary(x.ens, s), word = sm.ok >= sm.n - 1 ? 'sicher' : sm.ok >= sm.n * 0.6 ? 'eher sicher' : sm.ok > sm.n * 0.3 ? 'unsicher' : sm.ok ? 'eher nicht' : 'nicht startbar';
+    sum(`${sm.ok} von ${sm.n} Varianten startbar`);
+    const strip = day.map(h => { const m = ensSummary(h.ens, s), f = m.ok / m.n, sel = zHour(h.t) === hour;
+      return `<button type="button" class="ens-h${sel ? ' sel' : ''}" data-act="hour" data-h="${zHour(h.t)}" aria-label="${zHour(h.t)} Uhr: ${m.ok} von ${m.n} startbar"><i style="--f:${f.toFixed(2)};--t:${(m.th / m.n).toFixed(2)}"></i><span>${zHour(h.t)}</span></button>`; }).join('');
+    el.innerHTML = `<p class="ens-big"><b>${sm.ok}</b> von ${sm.n} Varianten startbar <span class="ens-w ens-${word.replace(/ /g, '-')}">${word}</span></p>
+      ${ensDots(sm)}
+      <p class="fine ens-legend"><span class="ens-d th"></span>startbar mit Thermik <span class="ens-d ok"></span>startbar <span class="ens-d no"></span>nicht startbar</p>
+      <div class="kv">
+        ${sm.why.length ? `<div><b>${sm.n - sm.ok}</b><span>nicht startbar: ${esc(sm.why.join(', '))}</span></div>` : ''}
+        <div><b>${sm.th} von ${sm.n}</b><span>mit Thermik über dem Start (mind. 300 m)</span></div>
+        ${sm.top && sm.top.hi > s.alt ? `<div><b>${sm.top.lo === sm.top.hi ? sm.top.mid : sm.top.lo + '–' + sm.top.hi} m</b><span>Thermik bis (in 8 von 10 Varianten), Mitte ${sm.top.mid} m</span></div>` : ''}
+      </div>
+      ${day.length > 1 ? `<p class="fine" style="margin:8px 0 2px">Über den Tag (Balken: Anteil startbar, dunkler mit Thermik):</p><div class="ens-strip">${strip}</div>` : ''}
+      <p class="fine" style="margin:6px 0 0">Gleiche Stunde, 11-mal gerechnet: der Hauptlauf und 10 leicht veränderte Läufe von MeteoSchweiz (ICON-CH1-EPS, 1 km). Je einiger sie sind, desto sicherer die Prognose. Geprüft mit deinen Grenzen (${esc(LEVEL_INFO[S.level]?.[0] || 'Normal')}). Der Score rechnet noch wie bisher.</p>`;
+    requestAnimationFrame(() => el.querySelector('.ens-dots')?.classList.add('in'));
+  } catch (e) { sum('nicht verfügbar'); el.innerHTML = `<p class="fine" style="margin:0">Wettervarianten nicht verfügbar (${esc(errTxt(e))}).</p>`; }
+}
+
 async function fillObstNear(s) {
   const el = $('#obstNear');
   if (!el) return;
@@ -3626,7 +3681,18 @@ async function thermalGrid() {
       const rl = await fetch('/landcover-grid.bin');
       if (rl.ok) { const lb = await rl.arrayBuffer(), ll = new DataView(lb).getUint32(0, true), lm = JSON.parse(new TextDecoder().decode(new Uint8Array(lb, 4, ll))); if (lm.nx === g.nx && lm.ny === g.ny) land = new Uint8Array(lb, 4 + ll, N); }
     } catch {}
-    T.grid = { ...g, kk7, land, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
+    // Bodenfaktor im Verhältnis zum Mittel seiner Umgebung (rund 1 km wie ICON-CH1): ICON kennt den Boden grob schon,
+    // die feine Verteilung darin kommt aus der Arealstatistik
+    let landRel = null;
+    if (land) {
+      landRel = new Float32Array(N); const R = 2;
+      for (let y = 0; y < g.ny; y++) for (let x = 0; x < g.nx; x++) {
+        let sm = 0, n = 0;
+        for (let yy = Math.max(0, y - R); yy <= Math.min(g.ny - 1, y + R); yy++) for (let xx = Math.max(0, x - R); xx <= Math.min(g.nx - 1, x + R); xx++) { const v = land[yy * g.nx + xx]; if (v) { sm += v; n++; } }
+        const v = land[y * g.nx + x]; landRel[y * g.nx + x] = v && n ? v / (sm / n) : 1;
+      }
+    }
+    T.grid = { ...g, kk7, land, landRel, elev: copy(Uint16Array, o, N), slope: new Uint8Array(buf, o + 2 * N, N), aspect: new Uint8Array(buf, o + 3 * N, N), form: new Int8Array(buf, o + 4 * N, N) };
     return T.grid;
   })().catch(e => { T.gridReq = null; throw e; });
   return T.gridReq;
@@ -3674,9 +3740,15 @@ function thermalCell(d, g, k, lat, lon) {
   const top = fieldAt(d, d.top, lat, lon), wstar = fieldAt(d, d.wstar, lat, lon) ?? 0;
   const low = fieldAt(d, d.low, lat, lon) ?? 0, rain = fieldAt(d, d.rain, lat, lon) ?? 0;
   // Der Boden braucht Zeit zum Aufheizen: diese und die vorherige Stunde zählen
-  const heatNow = slopeSun(fieldAt(d, d.sun, lat, lon), d.sunPos, slope, aspect);
-  const heatBefore = slopeSun(fieldAt(d, d.sunBefore, lat, lon), d.sunPrev, slope, aspect);
-  const heat = Math.min(1.2, (0.6 * heatNow + 0.4 * heatBefore) / 750);
+  const swNow = fieldAt(d, d.sun, lat, lon), swBefore = fieldAt(d, d.sunBefore, lat, lon);
+  const heatNow = slopeSun(swNow, d.sunPos, slope, aspect);
+  const heatBefore = slopeSun(swBefore, d.sunPrev, slope, aspect);
+  // Wärmestrom aus ICON-CH1 (1 km): wie viel Wärme der Boden wirklich an die Luft gibt, mit Wolken, Schnee, Boden und
+  // Feuchte. Hangneigung und Ausrichtung verteilen ihn fein (Sonne auf dem Hang im Verhältnis zur Ebene).
+  const shf = d.fine?.shf ? fieldAt({ grid: d.fine.grid }, d.fine.shf, lat, lon) : null;
+  const flat = slopeSun(swNow, d.sunPos, 0, 0) * 0.6 + slopeSun(swBefore, d.sunPrev, 0, 0) * 0.4;
+  const gain = flat > 20 ? Math.min(2.2, (0.6 * heatNow + 0.4 * heatBefore) / flat) : 1;
+  const heat = shf != null ? Math.min(1.2, Math.max(0, shf) * gain / SHF_REF) : Math.min(1.2, (0.6 * heatNow + 0.4 * heatBefore) / 750);
   const reach = top == null ? 0 : top - elev;
   const fReach = Math.min(1, Math.max(0, (reach - 100) / 900));
   // Gewichtung abgeglichen mit kk7 (rund 3,8 Mio. Flüge, tools/calibrate-kk7.js, 30.10.2026):
@@ -3687,18 +3759,21 @@ function thermalCell(d, g, k, lat, lon) {
   const flights = g.kk7 ? g.kk7[k] / 255 : null;
   const fFlights = flights == null ? 1 : 0.4 + 0.9 * flights;
   const fStrength = Math.min(1.2, Math.max(0.2, wstar / 2));
-  const fCloud = (1 - 0.7 * Math.min(100, low) / 100) * (rain >= 0.3 ? 0 : rain >= 0.1 ? 0.5 : 1);
+  // Wolkenschatten, Schnee und Boden stecken im ICON-Wärmestrom schon drin: dann nur Regen und die feine Bodenverteilung
+  const fRain = rain >= 0.3 ? 0 : rain >= 0.1 ? 0.5 : 1;
+  const fCloud = shf != null ? fRain : (1 - 0.7 * Math.min(100, low) / 100) * fRain;
   // Boden (BFS Arealstatistik): Fels und Geröll heizen schneller, Wald träger, Wasser und Gletscher kaum
-  const land = g.land && g.land[k] ? g.land[k] / 100 : null, fLand = land ?? 1;
+  const land = g.land && g.land[k] ? g.land[k] / 100 : null, fLand = shf != null ? Math.min(1.6, Math.max(0.2, g.landRel?.[k] ?? 1)) : land ?? 1;
   // Schnee (ICON-CH1): weisser Boden wirft die Sonne zurück und heizt kaum
-  const sn = SNOW.data && SNOW.data.length === g.elev.length && SNOW.data[k] <= 100 ? SNOW.data[k] : null, fSnow = sn == null ? 1 : 1 - 0.85 * sn / 100;
+  const sn = SNOW.data && SNOW.data.length === g.elev.length && SNOW.data[k] <= 100 ? SNOW.data[k] : null, fSnow = sn == null || shf != null ? 1 : 1 - 0.85 * sn / 100;
   let v = heat * fReach * fForm * fSlope * fStrength * fCloud * fFlights * fLand * fSnow;
   // Lee: hinter Kreten zerreisst oder unterdrückt absinkende Luft die Thermik (nur rechnen, wo es überhaupt Thermik gibt)
   let lee = 0;
   if (v > 0.05) { lee = leeCell(d, g, k, lat, lon).v || 0; v *= 1 - 0.6 * lee; }
   v = Math.min(1, v ** 1.4);   // nur die besten Stellen leuchten
-  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, flights, land, snow: sn, lee, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore) };
+  return { v, elev, slope, aspect, form, top, reach, wstar, low, rain, flights, land, snow: sn, lee, heat: Math.round(0.6 * heatNow + 0.4 * heatBefore), shf: shf == null ? null : Math.round(Math.max(0, shf) * gain) };
 }
+const SHF_REF = 250;   // W/m² Wärmestrom, der einem kräftigen Thermiktag in der Ebene entspricht (Wert 1)
 
 const THERMAL_RAMP = [[0.2, [255, 230, 90, 0]], [0.3, [255, 210, 60, 110]], [0.5, [255, 140, 30, 170]], [0.7, [235, 60, 30, 200]], [1, [180, 0, 60, 220]]];
 const SOAR_RAMP = [[0.2, [80, 200, 220, 0]], [0.35, [80, 200, 220, 110]], [0.6, [30, 150, 230, 170]], [1, [20, 70, 200, 215]]];
@@ -3909,6 +3984,7 @@ function thermikWhy(d, g, k, lat, lon) {
   const level = c.v >= 0.6 ? 'stark' : c.v >= 0.35 ? 'mittel' : c.v > 0.2 ? 'schwach' : 'kaum';
   const why = [];
   why.push(c.slope >= 8 ? `${dirLabel(c.aspect)}-Hang, ${c.slope}° steil, ${c.heat} W/m² Sonne auf dem Hang` : `flaches Gelände, ${c.heat} W/m² Sonne`);
+  if (c.shf != null) why.push(c.shf < 30 ? `Der Boden gibt kaum Wärme an die Luft ab (${c.shf} W/m², MeteoSchweiz ICON-CH1)` : `Der Boden gibt ${c.shf} W/m² Wärme an die Luft ab (MeteoSchweiz ICON-CH1, mit Wolken, Schnee und Bodenfeuchte)`);
   if (c.top == null) why.push('keine Daten zur Thermikhöhe');
   else if (c.reach <= 100) why.push(`Thermik endet bei ca. ${Math.round(c.top / 100) * 100} m, also unter diesem Gelände`);
   else why.push(`Thermik bis ca. ${Math.round(c.top / 100) * 100} m (${Math.round(c.reach / 100) * 100} m über Gelände), Steigen um ${c.wstar.toFixed(1)} m/s`);

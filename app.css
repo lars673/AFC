@@ -1605,3 +1605,26 @@ header.top.scrolled { box-shadow: 0 6px 22px rgba(0,0,0,.26); }
 .mk-ich.cap { color: var(--ink); background: color-mix(in srgb, #fff 90%, transparent); }
 .mk-ich.cap i { width: 11px; height: 7px; border-radius: 6px 6px 3px 3px; background: #c9d3dc; box-shadow: 3px -2px 0 -1px #c9d3dc; }
 .ich-wind b .arr { width: 16px; height: 16px; vertical-align: -2px; }
+
+/* Wie sicher: 11 Wettervarianten als Punkte, über den Tag als Balken */
+.ens-big { margin: 0 0 8px; font-size: 15px; }
+.ens-big b { font: 800 26px var(--f-num); vertical-align: -3px; }
+.ens-w { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: var(--none); }
+.ens-sicher, .ens-eher-sicher { background: color-mix(in srgb, var(--go) 20%, transparent); color: var(--go); }
+.ens-unsicher { background: color-mix(in srgb, var(--check) 28%, transparent); }
+.ens-eher-nicht, .ens-nicht-startbar { background: color-mix(in srgb, var(--no) 18%, transparent); color: var(--no); }
+.ens-dots { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 6px; }
+.ens-d { display: inline-block; width: 18px; height: 18px; border-radius: 50%; background: var(--none); }
+.ens-dots .ens-d { opacity: 0; transform: scale(.4); transition: opacity .35s ease, transform .45s cubic-bezier(.3,1.5,.5,1); transition-delay: calc(var(--k) * 45ms); }
+.ens-dots.in .ens-d { opacity: 1; transform: none; }
+.ens-d.th { background: var(--go); }
+.ens-d.ok { background: color-mix(in srgb, var(--go) 40%, transparent); box-shadow: inset 0 0 0 2px var(--go); }
+.ens-d.no { background: color-mix(in srgb, var(--no) 70%, transparent); }
+.ens-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 0 6px; }
+.ens-legend .ens-d { width: 11px; height: 11px; margin-right: -6px; vertical-align: -1px; }
+.ens-strip { display: flex; gap: 3px; align-items: flex-end; }
+.ens-h { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: 600 10px var(--f-num); cursor: pointer; }
+.ens-h i { display: block; width: 100%; height: 34px; border-radius: 4px; background: linear-gradient(to top, var(--go) 0 calc(var(--t) * 100%), color-mix(in srgb, var(--go) 40%, transparent) 0 calc(var(--f) * 100%), var(--none) 0); }
+.ens-h.sel { color: var(--ink); }
+.ens-h.sel i { outline: 2px solid var(--ink); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .ens-dots .ens-d { transition: none; opacity: 1; transform: none; } }
